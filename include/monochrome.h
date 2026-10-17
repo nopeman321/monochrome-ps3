@@ -1,0 +1,129 @@
+/**
+ * Monochrome Music Player - PlayStation 3 Port
+ * Sony Computer Entertainment Cell Broadband Engine Architecture
+ *
+ * Memory map (208 MB usable XDR + 256 MB GDDR3):
+ *   Ring Buffer (FLAC stream)  : 8 MB XDR    (2+ min at 24/96)
+ *   PCM output double-buffer   : 2 MB XDR
+ *   Cover art texture cache    : 16 MB GDDR3
+ *   RSX framebuffers (720p x2) : 7.2 MB GDDR3
+ *   Application heap + stack   : ~32 MB XDR
+ *   GameOS kernel reservation  : ~48 MB XDR
+ */
+
+#ifndef MONOCHROME_PS3_H
+#define MONOCHROME_PS3_H
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+
+/* ── Application identity ────────────────────────────────────────── */
+#define APP_TITLE          "Monochrome"
+#define APP_VERSION        "01.00"
+#define APP_TITLEID        "MCRM00001"
+
+/* ── Display ─────────────────────────────────────────────────────── */
+#define SCREEN_WIDTH       1280
+#define SCREEN_HEIGHT      720
+#define TARGET_FPS         60
+
+/* ── Memory budgets (XDR DRAM) ───────────────────────────────────── */
+#define STREAM_RING_BUFFER_SIZE  (8 * 1024 * 1024)   /* 8 MB FLAC stream */
+#define AUDIO_PCM_BUFFER_SIZE    (2 * 1024 * 1024)   /* 2 MB decoded PCM */
+#define MAX_SEARCH_RESULTS       20
+#define MAX_PLAYLIST_SIZE        200
+
+/* ── API endpoints (from upstream monochrome-music/monochrome) ───── */
+#define DEFAULT_API_HOST   "tracks.monochrome.st"
+#define FALLBACK_API_HOSTS { "api.monochrome.tf", "wolf.qqdl.site", "maus.qqdl.site", "vogel.qqdl.site" }
+#define NUM_FALLBACK_HOSTS 4
+#define HTTPS_PORT         443
+
+/* ── Filesystem paths on dev_hdd0 ────────────────────────────────── */
+#define CERT_BUNDLE_PATH   "/dev_hdd0/game/" APP_TITLEID "/USRDIR/certs/cacert.pem"
+#define FONT_PATH          "/dev_hdd0/game/" APP_TITLEID "/USRDIR/assets/font.ttf"
+
+/* ── Application states ──────────────────────────────────────────── */
+typedef enum {
+    STATE_SPLASH,
+    STATE_HOME,
+    STATE_SEARCH,
+    STATE_ALBUM,
+    STATE_PLAYLIST,
+    STATE_PLAYING,
+    STATE_SETTINGS
+} AppState;
+
+/* ── Playback states ─────────────────────────────────────────────── */
+typedef enum {
+    PLAYBACK_STOPPED,
+    PLAYBACK_BUFFERING,
+    PLAYBACK_PLAYING,
+    PLAYBACK_PAUSED
+} PlaybackState;
+
+/* ── Track metadata ──────────────────────────────────────────────── */
+typedef struct {
+    char     id[64];
+    char     title[128];
+    char     artist[128];
+    char     album[128];
+    char     cover_url[256];
+    char     stream_url[512];
+    uint32_t duration_sec;
+    uint32_t sample_rate;      /* 44100, 48000, 96000, 192000 */
+    uint8_t  bit_depth;        /* 16 or 24 */
+    bool     is_hi_res;
+} TrackMetadata;
+
+/* ── Lock-free ring buffer for PPE→SPU audio pipeline ────────────── */
+typedef struct {
+    uint8_t  *buffer;
+    size_t    capacity;
+    volatile size_t write_pos;  /* only written by producer (net thread) */
+    volatile size_t read_pos;   /* only written by consumer (audio thread) */
+    volatile bool   stream_eof;
+} AudioRingBuffer;
+
+/* Ring buffer helpers (lock-free single-producer single-consumer) */
+static inline size_t ring_available(const AudioRingBuffer *rb) {
+    size_t w = rb->write_pos, r = rb->read_pos;
+    return (w >= r) ? (w - r) : (rb->capacity - r + w);
+}
+static inline size_t ring_free(const AudioRingBuffer *rb) {
+    return rb->capacity - ring_available(rb) - 1;
+}
+
+/* ── System lifecycle ────────────────────────────────────────────── */
+int  app_init(void);
+void app_shutdown(void);
+void app_request_exit(void);
+
+/* ── Network subsystem (PPE Thread 1) ────────────────────────────── */
+int  net_init(void);
+void net_shutdown(void);
+int  net_search(const char *query, TrackMetadata *out, int max);
+int  net_resolve_stream(const char *track_id, char *url_out, size_t url_len);
+int  net_start_stream(const char *url, AudioRingBuffer *rb);
+void net_stop_stream(void);
+
+/* ── Audio subsystem (SPU decode + sys_audio_out) ────────────────── */
+int  audio_init(AudioRingBuffer *rb);
+void audio_shutdown(void);
+void audio_tick(void);  /* called from main loop — feeds sys_audio_out */
+void audio_set_state(PlaybackState state);
+PlaybackState audio_get_state(void);
+
+/* ── SPU DSP kernels ─────────────────────────────────────────────── */
+void spu_resample_44_to_48(const int16_t *src, size_t frames_in,
+                           int16_t *dst, size_t *frames_out);
+
+/* ── Graphics / UI (RSX + DualShock 3) ───────────────────────────── */
+int  gfx_init(void);
+void gfx_shutdown(void);
+void gfx_render(AppState state, const TrackMetadata *track,
+                PlaybackState pstate, float progress);
+AppState pad_update(AppState current);
+
+#endif /* MONOCHROME_PS3_H */

@@ -1,0 +1,32 @@
+# Build outputs
+build/
+*.o
+*.elf
+*.bin
+*.pkg
+pkg_build/USRDIR/EBOOT.BIN
+build_eboot.elf
+
+# Third-party tools & SDK binaries
+tools/zig/
+tools/zlib/
+tools/scetool/data/
+tools/scetool_fork/
+tools/scetool/*.o
+tools/scetool/*.exe
+
+# Emulator virtual HDDs and logs
+emulator/
+*.log
+*.log.gz
+*.buf
+*.txt
+
+# Upstream reference clone
+original_monochrome/
+
+# OS and Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
