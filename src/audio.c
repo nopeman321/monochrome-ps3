@@ -94,6 +94,8 @@ void spu_resample_44_to_48(const int16_t *src, size_t frames_in,
     *frames_out = out;
 }
 
+static uint64_t g_total_frames_played = 0;
+
 /* ── Main-loop tick: feed sys_audio_out ───────────────────────────── */
 void audio_tick(void) {
     if (g_pstate != PLAYBACK_PLAYING || !g_rb) return;
@@ -125,6 +127,8 @@ void audio_tick(void) {
     /* Output audio block to hardware (waveOut on PC / sys_audio_out on PS3) */
     platform_audio_write(g_pcm_block, AUDIO_BLOCK_FRAMES);
 
+    g_total_frames_played += AUDIO_BLOCK_FRAMES;
+
     static uint32_t s_audio_blocks = 0;
     s_audio_blocks++;
     if (s_audio_blocks % 60 == 0) {
@@ -132,4 +136,20 @@ void audio_tick(void) {
                s_audio_blocks, avail / 1024);
     }
 }
+
+void audio_reset_progress(void) {
+    g_total_frames_played = 0;
+}
+
+uint32_t audio_get_elapsed_sec(void) {
+    return (uint32_t)(g_total_frames_played / 48000);
+}
+
+float audio_get_progress(uint32_t total_duration_sec) {
+    if (total_duration_sec == 0) return 0.0f;
+    float p = (float)audio_get_elapsed_sec() / (float)total_duration_sec;
+    if (p > 1.0f) p = 1.0f;
+    return p;
+}
+
 

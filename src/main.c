@@ -95,6 +95,7 @@ int main(int argc, char *argv[]) {
         audio_tick();
 
         /* 3 ── Render frame and VSync-flip */
+        g_progress = audio_get_progress(g_now.duration_sec);
         gfx_render(g_state, &g_now, audio_get_state(), g_progress);
 
         /* 4 ── 60 FPS pacing */

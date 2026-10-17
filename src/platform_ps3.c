@@ -118,4 +118,24 @@ void platform_set_cursor(int row, int col) {
     printf("\033[%d;%dH", row, col);
 }
 
+int platform_get_mouse_track_selection(void) {
+    return -1;
+}
+
+int platform_gfx_init(int width, int height, const char *title) {
+    (void)width; (void)height; (void)title;
+    return 0;
+}
+
+void platform_gfx_shutdown(void) {
+}
+
+void platform_gfx_render(int state, const struct TrackMetadata *track,
+                         int pstate, float progress,
+                         const struct TrackMetadata *tracks, int track_count, int cursor,
+                         const char *search_query) {
+    (void)state; (void)track; (void)pstate; (void)progress;
+    (void)tracks; (void)track_count; (void)cursor; (void)search_query;
+}
+
 #endif /* PLATFORM_IS_PS3 */

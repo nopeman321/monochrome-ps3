@@ -64,7 +64,7 @@ typedef enum {
 } PlaybackState;
 
 /* ── Track metadata ──────────────────────────────────────────────── */
-typedef struct {
+typedef struct TrackMetadata {
     char     id[64];
     char     title[128];
     char     artist[128];
@@ -134,6 +134,9 @@ void audio_shutdown(void);
 void audio_tick(void);  /* called from main loop — feeds sys_audio_out */
 void audio_set_state(PlaybackState state);
 PlaybackState audio_get_state(void);
+float audio_get_progress(uint32_t total_duration_sec);
+uint32_t audio_get_elapsed_sec(void);
+void audio_reset_progress(void);
 
 /* ── SPU DSP kernels ─────────────────────────────────────────────── */
 void spu_resample_44_to_48(const int16_t *src, size_t frames_in,

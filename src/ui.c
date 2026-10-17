@@ -12,14 +12,27 @@
 
 #include "monochrome.h"
 
-/* ── Cached search results ───────────────────────────────────────── */
+/* ── Cached search results & Presets ─────────────────────────────── */
 static TrackMetadata g_tracks[MAX_SEARCH_RESULTS];
 static int  g_track_count  = 0;
 static int  g_cursor       = 0;
 static bool g_initial_load = false;
 
+static const char *s_search_presets[] = {
+    "trending",
+    "Daft Punk",
+    "The Weeknd",
+    "Synthwave",
+    "Lossless",
+    "Electronic"
+};
+#define NUM_SEARCH_PRESETS (sizeof(s_search_presets) / sizeof(s_search_presets[0]))
+static int s_preset_idx = 0;
+
 /* ── Init / Shutdown ─────────────────────────────────────────────── */
 int gfx_init(void) {
+    platform_gfx_init(SCREEN_WIDTH, SCREEN_HEIGHT, "Monochrome — Lossless Music Player");
+
     printf("[RSX] Framebuffer: %dx%d @ 60 Hz (double-buffered)\n",
            SCREEN_WIDTH, SCREEN_HEIGHT);
     printf("[RSX] VRAM allocated: 2× %.1f MB (framebuffers) + 16 MB (textures)\n",
@@ -28,6 +41,7 @@ int gfx_init(void) {
 }
 
 void gfx_shutdown(void) {
+    platform_gfx_shutdown();
     printf("[RSX] Context released.\n");
 }
 
@@ -72,12 +86,22 @@ void gfx_render(AppState state, const TrackMetadata *track,
         }
     }
 
-    (void)pstate; (void)progress;
+    /* Hardware Abstraction Layer Visual Renderer (Win32 GDI / PS3 RSX) */
+    platform_gfx_render((int)state, track, (int)pstate, progress,
+                        g_tracks, g_track_count, g_cursor,
+                        s_search_presets[s_preset_idx]);
 }
 
 /* ── Input polling → state transitions ───────────────────────────── */
 AppState pad_update(AppState current) {
     InputAction act = platform_poll_input();
+
+    /* Direct mouse track selection support */
+    int mouse_sel = platform_get_mouse_track_selection();
+    if (mouse_sel >= 0 && mouse_sel < g_track_count) {
+        g_cursor = mouse_sel;
+        act = INPUT_SELECT;
+    }
 
     switch (act) {
         case INPUT_UP:
@@ -102,6 +126,7 @@ AppState pad_update(AppState current) {
                        g_cursor + 1, g_track_count, g_tracks[g_cursor].title);
                 TrackMetadata *cur = app_get_current_track();
                 if (cur) {
+                    audio_reset_progress();
                     *cur = g_tracks[g_cursor];
                     char url[512];
                     net_resolve_stream(cur->id, url, sizeof(url));
@@ -123,9 +148,10 @@ AppState pad_update(AppState current) {
             break;
 
         case INPUT_ACTION_SEARCH:
-            printf("[INPUT] Search triggered for 'Alive'...\n");
+            s_preset_idx = (s_preset_idx + 1) % NUM_SEARCH_PRESETS;
+            printf("[INPUT] Search triggered for genre/query: '%s'...\n", s_search_presets[s_preset_idx]);
             current = STATE_SEARCH;
-            g_track_count = net_search("Alive", g_tracks, MAX_SEARCH_RESULTS);
+            g_track_count = net_search(s_search_presets[s_preset_idx], g_tracks, MAX_SEARCH_RESULTS);
             g_cursor = 0;
             current = STATE_HOME;
             break;

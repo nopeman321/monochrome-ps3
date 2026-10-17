@@ -59,10 +59,20 @@ void platform_audio_set_volume(float volume_0_to_1);
 
 /* ── Input Abstraction ───────────────────────────────────────────── */
 InputAction platform_poll_input(void);
+int         platform_get_mouse_track_selection(void);
 
 /* ── Console / Terminal Abstraction ──────────────────────────────── */
 void platform_clear_screen(void);
 void platform_set_cursor(int row, int col);
+
+/* ── Display / Frame Rendering Abstraction ───────────────────────── */
+struct TrackMetadata;
+int  platform_gfx_init(int width, int height, const char *title);
+void platform_gfx_shutdown(void);
+void platform_gfx_render(int state, const struct TrackMetadata *track,
+                         int pstate, float progress,
+                         const struct TrackMetadata *tracks, int track_count, int cursor,
+                         const char *search_query);
 
 #ifdef __cplusplus
 }
