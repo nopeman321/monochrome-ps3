@@ -1,6 +1,9 @@
 # Monochrome PS3 — Sony PlayStation 3 Homebrew Port
 
-A native, high-resolution music streaming homebrew client for the **Sony PlayStation 3** (PS3HEN & Custom Firmware), ported from the open-source [monochrome-music/monochrome](https://github.com/monochrome-music/monochrome) project.
+> [!WARNING]
+> **⚠️ ESTADO DEL PROYECTO: EN DESARROLLO ACTIVO / WORK IN PROGRESS (WIP)**  
+> Este repositorio es un port experimental en curso de [monochrome-music/monochrome](https://github.com/monochrome-music/monochrome) para la consola **PlayStation 3 (PS3HEN & Custom Firmware)**.  
+> Se encuentra bajo desarrollo y depuración activa de subsistemas Cell B.E. (PPU/SPU, LV2 GameOS, audio DAC LPCM y empaquetado PKG). Su uso es actualmente experimental.
 
 ---
 
