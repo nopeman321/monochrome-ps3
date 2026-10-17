@@ -24,6 +24,10 @@ emulator/
 
 # Upstream reference clone
 original_monochrome/
+upstream/
+tools/norsx/
+test_*
+entry_stub.s
 
 # OS and Editor files
 .DS_Store

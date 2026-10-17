@@ -18,6 +18,7 @@ static volatile bool  g_running = true;
 static AppState       g_state   = STATE_SPLASH;
 static TrackMetadata  g_now     = {0};
 static AudioRingBuffer g_ring   = {0};
+static uint8_t         s_ring_storage[STREAM_RING_BUFFER_SIZE] __attribute__((aligned(128)));
 static float          g_progress = 0.0f;
 
 void app_request_exit(void) { g_running = false; }
@@ -28,14 +29,9 @@ int app_init(void) {
     printf("[PPE]  MONOCHROME · PS3 · Cell B.E. v%s\n", APP_VERSION);
     printf("[PPE] ══════════════════════════════════════════\n");
 
-    /* Allocate the shared ring buffer FIRST — everything depends on it */
+    /* Statically assigned ring buffer in XDR DRAM BSS — 100% reliable */
     g_ring.capacity = STREAM_RING_BUFFER_SIZE;
-    g_ring.buffer   = (uint8_t *)malloc(g_ring.capacity);
-    if (!g_ring.buffer) {
-        printf("[PPE] FATAL: cannot allocate %zu bytes for ring buffer\n",
-               g_ring.capacity);
-        return -1;
-    }
+    g_ring.buffer   = s_ring_storage;
     g_ring.write_pos  = 0;
     g_ring.read_pos   = 0;
     g_ring.stream_eof = false;
@@ -71,10 +67,7 @@ void app_shutdown(void) {
     net_shutdown();
     gfx_shutdown();
 
-    if (g_ring.buffer) {
-        free(g_ring.buffer);
-        g_ring.buffer = NULL;
-    }
+    g_ring.buffer = NULL;
     printf("[PPE] Clean exit.\n");
 }
 

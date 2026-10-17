@@ -14,6 +14,7 @@
 #include "lv2.h"
 #include <unistd.h>
 #include <string.h>
+#include <stdio.h>
 
 static inline int64_t lv2_sc4(uint64_t num, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6) {
     register uint64_t _r11 asm("r11") = num;
@@ -80,3 +81,123 @@ unsigned int sleep(unsigned int seconds) {
     ps3_sys_timer_sleep((uint64_t)seconds);
     return 0;
 }
+
+/* ── Stdio & Console Overrides (Bypasses Linux ioctl/writev) ─────── */
+#include <stdarg.h>
+
+int vprintf(const char *fmt, va_list ap) {
+    char buf[1024];
+    int len = vsnprintf(buf, sizeof(buf), fmt, ap);
+    if (len > 0) {
+        uint32_t written = 0;
+        ps3_sys_tty_write(0, buf, (uint32_t)len, &written);
+    }
+    return len;
+}
+
+int printf(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int ret = vprintf(fmt, ap);
+    va_end(ap);
+    return ret;
+}
+
+int puts(const char *s) {
+    if (!s) return 0;
+    size_t len = strlen(s);
+    uint32_t written = 0;
+    ps3_sys_tty_write(0, s, (uint32_t)len, &written);
+    ps3_sys_tty_write(0, "\n", 1, &written);
+    return (int)len + 1;
+}
+
+int putchar(int c) {
+    char ch = (char)c;
+    uint32_t written = 0;
+    ps3_sys_tty_write(0, &ch, 1, &written);
+    return c;
+}
+
+void abort(void) {
+    ps3_sys_process_exit(1);
+    while (1) { asm volatile("nop"); }
+}
+
+void exit(int status) {
+    ps3_sys_process_exit(status);
+    while (1) { asm volatile("nop"); }
+}
+
+void _exit(int status) {
+    ps3_sys_process_exit(status);
+    while (1) { asm volatile("nop"); }
+}
+
+FILE *fopen(const char *pathname, const char *mode) {
+    (void)pathname; (void)mode;
+    return NULL;
+}
+
+int fclose(FILE *stream) {
+    (void)stream;
+    return 0;
+}
+
+int fseek(FILE *stream, long offset, int whence) {
+    (void)stream; (void)offset; (void)whence;
+    return -1;
+}
+
+long ftell(FILE *stream) {
+    (void)stream;
+    return -1;
+}
+
+
+/* ── Static Memory Allocator for GameOS (Bypasses Linux mmap/brk) ─── */
+#define HEAP_POOL_SIZE  (2 * 1024 * 1024)  /* 2 MB heap pool in BSS */
+static uint8_t s_heap_pool[HEAP_POOL_SIZE] __attribute__((aligned(16)));
+static size_t  s_heap_used = 0;
+
+void *malloc(size_t size) {
+    if (size == 0) return NULL;
+    /* 16-byte alignment required by Cell PPE */
+    size_t aligned_size = (size + 15) & ~((size_t)15);
+    if (s_heap_used + aligned_size > HEAP_POOL_SIZE) {
+        s_heap_used = 0;
+    }
+    void *ptr = &s_heap_pool[s_heap_used];
+    s_heap_used += aligned_size;
+    return ptr;
+}
+
+void free(void *ptr) {
+    (void)ptr;
+}
+
+void *calloc(size_t nmemb, size_t size) {
+    size_t total = nmemb * size;
+    void *p = malloc(total);
+    if (p) memset(p, 0, total);
+    return p;
+}
+
+void *realloc(void *ptr, size_t size) {
+    if (!ptr) return malloc(size);
+    if (size == 0) return NULL;
+    void *new_p = malloc(size);
+    if (new_p) {
+        memcpy(new_p, ptr, size);
+    }
+    return new_p;
+}
+
+/* ── GameOS PPU Thread Entry Point ───────────────────────────────── */
+extern int main(int argc, char *argv[]);
+
+void ps3_main_entry(void) {
+    int ret = main(0, NULL);
+    ps3_sys_process_exit(ret);
+}
+
