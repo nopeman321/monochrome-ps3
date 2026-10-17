@@ -27,34 +27,39 @@ TrackMetadata   *app_get_current_track(void) { return &g_now; }
 
 /* ── Lifecycle ───────────────────────────────────────────────────── */
 int app_init(void) {
-    printf("[PPE] ══════════════════════════════════════════\n");
-    printf("[PPE]  MONOCHROME · PS3 · Cell B.E. v%s\n", APP_VERSION);
-    printf("[PPE] ══════════════════════════════════════════\n");
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    platform_init();
 
-    /* Statically assigned ring buffer in XDR DRAM BSS — 100% reliable */
+    printf("[SYS] ══════════════════════════════════════════\n");
+    printf("[SYS]  MONOCHROME · Music Client v%s\n", APP_VERSION);
+    printf("[SYS]  Target Architecture: %s\n", PLATFORM_NAME);
+    printf("[SYS] ══════════════════════════════════════════\n");
+
+    /* Statically assigned ring buffer in memory — 100% reliable */
     g_ring.capacity = STREAM_RING_BUFFER_SIZE;
     g_ring.buffer   = s_ring_storage;
     g_ring.write_pos  = 0;
     g_ring.read_pos   = 0;
     g_ring.stream_eof = false;
-    printf("[PPE] Ring buffer: %zu MB @ %p\n",
+    printf("[SYS] Ring buffer: %zu MB @ %p\n",
            g_ring.capacity / (1024*1024), (void *)g_ring.buffer);
 
-    /* Network (sys_net + mbedTLS) */
+    /* Network subsystem */
     if (net_init() != 0) {
-        printf("[PPE] FATAL: net_init failed\n");
+        printf("[SYS] FATAL: net_init failed\n");
         return -1;
     }
 
-    /* Audio (sys_audio_out + SPU task queue) */
+    /* Audio subsystem */
     if (audio_init(&g_ring) != 0) {
-        printf("[PPE] FATAL: audio_init failed\n");
+        printf("[SYS] FATAL: audio_init failed\n");
         return -1;
     }
 
-    /* RSX graphics context */
+    /* Graphics / UI context */
     if (gfx_init() != 0) {
-        printf("[PPE] FATAL: gfx_init failed\n");
+        printf("[SYS] FATAL: gfx_init failed\n");
         return -1;
     }
 
@@ -63,14 +68,15 @@ int app_init(void) {
 }
 
 void app_shutdown(void) {
-    printf("[PPE] Shutting down subsystems…\n");
+    printf("[SYS] Shutting down subsystems…\n");
     net_stop_stream();
     audio_shutdown();
     net_shutdown();
     gfx_shutdown();
+    platform_shutdown();
 
     g_ring.buffer = NULL;
-    printf("[PPE] Clean exit.\n");
+    printf("[SYS] Clean exit completed.\n");
 }
 
 /* ── Main loop ───────────────────────────────────────────────────── */
@@ -82,17 +88,17 @@ int main(int argc, char *argv[]) {
     }
 
     while (g_running) {
-        /* 1 ── Read DualShock 3 and advance state machine */
+        /* 1 ── Read input (DualShock 3 on PS3 / Keyboard on PC) */
         g_state = pad_update(g_state);
 
-        /* 2 ── Pump decoded audio to sys_audio_out */
+        /* 2 ── Pump decoded audio to hardware DAC (waveOut / sys_audio_out) */
         audio_tick();
 
         /* 3 ── Render frame and VSync-flip */
         gfx_render(g_state, &g_now, audio_get_state(), g_progress);
 
-        /* 4 ── 60 FPS VSync pacing (yield PPU core to avoid 100% CPU lock) */
-        usleep(16666);
+        /* 4 ── 60 FPS pacing */
+        platform_sleep_ms(16);
     }
 
     app_shutdown();

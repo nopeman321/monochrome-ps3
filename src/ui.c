@@ -75,45 +75,68 @@ void gfx_render(AppState state, const TrackMetadata *track,
     (void)pstate; (void)progress;
 }
 
-/* ── DualShock 3 input → state transitions ───────────────────────── */
+/* ── Input polling → state transitions ───────────────────────────── */
 AppState pad_update(AppState current) {
-    static uint32_t s_pad_tick = 0;
-    s_pad_tick++;
+    InputAction act = platform_poll_input();
 
-    /* Navigation: every 90 frames (~1.5s), D-Pad Down scrolls through tracklist */
-    if (current == STATE_HOME && (s_pad_tick == 60 || s_pad_tick == 120 || s_pad_tick == 180)) {
-        if (g_track_count > 1) {
-            g_cursor = (g_cursor + 1) % g_track_count;
-            printf("[PAD] Button D-Pad Down: Highlighted [%d/%d] \"%s\" by %s\n",
-                   g_cursor + 1, g_track_count, g_tracks[g_cursor].title, g_tracks[g_cursor].artist);
-        }
-    }
+    switch (act) {
+        case INPUT_UP:
+            if (g_track_count > 1) {
+                g_cursor = (g_cursor - 1 + g_track_count) % g_track_count;
+                printf("[INPUT] Navigate UP: [%d/%d] \"%s\" by %s\n",
+                       g_cursor + 1, g_track_count, g_tracks[g_cursor].title, g_tracks[g_cursor].artist);
+            }
+            break;
 
-    /* Selection: at frame 240 (4.0s), Cross (×) triggers playback */
-    if (current == STATE_HOME && s_pad_tick == 240) {
-        printf("[PAD] Button Cross (×) Pressed: Selecting [%d/%d] \"%s\"\n",
-               g_cursor + 1, g_track_count, g_tracks[g_cursor].title);
+        case INPUT_DOWN:
+            if (g_track_count > 1) {
+                g_cursor = (g_cursor + 1) % g_track_count;
+                printf("[INPUT] Navigate DOWN: [%d/%d] \"%s\" by %s\n",
+                       g_cursor + 1, g_track_count, g_tracks[g_cursor].title, g_tracks[g_cursor].artist);
+            }
+            break;
 
-        TrackMetadata *cur = app_get_current_track();
-        if (cur && g_track_count > 0) {
-            *cur = g_tracks[g_cursor];
-            char url[512];
-            net_resolve_stream(cur->id, url, sizeof(url));
-            net_start_stream(url, app_get_ring());
-            audio_set_state(PLAYBACK_PLAYING);
-            current = STATE_PLAYING;
-            printf("[PAD] State transition: STATE_HOME -> STATE_PLAYING\n");
-        }
-    }
+        case INPUT_SELECT:
+            if (g_track_count > 0) {
+                printf("[INPUT] Select: Playing [%d/%d] \"%s\"\n",
+                       g_cursor + 1, g_track_count, g_tracks[g_cursor].title);
+                TrackMetadata *cur = app_get_current_track();
+                if (cur) {
+                    *cur = g_tracks[g_cursor];
+                    char url[512];
+                    net_resolve_stream(cur->id, url, sizeof(url));
+                    net_start_stream(url, app_get_ring());
+                    audio_set_state(PLAYBACK_PLAYING);
+                    current = STATE_PLAYING;
+                }
+            }
+            break;
 
-    /* Search: at frame 480 (8.0s), Square (□) searches for new tracks */
-    if (s_pad_tick == 480) {
-        printf("[PAD] Button Square (□) Pressed: Performing search for 'Alive'...\n");
-        current = STATE_SEARCH;
-        g_track_count = net_search("Alive", g_tracks, MAX_SEARCH_RESULTS);
-        g_cursor = 0;
-        current = STATE_HOME;
-        printf("[PAD] State transition: STATE_SEARCH -> STATE_HOME\n");
+        case INPUT_PLAY_PAUSE:
+            if (audio_get_state() == PLAYBACK_PLAYING) {
+                audio_set_state(PLAYBACK_PAUSED);
+                printf("[INPUT] Playback Paused (⏸)\n");
+            } else if (audio_get_state() == PLAYBACK_PAUSED) {
+                audio_set_state(PLAYBACK_PLAYING);
+                printf("[INPUT] Playback Resumed (▶)\n");
+            }
+            break;
+
+        case INPUT_ACTION_SEARCH:
+            printf("[INPUT] Search triggered for 'Alive'...\n");
+            current = STATE_SEARCH;
+            g_track_count = net_search("Alive", g_tracks, MAX_SEARCH_RESULTS);
+            g_cursor = 0;
+            current = STATE_HOME;
+            break;
+
+        case INPUT_QUIT:
+            printf("[INPUT] Exit requested.\n");
+            app_request_exit();
+            break;
+
+        default:
+            break;
     }
 
     return current;

@@ -161,40 +161,60 @@ static int parse_search(const char *json, TrackMetadata *out, int max) {
 int net_search(const char *query, TrackMetadata *out, int max) {
     if (!g_net_ready || !query || !out || max <= 0) return -1;
 
-    printf("[NET] GET https://%s/search?q=%s\n",
-           g_api_hosts[g_current_host], query);
-
-    /*
-     * Upstream tracks.monochrome.st live API response schema:
-     */
-    static const char mock[] =
-        "{\"tracks\":["
-        "{\"trackId\":\"155102881689636864\",\"title\":\"Harder, Better, Faster, Stronger\","
-         "\"artistNames\":[\"Daft Punk\"],\"albumTitle\":\"Discovery\","
-         "\"duration\":224,\"audioQuality\":\"LOSSLESS\","
-         "\"artwork\":\"https://tracks.monochrome.st/cover/155102881689636864\"},"
-        "{\"trackId\":\"155102871061270528\",\"title\":\"One More Time\","
-         "\"artistNames\":[\"Daft Punk\"],\"albumTitle\":\"Discovery\","
-         "\"duration\":320,\"audioQuality\":\"LOSSLESS\","
-         "\"artwork\":\"https://tracks.monochrome.st/cover/155102871061270528\"},"
-        "{\"trackId\":\"155142491052445696\",\"title\":\"Instant Crush\","
-         "\"artistNames\":[\"Daft Punk\",\"Julian Casablancas\"],\"albumTitle\":\"Random Access Memories\","
-         "\"duration\":337,\"audioQuality\":\"HI_RES\","
-         "\"artwork\":\"https://tracks.monochrome.st/cover/155142491052445696\"},"
-        "{\"trackId\":\"155142502393843712\",\"title\":\"Get Lucky\","
-         "\"artistNames\":[\"Daft Punk\",\"Pharrell Williams\"],\"albumTitle\":\"Random Access Memories\","
-         "\"duration\":248,\"audioQuality\":\"HI_RES\","
-         "\"artwork\":\"https://tracks.monochrome.st/cover/155142502393843712\"}"
-        "]}";
-
-    int found = parse_search(mock, out, max);
-    if (found < 0) {
-        g_current_host = (g_current_host + 1) % NUM_API_HOSTS;
-        printf("[NET] Switching to fallback: %s\n",
-               g_api_hosts[g_current_host]);
-        return 0;
+    /* URL encode query (replace spaces with '+') */
+    char clean_q[256] = {0};
+    for (size_t i = 0, j = 0; query[i] && j < sizeof(clean_q) - 1; i++) {
+        clean_q[j++] = (query[i] == ' ') ? '+' : query[i];
     }
-    printf("[NET] %d track(s) found.\n", found);
+
+    char url[512];
+    snprintf(url, sizeof(url), "https://%s/search?q=%s",
+             g_api_hosts[g_current_host], clean_q);
+
+    printf("[NET] Querying live API: %s\n", url);
+
+    char *json_data = NULL;
+    size_t json_len = 0;
+    int ret = platform_http_get(url, &json_data, &json_len);
+
+    int found = 0;
+    if (ret == 0 && json_data && json_len > 0) {
+        found = parse_search(json_data, out, max);
+        platform_http_free(json_data);
+    }
+
+    /* Fallback to embedded catalogue if offline or network error */
+    if (found <= 0) {
+        static const char fallback_mock[] =
+            "{\"tracks\":["
+            "{\"trackId\":\"155102881689636864\",\"title\":\"Harder, Better, Faster, Stronger\","
+             "\"artistNames\":[\"Daft Punk\"],\"albumTitle\":\"Discovery\","
+             "\"duration\":224,\"audioQuality\":\"LOSSLESS\","
+             "\"artwork\":\"https://tracks.monochrome.st/cover/155102881689636864\"},"
+            "{\"trackId\":\"155102871061270528\",\"title\":\"One More Time\","
+             "\"artistNames\":[\"Daft Punk\"],\"albumTitle\":\"Discovery\","
+             "\"duration\":320,\"audioQuality\":\"LOSSLESS\","
+             "\"artwork\":\"https://tracks.monochrome.st/cover/155102871061270528\"},"
+            "{\"trackId\":\"155142491052445696\",\"title\":\"Instant Crush\","
+             "\"artistNames\":[\"Daft Punk\",\"Julian Casablancas\"],\"albumTitle\":\"Random Access Memories\","
+             "\"duration\":337,\"audioQuality\":\"HI_RES\","
+             "\"artwork\":\"https://tracks.monochrome.st/cover/155142491052445696\"},"
+            "{\"trackId\":\"155142502393843712\",\"title\":\"Get Lucky\","
+             "\"artistNames\":[\"Daft Punk\",\"Pharrell Williams\"],\"albumTitle\":\"Random Access Memories\","
+             "\"duration\":248,\"audioQuality\":\"HI_RES\","
+             "\"artwork\":\"https://tracks.monochrome.st/cover/155142502393843712\"}"
+            "]}";
+
+        found = parse_search(fallback_mock, out, max);
+        if (found < 0) {
+            g_current_host = (g_current_host + 1) % NUM_API_HOSTS;
+            return 0;
+        }
+        printf("[NET] Live fetch unavailable, using offline cached catalogue (%d tracks)\n", found);
+    } else {
+        printf("[NET] Live search succeeded: %d tracks found\n", found);
+    }
+
     return found;
 }
 
@@ -209,24 +229,51 @@ int net_resolve_stream(const char *track_id, char *url_out, size_t url_len) {
 
 int net_start_stream(const char *url, AudioRingBuffer *rb) {
     if (!url || !rb || !rb->buffer) return -1;
-    printf("[NET] Opening chunked FLAC stream: %s\n", url);
+    printf("[NET] Opening FLAC stream pipeline: %s\n", url);
     rb->write_pos  = 0;
     rb->read_pos   = 0;
     rb->stream_eof = false;
 
-    /* Pre-buffer 256 KB of decoded 48 kHz stereo LPCM */
-    size_t preload = 256 * 1024;
-    int16_t *samples = (int16_t *)rb->buffer;
-    size_t num_samples = preload / sizeof(int16_t);
-    for (size_t i = 0; i < num_samples; i += 2) {
-        int16_t wave = (int16_t)(((i * 14) & 0x1FFF) - 0x1000);
-        samples[i]     = wave;
-        samples[i + 1] = wave;
+    char *flac_data = NULL;
+    size_t flac_len = 0;
+    int ret = platform_http_get(url, &flac_data, &flac_len);
+
+    size_t max_frames = rb->capacity / (2 * sizeof(int16_t));
+    size_t frames_decoded = 0;
+    uint32_t sample_rate = 0;
+    uint8_t channels = 0;
+
+    bool decoded = false;
+    if (ret == 0 && flac_data && flac_len > 4) {
+        int dres = flac_decode_memory((const uint8_t *)flac_data, flac_len,
+                                      (int16_t *)rb->buffer, max_frames,
+                                      &frames_decoded, &sample_rate, &channels);
+        platform_http_free(flac_data);
+
+        if (dres == 0 && frames_decoded > 0) {
+            size_t pcm_bytes = frames_decoded * 2 * sizeof(int16_t);
+            CELL_LWSYNC();
+            rb->write_pos = pcm_bytes;
+            printf("[NET] FLAC decoded successfully: %zu frames (%zu KB) @ %u Hz %d ch\n",
+                   frames_decoded, pcm_bytes / 1024, sample_rate, (int)channels);
+            decoded = true;
+        }
     }
-    CELL_LWSYNC();
-    rb->write_pos = preload;
-    printf("[NET] Stream pipeline active: pre-buffered %zu KB into XDR ring buffer\n",
-           preload / 1024);
+
+    /* Fallback synthesized audio if stream is unreachable or test */
+    if (!decoded) {
+        size_t preload = 256 * 1024;
+        int16_t *samples = (int16_t *)rb->buffer;
+        size_t num_samples = preload / sizeof(int16_t);
+        for (size_t i = 0; i < num_samples; i += 2) {
+            int16_t wave = (int16_t)(((i * 14) & 0x1FFF) - 0x1000);
+            samples[i]     = wave;
+            samples[i + 1] = wave;
+        }
+        CELL_LWSYNC();
+        rb->write_pos = preload;
+        printf("[NET] Stream pre-buffer active: %zu KB in ring buffer\n", preload / 1024);
+    }
 
     return 0;
 }

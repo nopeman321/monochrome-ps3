@@ -30,7 +30,9 @@ int audio_init(AudioRingBuffer *rb) {
     g_rb = rb;
     g_pstate = PLAYBACK_STOPPED;
 
-    printf("[AUDIO] sys_audio_out configured: 48 kHz / 16-bit / stereo\n");
+    platform_audio_init(48000, 2);
+
+    printf("[AUDIO] sys_audio_out / DAC configured: 48 kHz / 16-bit / stereo\n");
     printf("[AUDIO] Block size: %d frames (%zu bytes)\n",
            AUDIO_BLOCK_FRAMES, AUDIO_BLOCK_BYTES);
     return 0;
@@ -38,6 +40,7 @@ int audio_init(AudioRingBuffer *rb) {
 
 void audio_shutdown(void) {
     g_pstate = PLAYBACK_STOPPED;
+    platform_audio_shutdown();
     g_rb = NULL;
     printf("[AUDIO] Shut down.\n");
 }
@@ -119,14 +122,9 @@ void audio_tick(void) {
     CELL_LWSYNC();
     g_rb->read_pos = r;
 
+    /* Output audio block to hardware (waveOut on PC / sys_audio_out on PS3) */
+    platform_audio_write(g_pcm_block, AUDIO_BLOCK_FRAMES);
 
-    /*
-     * On real PS3:
-     *   sysAudioOutBlock(port, g_pcm_block);
-     *
-     * This call blocks until the hardware consumes the previous block,
-     * giving us natural 48 kHz pacing (~5.33 ms per 256-frame block).
-     */
     static uint32_t s_audio_blocks = 0;
     s_audio_blocks++;
     if (s_audio_blocks % 60 == 0) {

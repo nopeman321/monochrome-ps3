@@ -87,7 +87,16 @@ typedef struct {
 } AudioRingBuffer;
 
 /* Cell B.E. lightweight memory barrier for weakly-ordered PowerPC memory */
-#define CELL_LWSYNC() asm volatile("lwsync" ::: "memory")
+#if defined(__powerpc__)
+    #define CELL_LWSYNC() asm volatile("lwsync" ::: "memory")
+#elif defined(_MSC_VER)
+    #include <windows.h>
+    #define CELL_LWSYNC() MemoryBarrier()
+#else
+    #define CELL_LWSYNC() __atomic_thread_fence(__ATOMIC_SEQ_CST)
+#endif
+
+#include "platform.h"
 
 /* Ring buffer helpers (lock-free single-producer single-consumer) */
 static inline size_t ring_available(const AudioRingBuffer *rb) {
@@ -99,6 +108,10 @@ static inline size_t ring_free(const AudioRingBuffer *rb) {
     return rb->capacity - ring_available(rb) - 1;
 }
 
+/* ── FLAC Decoder ────────────────────────────────────────────────── */
+int flac_decode_memory(const uint8_t *flac_data, size_t flac_size,
+                       int16_t *pcm_out, size_t max_pcm_frames,
+                       size_t *frames_decoded, uint32_t *sample_rate, uint8_t *channels);
 
 /* ── System lifecycle ────────────────────────────────────────────── */
 int  app_init(void);
