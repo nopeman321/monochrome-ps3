@@ -30,6 +30,10 @@ tools/norsx/
 test_*
 entry_stub.s
 
+# Python cache
+__pycache__/
+*.pyc
+
 # OS and Editor files
 .DS_Store
 Thumbs.db
