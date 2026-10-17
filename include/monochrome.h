@@ -99,6 +99,8 @@ static inline size_t ring_free(const AudioRingBuffer *rb) {
 int  app_init(void);
 void app_shutdown(void);
 void app_request_exit(void);
+AudioRingBuffer *app_get_ring(void);
+TrackMetadata   *app_get_current_track(void);
 
 /* ── Network subsystem (PPE Thread 1) ────────────────────────────── */
 int  net_init(void);

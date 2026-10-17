@@ -55,55 +55,67 @@ void gfx_render(AppState state, const TrackMetadata *track,
     static uint32_t frame_count = 0;
     frame_count++;
 
-    if (frame_count == 1 || frame_count % 60 == 0) {
-        const char *tname = (g_track_count > 0) ? g_tracks[g_cursor].title : "None";
-        const char *aname = (g_track_count > 0) ? g_tracks[g_cursor].artist : "None";
-        printf("[RSX] Frame %5u (60.0 FPS) | State: %d | Selected [%d/%d]: %s - %s\n",
-               frame_count, (int)state, g_cursor + 1, g_track_count, tname, aname);
-        fflush(stdout);
+    if (state == STATE_PLAYING && track && track->title[0] != '\0') {
+        if (frame_count % 60 == 0) {
+            AudioRingBuffer *rb = app_get_ring();
+            size_t avail = rb ? ring_available(rb) : 0;
+            printf("[NOW PLAYING] ▶ %s — %s [%s] | DAC: %u Hz %d-bit | XDR Buf: %zu KB\n",
+                   track->title, track->artist, track->album,
+                   track->sample_rate, (int)track->bit_depth, avail / 1024);
+        }
+    } else {
+        if (frame_count == 1 || frame_count % 60 == 0) {
+            const char *tname = (g_track_count > 0) ? g_tracks[g_cursor].title : "None";
+            const char *aname = (g_track_count > 0) ? g_tracks[g_cursor].artist : "None";
+            printf("[RSX] Frame %5u (60.0 FPS) | State: %d | Highlight [%d/%d]: %s - %s\n",
+                   frame_count, (int)state, g_cursor + 1, g_track_count, tname, aname);
+        }
     }
 
-    /* Simulate UI navigation every 3 seconds (180 frames) */
-    if (frame_count % 180 == 0 && g_track_count > 1) {
-        g_cursor = (g_cursor + 1) % g_track_count;
-        printf("[PAD] Virtual D-Pad Down -> Selected: %s - %s\n",
-               g_tracks[g_cursor].title, g_tracks[g_cursor].artist);
-        fflush(stdout);
-    }
-
-    switch (state) {
-    case STATE_SPLASH:
-        break;
-    case STATE_HOME:
-        break;
-    case STATE_SEARCH:
-        break;
-    case STATE_PLAYING:
-        break;
-    case STATE_ALBUM:
-    case STATE_PLAYLIST:
-    case STATE_SETTINGS:
-        break;
-    }
-
-    (void)track; (void)pstate; (void)progress;
+    (void)pstate; (void)progress;
 }
 
 /* ── DualShock 3 input → state transitions ───────────────────────── */
 AppState pad_update(AppState current) {
-    /*
-     * Real PS3: ioPadGetData(0, &data)
-     *
-     *   D-Pad Up    → g_cursor--  (clamp 0)
-     *   D-Pad Down  → g_cursor++  (clamp g_track_count-1)
-     *   Cross (×)   → select track → start stream → STATE_PLAYING
-     *   Square (□)  → open OSK search → STATE_SEARCH
-     *   Triangle (△) → toggle full-screen album art
-     *   Circle (○)  → back to previous state
-     *   L1          → previous track
-     *   R1          → next track
-     *   Start       → STATE_SETTINGS
-     *   PS button   → app_request_exit()
-     */
+    static uint32_t s_pad_tick = 0;
+    s_pad_tick++;
+
+    /* Navigation: every 90 frames (~1.5s), D-Pad Down scrolls through tracklist */
+    if (current == STATE_HOME && (s_pad_tick == 60 || s_pad_tick == 120 || s_pad_tick == 180)) {
+        if (g_track_count > 1) {
+            g_cursor = (g_cursor + 1) % g_track_count;
+            printf("[PAD] Button D-Pad Down: Highlighted [%d/%d] \"%s\" by %s\n",
+                   g_cursor + 1, g_track_count, g_tracks[g_cursor].title, g_tracks[g_cursor].artist);
+        }
+    }
+
+    /* Selection: at frame 240 (4.0s), Cross (×) triggers playback */
+    if (current == STATE_HOME && s_pad_tick == 240) {
+        printf("[PAD] Button Cross (×) Pressed: Selecting [%d/%d] \"%s\"\n",
+               g_cursor + 1, g_track_count, g_tracks[g_cursor].title);
+
+        TrackMetadata *cur = app_get_current_track();
+        if (cur && g_track_count > 0) {
+            *cur = g_tracks[g_cursor];
+            char url[512];
+            net_resolve_stream(cur->id, url, sizeof(url));
+            net_start_stream(url, app_get_ring());
+            audio_set_state(PLAYBACK_PLAYING);
+            current = STATE_PLAYING;
+            printf("[PAD] State transition: STATE_HOME -> STATE_PLAYING\n");
+        }
+    }
+
+    /* Search: at frame 480 (8.0s), Square (□) searches for new tracks */
+    if (s_pad_tick == 480) {
+        printf("[PAD] Button Square (□) Pressed: Performing search for 'Alive'...\n");
+        current = STATE_SEARCH;
+        g_track_count = net_search("Alive", g_tracks, MAX_SEARCH_RESULTS);
+        g_cursor = 0;
+        current = STATE_HOME;
+        printf("[PAD] State transition: STATE_SEARCH -> STATE_HOME\n");
+    }
+
     return current;
 }
+

@@ -118,4 +118,11 @@ void audio_tick(void) {
      * This call blocks until the hardware consumes the previous block,
      * giving us natural 48 kHz pacing (~5.33 ms per 256-frame block).
      */
+    static uint32_t s_audio_blocks = 0;
+    s_audio_blocks++;
+    if (s_audio_blocks % 60 == 0) {
+        printf("[AUDIO] LPCM DAC 48 kHz stereo active | Blocks: %u | Buffer: %zu KB\n",
+               s_audio_blocks, avail / 1024);
+    }
 }
+

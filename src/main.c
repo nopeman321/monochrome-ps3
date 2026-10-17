@@ -22,6 +22,8 @@ static uint8_t         s_ring_storage[STREAM_RING_BUFFER_SIZE] __attribute__((al
 static float          g_progress = 0.0f;
 
 void app_request_exit(void) { g_running = false; }
+AudioRingBuffer *app_get_ring(void) { return &g_ring; }
+TrackMetadata   *app_get_current_track(void) { return &g_now; }
 
 /* ── Lifecycle ───────────────────────────────────────────────────── */
 int app_init(void) {
