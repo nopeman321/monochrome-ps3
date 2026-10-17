@@ -103,13 +103,22 @@ void audio_tick(void) {
         return;  /* underrun — wait for net thread to fill buffer */
     }
 
-    /* Read one block from ring buffer into local PCM array */
+    /* Fast contiguous read with wraparound handling */
     size_t r = g_rb->read_pos;
-    for (size_t i = 0; i < AUDIO_BLOCK_BYTES; i++) {
-        ((uint8_t *)g_pcm_block)[i] = g_rb->buffer[r];
-        r = (r + 1) % g_rb->capacity;
+    size_t chunk1 = g_rb->capacity - r;
+    if (chunk1 >= AUDIO_BLOCK_BYTES) {
+        memcpy(g_pcm_block, &g_rb->buffer[r], AUDIO_BLOCK_BYTES);
+        r += AUDIO_BLOCK_BYTES;
+        if (r >= g_rb->capacity) r = 0;
+    } else {
+        memcpy(g_pcm_block, &g_rb->buffer[r], chunk1);
+        size_t chunk2 = AUDIO_BLOCK_BYTES - chunk1;
+        memcpy(((uint8_t *)g_pcm_block) + chunk1, &g_rb->buffer[0], chunk2);
+        r = chunk2;
     }
+    CELL_LWSYNC();
     g_rb->read_pos = r;
+
 
     /*
      * On real PS3:

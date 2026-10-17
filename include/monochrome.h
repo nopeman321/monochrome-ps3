@@ -86,14 +86,19 @@ typedef struct {
     volatile bool   stream_eof;
 } AudioRingBuffer;
 
+/* Cell B.E. lightweight memory barrier for weakly-ordered PowerPC memory */
+#define CELL_LWSYNC() asm volatile("lwsync" ::: "memory")
+
 /* Ring buffer helpers (lock-free single-producer single-consumer) */
 static inline size_t ring_available(const AudioRingBuffer *rb) {
+    CELL_LWSYNC();
     size_t w = rb->write_pos, r = rb->read_pos;
     return (w >= r) ? (w - r) : (rb->capacity - r + w);
 }
 static inline size_t ring_free(const AudioRingBuffer *rb) {
     return rb->capacity - ring_available(rb) - 1;
 }
+
 
 /* ── System lifecycle ────────────────────────────────────────────── */
 int  app_init(void);

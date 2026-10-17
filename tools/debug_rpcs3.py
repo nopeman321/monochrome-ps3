@@ -58,7 +58,7 @@ def build_project():
 
 def main():
     parser = argparse.ArgumentParser(description="Monochrome PS3 RPCS3 Live Debugger")
-    parser.add_argument("--duration", "-d", type=float, default=10.0, help="Duration to run emulation in seconds (default: 10s)")
+    parser.add_argument("--duration", "-d", type=float, default=25.0, help="Duration to run emulation in seconds (default: 25s)")
     parser.add_argument("--no-build", action="store_true", help="Skip compilation before launch")
     args = parser.parse_args()
 

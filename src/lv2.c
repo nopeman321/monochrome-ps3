@@ -26,7 +26,7 @@ static inline int64_t lv2_sc4(uint64_t num, uint64_t r3, uint64_t r4, uint64_t r
         "sc\n"
         : "+r"(_r3)
         : "r"(_r11), "r"(_r4), "r"(_r5), "r"(_r6)
-        : "r0", "r2", "r7", "r8", "r9", "r10", "r12", "lr", "ctr", "xer", "cr0", "cr1", "cr5", "cr6", "cr7", "memory"
+        : "r0", "r7", "r8", "r9", "r10", "r12", "lr", "ctr", "xer", "cr0", "cr1", "cr5", "cr6", "cr7", "memory"
     );
     return (int64_t)_r3;
 }
@@ -38,10 +38,11 @@ static inline int64_t lv2_sc1(uint64_t num, uint64_t r3) {
         "sc\n"
         : "+r"(_r3)
         : "r"(_r11)
-        : "r0", "r2", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r12", "lr", "ctr", "xer", "cr0", "cr1", "cr5", "cr6", "cr7", "memory"
+        : "r0", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r12", "lr", "ctr", "xer", "cr0", "cr1", "cr5", "cr6", "cr7", "memory"
     );
     return (int64_t)_r3;
 }
+
 
 int ps3_sys_tty_write(int ch, const void *buf, uint32_t len, uint32_t *pwdata) {
     return (int)lv2_sc4(403, (uint64_t)ch, (uint64_t)buf, (uint64_t)len, (uint64_t)pwdata);
@@ -86,7 +87,7 @@ unsigned int sleep(unsigned int seconds) {
 #include <stdarg.h>
 
 int vprintf(const char *fmt, va_list ap) {
-    char buf[1024];
+    char buf[4096];
     int len = vsnprintf(buf, sizeof(buf), fmt, ap);
     if (len > 0) {
         uint32_t written = 0;
@@ -156,7 +157,7 @@ long ftell(FILE *stream) {
 
 
 /* ── Static Memory Allocator for GameOS (Bypasses Linux mmap/brk) ─── */
-#define HEAP_POOL_SIZE  (2 * 1024 * 1024)  /* 2 MB heap pool in BSS */
+#define HEAP_POOL_SIZE  (16 * 1024 * 1024)  /* 16 MB heap pool in BSS */
 static uint8_t s_heap_pool[HEAP_POOL_SIZE] __attribute__((aligned(16)));
 static size_t  s_heap_used = 0;
 
@@ -165,12 +166,13 @@ void *malloc(size_t size) {
     /* 16-byte alignment required by Cell PPE */
     size_t aligned_size = (size + 15) & ~((size_t)15);
     if (s_heap_used + aligned_size > HEAP_POOL_SIZE) {
-        s_heap_used = 0;
+        return NULL;
     }
     void *ptr = &s_heap_pool[s_heap_used];
     s_heap_used += aligned_size;
     return ptr;
 }
+
 
 void free(void *ptr) {
     (void)ptr;

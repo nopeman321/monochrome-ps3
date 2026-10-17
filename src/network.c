@@ -223,9 +223,11 @@ int net_start_stream(const char *url, AudioRingBuffer *rb) {
         samples[i]     = wave;
         samples[i + 1] = wave;
     }
+    CELL_LWSYNC();
     rb->write_pos = preload;
     printf("[NET] Stream pipeline active: pre-buffered %zu KB into XDR ring buffer\n",
            preload / 1024);
+
     return 0;
 }
 

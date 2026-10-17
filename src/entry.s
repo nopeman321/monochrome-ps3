@@ -14,6 +14,11 @@ ps3_entry_opd:
 .section .text, "ax"
 .globl _start_ps3
 _start_ps3:
+    # Explicitly guarantee r2 is loaded with .TOC. from OPD descriptor
+    lis 2, ps3_entry_opd@ha
+    addi 2, 2, ps3_entry_opd@l
+    lwz 2, 4(2)
+
     # Allocate initial 128-byte PowerPC ABI stack frame
     stdu 1, -128(1)
 
