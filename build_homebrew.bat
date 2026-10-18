@@ -36,8 +36,9 @@ if errorlevel 1 (
 )
 
 echo [DEPLOY] Updating RPCS3 virtual HDD...
-if exist "%SCRIPT_DIR%emulator\rpcs3\dev_hdd0\game\MCRM00001\USRDIR" (
-    copy /y "%SCRIPT_DIR%pkg_build\USRDIR\EBOOT.BIN" "%SCRIPT_DIR%emulator\rpcs3\dev_hdd0\game\MCRM00001\USRDIR\EBOOT.BIN" >nul
+if exist "%SCRIPT_DIR%emulator\rpcs3\dev_hdd0\game" (
+    if not exist "%SCRIPT_DIR%emulator\rpcs3\dev_hdd0\game\MCRM00001" mkdir "%SCRIPT_DIR%emulator\rpcs3\dev_hdd0\game\MCRM00001"
+    xcopy /E /I /Y "%SCRIPT_DIR%pkg_build" "%SCRIPT_DIR%emulator\rpcs3\dev_hdd0\game\MCRM00001" >nul
 )
 
 echo ========================================================

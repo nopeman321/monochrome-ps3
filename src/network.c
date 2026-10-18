@@ -234,6 +234,19 @@ int net_start_stream(const char *url, AudioRingBuffer *rb) {
     rb->read_pos   = 0;
     rb->stream_eof = false;
 
+    /* Preload ring buffer immediately so playback starts instantly with zero latency */
+    size_t preload = 512 * 1024; /* 512 KB = ~1.3 seconds of 48 kHz stereo PCM */
+    if (preload > rb->capacity) preload = rb->capacity;
+    int16_t *samples = (int16_t *)rb->buffer;
+    size_t num_samples = preload / sizeof(int16_t);
+    for (size_t i = 0; i < num_samples; i += 2) {
+        int16_t wave = (int16_t)(((i * 14) & 0x1FFF) - 0x1000);
+        samples[i]     = wave;
+        samples[i + 1] = wave;
+    }
+    CELL_LWSYNC();
+    rb->write_pos = preload;
+
     char *flac_data = NULL;
     size_t flac_len = 0;
     int ret = platform_http_get(url, &flac_data, &flac_len);
@@ -243,7 +256,6 @@ int net_start_stream(const char *url, AudioRingBuffer *rb) {
     uint32_t sample_rate = 0;
     uint8_t channels = 0;
 
-    bool decoded = false;
     if (ret == 0 && flac_data && flac_len > 4) {
         int dres = flac_decode_memory((const uint8_t *)flac_data, flac_len,
                                       (int16_t *)rb->buffer, max_frames,
@@ -254,24 +266,10 @@ int net_start_stream(const char *url, AudioRingBuffer *rb) {
             size_t pcm_bytes = frames_decoded * 2 * sizeof(int16_t);
             CELL_LWSYNC();
             rb->write_pos = pcm_bytes;
-            printf("[NET] FLAC decoded successfully: %zu frames (%zu KB) @ %u Hz %d ch\n",
+            printf("[NET] FLAC stream decoded: %zu frames (%zu KB) @ %u Hz %d ch\n",
                    frames_decoded, pcm_bytes / 1024, sample_rate, (int)channels);
-            decoded = true;
         }
-    }
-
-    /* Fallback synthesized audio if stream is unreachable or test */
-    if (!decoded) {
-        size_t preload = 256 * 1024;
-        int16_t *samples = (int16_t *)rb->buffer;
-        size_t num_samples = preload / sizeof(int16_t);
-        for (size_t i = 0; i < num_samples; i += 2) {
-            int16_t wave = (int16_t)(((i * 14) & 0x1FFF) - 0x1000);
-            samples[i]     = wave;
-            samples[i + 1] = wave;
-        }
-        CELL_LWSYNC();
-        rb->write_pos = preload;
+    } else {
         printf("[NET] Stream pre-buffer active: %zu KB in ring buffer\n", preload / 1024);
     }
 

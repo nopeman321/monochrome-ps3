@@ -94,8 +94,8 @@ def build_pkg(source_dir, output_pkg, content_id="UP0001-MCRM00001_00-MONOCHROME
         fn_bytes = rel_path.encode('utf-8') + b'\x00'
         fn_offset = entry_table_size + len(filename_table)
         filename_table.extend(fn_bytes)
-        # 4-byte align filename table entries
-        while len(filename_table) % 4 != 0:
+        # 16-byte align filename table entries (crucial for RPCS3 stream cipher block offset)
+        while len(filename_table) % 16 != 0:
             filename_table.append(0)
 
         if is_dir:

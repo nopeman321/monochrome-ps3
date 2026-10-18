@@ -152,6 +152,9 @@ int platform_init(void) {
         WINHTTP_NO_PROXY_BYPASS,
         0
     );
+    if (s_http_session) {
+        WinHttpSetTimeouts(s_http_session, 3000, 3000, 5000, 8000);
+    }
 
     return (s_http_session != NULL) ? 0 : -1;
 }
@@ -185,10 +188,19 @@ int platform_http_get(const char *url, char **response_out, size_t *size_out) {
         if (!s_http_session) return -1;
     }
 
-    /* Parse Host and Path */
+    /* Parse Host, Port, and Path */
     const char *p = url;
-    if (strncmp(p, "https://", 8) == 0) p += 8;
-    else if (strncmp(p, "http://", 7) == 0) p += 7;
+    bool is_https = true;
+    INTERNET_PORT default_port = INTERNET_DEFAULT_HTTPS_PORT;
+    if (strncmp(p, "https://", 8) == 0) {
+        p += 8;
+        is_https = true;
+        default_port = INTERNET_DEFAULT_HTTPS_PORT;
+    } else if (strncmp(p, "http://", 7) == 0) {
+        p += 7;
+        is_https = false;
+        default_port = INTERNET_DEFAULT_HTTP_PORT;
+    }
 
     char host[256] = {0};
     char path[1024] = {0};
@@ -198,10 +210,19 @@ int platform_http_get(const char *url, char **response_out, size_t *size_out) {
         size_t host_len = slash - p;
         if (host_len >= sizeof(host)) host_len = sizeof(host) - 1;
         memcpy(host, p, host_len);
+        host[host_len] = '\0';
         snprintf(path, sizeof(path), "%s", slash);
     } else {
         snprintf(host, sizeof(host), "%s", p);
         snprintf(path, sizeof(path), "/");
+    }
+
+    /* Check for custom port in host: e.g. 127.0.0.1:8080 */
+    INTERNET_PORT port = default_port;
+    char *colon = strchr(host, ':');
+    if (colon) {
+        *colon = '\0';
+        port = (INTERNET_PORT)atoi(colon + 1);
     }
 
     wchar_t wHost[256];
@@ -209,9 +230,10 @@ int platform_http_get(const char *url, char **response_out, size_t *size_out) {
     MultiByteToWideChar(CP_UTF8, 0, host, -1, wHost, 256);
     MultiByteToWideChar(CP_UTF8, 0, path, -1, wPath, 1024);
 
-    HINTERNET hConnect = WinHttpConnect(s_http_session, wHost, INTERNET_DEFAULT_HTTPS_PORT, 0);
+    HINTERNET hConnect = WinHttpConnect(s_http_session, wHost, port, 0);
     if (!hConnect) return -2;
 
+    DWORD flags = is_https ? WINHTTP_FLAG_SECURE : 0;
     HINTERNET hRequest = WinHttpOpenRequest(
         hConnect,
         L"GET",
@@ -219,11 +241,20 @@ int platform_http_get(const char *url, char **response_out, size_t *size_out) {
         NULL,
         WINHTTP_NO_REFERER,
         WINHTTP_DEFAULT_ACCEPT_TYPES,
-        WINHTTP_FLAG_SECURE
+        flags
     );
     if (!hRequest) {
         WinHttpCloseHandle(hConnect);
         return -3;
+    }
+
+    /* Ignore certificate errors for self-signed or proxy servers */
+    if (is_https) {
+        DWORD sec_flags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                          SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                          SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                          SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &sec_flags, sizeof(sec_flags));
     }
 
     BOOL bRes = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
