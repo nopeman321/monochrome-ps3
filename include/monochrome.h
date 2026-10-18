@@ -63,6 +63,20 @@ typedef enum {
     PLAYBACK_PAUSED
 } PlaybackState;
 
+/* ── Repeat & Shuffle Modes ──────────────────────────────────────── */
+typedef enum {
+    REPEAT_OFF = 0,
+    REPEAT_ALL = 1,
+    REPEAT_ONE = 2
+} RepeatMode;
+
+int  ui_get_repeat_mode(void);
+bool ui_get_shuffle_mode(void);
+void ui_set_repeat_mode(int mode);
+void ui_set_shuffle_mode(bool shuffle);
+void ui_track_next(void);
+void ui_track_prev(void);
+
 /* ── Track metadata ──────────────────────────────────────────────── */
 typedef struct TrackMetadata {
     char     id[64];

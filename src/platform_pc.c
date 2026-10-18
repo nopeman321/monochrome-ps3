@@ -102,6 +102,10 @@ static LRESULT CALLBACK PlatformWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
                     case VK_RETURN: s_queued_action = INPUT_SELECT; break;
                     case VK_SPACE:  s_queued_action = INPUT_PLAY_PAUSE; break;
                     case 'S':       s_queued_action = INPUT_ACTION_SEARCH; break;
+                    case 'N':       s_queued_action = INPUT_NEXT_TRACK; break;
+                    case 'P':       s_queued_action = INPUT_PREV_TRACK; break;
+                    case 'H':       s_queued_action = INPUT_SHUFFLE; break;
+                    case 'R':       s_queued_action = INPUT_REPEAT; break;
                     case VK_ESCAPE:
                     case 'Q':       s_queued_action = INPUT_QUIT; break;
                     default: break;
@@ -221,6 +225,80 @@ void platform_sleep_ms(uint32_t ms) {
 
 uint64_t platform_get_time_ms(void) {
     return (uint64_t)GetTickCount64();
+}
+
+/* ── File I/O & Persistent Cache Abstraction (Win32) ─────────────── */
+int platform_ensure_cache_dirs(void) {
+    CreateDirectoryA("cache", NULL);
+    CreateDirectoryA("cache\\tracks", NULL);
+    CreateDirectoryA("cache\\covers", NULL);
+    return 0;
+}
+
+bool platform_file_exists(const char *path) {
+    if (!path || !path[0]) return false;
+    DWORD attr = GetFileAttributesA(path);
+    return (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY));
+}
+
+PlatformFileHandle platform_file_open_read(const char *path) {
+    if (!path || !path[0]) return NULL;
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    return (PlatformFileHandle)h;
+}
+
+PlatformFileHandle platform_file_open_write(const char *path) {
+    if (!path || !path[0]) return NULL;
+    platform_ensure_cache_dirs();
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    return (PlatformFileHandle)h;
+}
+
+size_t platform_file_read(PlatformFileHandle handle, void *buffer, size_t bytes) {
+    if (!handle || !buffer || bytes == 0) return 0;
+    DWORD bytes_read = 0;
+    if (!ReadFile((HANDLE)handle, buffer, (DWORD)bytes, &bytes_read, NULL)) {
+        return 0;
+    }
+    return (size_t)bytes_read;
+}
+
+size_t platform_file_write(PlatformFileHandle handle, const void *buffer, size_t bytes) {
+    if (!handle || !buffer || bytes == 0) return 0;
+    DWORD bytes_written = 0;
+    if (!WriteFile((HANDLE)handle, buffer, (DWORD)bytes, &bytes_written, NULL)) {
+        return 0;
+    }
+    return (size_t)bytes_written;
+}
+
+void platform_file_close(PlatformFileHandle handle) {
+    if (handle) {
+        CloseHandle((HANDLE)handle);
+    }
+}
+
+size_t platform_file_size(const char *path) {
+    if (!path || !path[0]) return 0;
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    LARGE_INTEGER sz;
+    sz.QuadPart = 0;
+    GetFileSizeEx(h, &sz);
+    CloseHandle(h);
+    return (size_t)sz.QuadPart;
+}
+
+void platform_get_cache_track_path(const char *track_id, char *out_path, size_t max_len) {
+    if (!track_id || !out_path || max_len == 0) return;
+    snprintf(out_path, max_len, "cache\\tracks\\%s.flac", track_id);
+}
+
+void platform_get_cache_cover_path(const char *track_id, char *out_path, size_t max_len) {
+    if (!track_id || !out_path || max_len == 0) return;
+    snprintf(out_path, max_len, "cache\\covers\\%s.bin", track_id);
 }
 
 /* ── Thread Implementation ───────────────────────────────────────── */
@@ -857,6 +935,22 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     SetTextColor(s_mem_dc, RGB(180, 185, 200));
     TextOutA(s_mem_dc, 440, 665, cur_time_str, (int)strlen(cur_time_str));
 
+    /* Shuffle & Repeat Status Badges (x: 550 - 710, y: 665) */
+    int rep = ui_get_repeat_mode();
+    bool shuf = ui_get_shuffle_mode();
+
+    char shuf_badge[24];
+    snprintf(shuf_badge, sizeof(shuf_badge), "[SHUF: %s]", shuf ? "ON" : "OFF");
+    char rep_badge[24];
+    snprintf(rep_badge, sizeof(rep_badge), "[REP: %s]", (rep == 1) ? "ALL" : (rep == 2) ? "1" : "OFF");
+
+    SelectObject(s_mem_dc, s_font_mono);
+    SetTextColor(s_mem_dc, shuf ? RGB(100, 255, 180) : RGB(120, 125, 140));
+    TextOutA(s_mem_dc, 545, 665, shuf_badge, (int)strlen(shuf_badge));
+
+    SetTextColor(s_mem_dc, (rep != 0) ? RGB(120, 200, 255) : RGB(120, 125, 140));
+    TextOutA(s_mem_dc, 635, 665, rep_badge, (int)strlen(rep_badge));
+
     /* 16-Band Real-Time Audio Spectrum Visualizer (x: 725 - 917, y: 606 - 640) */
     float vis_bands[VIS_BANDS];
     audio_get_visualization(vis_bands, VIS_BANDS);
@@ -881,9 +975,9 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     TextOutA(s_mem_dc, 950, 633, "BUFFER: 8.0 MB XDR Ring Buffer", 30);
 
     SetTextColor(s_mem_dc, RGB(160, 165, 180));
-    TextOutA(s_mem_dc, 950, 655, "[▲/▼] Navigate | [ENTER] Play", 29);
-    TextOutA(s_mem_dc, 950, 672, "[SPACE] Pause  | [S] Search (OSK)", 33);
-    TextOutA(s_mem_dc, 950, 689, "[CLICK] Select | [ESC] Exit", 27);
+    TextOutA(s_mem_dc, 950, 653, "[▲/▼] Navigate | [ENTER] Play", 29);
+    TextOutA(s_mem_dc, 950, 669, "[SPACE] Pause  | [N/P] Next/Prev", 32);
+    TextOutA(s_mem_dc, 950, 685, "[H] Shuffle    | [R] Repeat Mode", 32);
 
     /* 6. On-Screen Keyboard Modal Overlay (when state == STATE_SEARCH) */
     if (state == (int)STATE_SEARCH) {
@@ -1014,6 +1108,10 @@ InputAction platform_poll_input(void) {
                         case '\n': return INPUT_SELECT;
                         case ' ':  return INPUT_PLAY_PAUSE;
                         case 's': case 'S': case '/': return INPUT_ACTION_SEARCH;
+                        case 'n': case 'N': return INPUT_NEXT_TRACK;
+                        case 'p': case 'P': return INPUT_PREV_TRACK;
+                        case 'h': case 'H': return INPUT_SHUFFLE;
+                        case 'r': case 'R': return INPUT_REPEAT;
                         case 'q': case 'Q': case 27:  return INPUT_QUIT;
                         case 'w': case 'W': return INPUT_UP;
                         case 'z': case 'Z': return INPUT_DOWN;
@@ -1059,6 +1157,10 @@ InputAction platform_poll_input(void) {
                     case 27: return INPUT_QUIT;          /* ESC */
                     case ' ': return INPUT_PLAY_PAUSE;   /* Space */
                     case 's': case 'S': case '/': return INPUT_ACTION_SEARCH;
+                    case 'n': case 'N': return INPUT_NEXT_TRACK;
+                    case 'p': case 'P': return INPUT_PREV_TRACK;
+                    case 'h': case 'H': return INPUT_SHUFFLE;
+                    case 'r': case 'R': return INPUT_REPEAT;
                     case 'q': case 'Q': return INPUT_QUIT;
                     case 'w': case 'W': return INPUT_UP;
                     case 'z': case 'Z': return INPUT_DOWN;

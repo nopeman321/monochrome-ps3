@@ -19,6 +19,14 @@ int  ps3_sys_ppu_thread_create(uint64_t *thread_id, void (*entry)(uint64_t), uin
 int  ps3_sys_ppu_thread_join(uint64_t thread_id, uint64_t *val);
 void ps3_sys_ppu_thread_exit(uint64_t val);
 
+/* ── PS3 GameOS LV2 Filesystem Syscalls ──────────────────────────── */
+int  ps3_sys_fs_open(const char *path, int flags, int *fd, int mode, const void *arg, uint64_t size);
+int  ps3_sys_fs_read(int fd, void *buf, uint64_t nbytes, uint64_t *nread);
+int  ps3_sys_fs_write(int fd, const void *buf, uint64_t nbytes, uint64_t *nwritten);
+int  ps3_sys_fs_close(int fd);
+int  ps3_sys_fs_stat(const char *path, void *sb);
+int  ps3_sys_fs_mkdir(const char *path, int mode);
+
 #ifdef __cplusplus
 }
 #endif

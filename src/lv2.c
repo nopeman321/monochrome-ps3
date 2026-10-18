@@ -56,6 +56,23 @@ static inline int64_t lv2_sc2(uint64_t num, uint64_t r3, uint64_t r4) {
     return (int64_t)_r3;
 }
 
+static inline int64_t lv2_sc6(uint64_t num, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8) {
+    register uint64_t _r11 asm("r11") = num;
+    register uint64_t _r3  asm("r3")  = r3;
+    register uint64_t _r4  asm("r4")  = r4;
+    register uint64_t _r5  asm("r5")  = r5;
+    register uint64_t _r6  asm("r6")  = r6;
+    register uint64_t _r7  asm("r7")  = r7;
+    register uint64_t _r8  asm("r8")  = r8;
+    asm volatile(
+        "sc\n"
+        : "+r"(_r3)
+        : "r"(_r11), "r"(_r4), "r"(_r5), "r"(_r6), "r"(_r7), "r"(_r8)
+        : "r0", "r9", "r10", "r12", "lr", "ctr", "xer", "cr0", "cr1", "cr5", "cr6", "cr7", "memory"
+    );
+    return (int64_t)_r3;
+}
+
 static inline int64_t lv2_sc7(uint64_t num, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9) {
     register uint64_t _r11 asm("r11") = num;
     register uint64_t _r3  asm("r3")  = r3;
@@ -147,6 +164,45 @@ void ps3_sys_ppu_thread_exit(uint64_t val) {
     while (1) {
         asm volatile("nop");
     }
+}
+
+/* ── PS3 GameOS LV2 Filesystem Syscalls ──────────────────────────── */
+int ps3_sys_fs_open(const char *path, int flags, int *fd, int mode, const void *arg, uint64_t size) {
+    return (int)lv2_sc6(801,
+                        (uint64_t)(uintptr_t)path,
+                        (uint64_t)flags,
+                        (uint64_t)(uintptr_t)fd,
+                        (uint64_t)mode,
+                        (uint64_t)(uintptr_t)arg,
+                        size);
+}
+
+int ps3_sys_fs_read(int fd, void *buf, uint64_t nbytes, uint64_t *nread) {
+    return (int)lv2_sc4(802,
+                        (uint64_t)fd,
+                        (uint64_t)(uintptr_t)buf,
+                        nbytes,
+                        (uint64_t)(uintptr_t)nread);
+}
+
+int ps3_sys_fs_write(int fd, const void *buf, uint64_t nbytes, uint64_t *nwritten) {
+    return (int)lv2_sc4(803,
+                        (uint64_t)fd,
+                        (uint64_t)(uintptr_t)buf,
+                        nbytes,
+                        (uint64_t)(uintptr_t)nwritten);
+}
+
+int ps3_sys_fs_close(int fd) {
+    return (int)lv2_sc1(804, (uint64_t)fd);
+}
+
+int ps3_sys_fs_stat(const char *path, void *sb) {
+    return (int)lv2_sc2(808, (uint64_t)(uintptr_t)path, (uint64_t)(uintptr_t)sb);
+}
+
+int ps3_sys_fs_mkdir(const char *path, int mode) {
+    return (int)lv2_sc2(811, (uint64_t)(uintptr_t)path, (uint64_t)mode);
 }
 
 /* ── Overrides for standard C library ────────────────────────────── */

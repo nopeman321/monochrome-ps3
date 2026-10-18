@@ -29,6 +29,67 @@ static const char *s_search_presets[] = {
 #define NUM_SEARCH_PRESETS (sizeof(s_search_presets) / sizeof(s_search_presets[0]))
 static int s_preset_idx = 0;
 
+/* ── Queue, Repeat & Shuffle Management ───────────────────────────── */
+static RepeatMode s_repeat_mode  = REPEAT_ALL;
+static bool       s_shuffle_mode = false;
+
+int  ui_get_repeat_mode(void) { return (int)s_repeat_mode; }
+bool ui_get_shuffle_mode(void) { return s_shuffle_mode; }
+void ui_set_repeat_mode(int mode) { s_repeat_mode = (RepeatMode)(mode % 3); }
+void ui_set_shuffle_mode(bool shuffle) { s_shuffle_mode = shuffle; }
+
+static void ui_play_track_at(int idx) {
+    if (idx < 0 || idx >= g_track_count) return;
+    g_cursor = idx;
+    TrackMetadata *cur = app_get_current_track();
+    if (cur) {
+        audio_reset_progress();
+        *cur = g_tracks[g_cursor];
+        char url[512];
+        net_resolve_stream(cur->id, url, sizeof(url));
+        net_start_stream(url, app_get_ring());
+        cover_art_request(cur->id, cur->cover_url);
+        printf("[UI] Playing [%d/%d]: \"%s\" by %s\n",
+               g_cursor + 1, g_track_count, cur->title, cur->artist);
+    }
+}
+
+void ui_track_next(void) {
+    if (g_track_count <= 0) return;
+    if (s_repeat_mode == REPEAT_ONE) {
+        ui_play_track_at(g_cursor);
+        return;
+    }
+    if (s_shuffle_mode) {
+        int next_idx = (g_track_count > 1) ? ((g_cursor + 1 + (rand() % (g_track_count - 1))) % g_track_count) : 0;
+        ui_play_track_at(next_idx);
+        return;
+    }
+    if (s_repeat_mode == REPEAT_ALL) {
+        int next_idx = (g_cursor + 1) % g_track_count;
+        ui_play_track_at(next_idx);
+        return;
+    }
+    /* REPEAT_OFF */
+    if (g_cursor + 1 < g_track_count) {
+        ui_play_track_at(g_cursor + 1);
+    } else {
+        audio_set_state(PLAYBACK_STOPPED);
+        printf("[UI] End of queue reached (Repeat OFF).\n");
+    }
+}
+
+void ui_track_prev(void) {
+    if (g_track_count <= 0) return;
+    if (s_shuffle_mode) {
+        int prev_idx = (g_track_count > 1) ? ((g_cursor + 1 + (rand() % (g_track_count - 1))) % g_track_count) : 0;
+        ui_play_track_at(prev_idx);
+        return;
+    }
+    int prev_idx = (g_cursor - 1 + g_track_count) % g_track_count;
+    ui_play_track_at(prev_idx);
+}
+
 /* ── Init / Shutdown ─────────────────────────────────────────────── */
 int gfx_init(void) {
     platform_gfx_init(SCREEN_WIDTH, SCREEN_HEIGHT, "Monochrome — Lossless Music Player");
@@ -213,6 +274,18 @@ AppState pad_update(AppState current) {
     }
 
     /* ── HOME & PLAYING STATES ─────────────────────────────────────── */
+    /* Auto-advance queue when current track finishes */
+    if (current == STATE_PLAYING && audio_get_state() == PLAYBACK_STOPPED) {
+        AudioRingBuffer *rb = app_get_ring();
+        if (rb && rb->stream_eof) {
+            printf("[UI] Track complete, auto-advancing queue...\n");
+            ui_track_next();
+            if (audio_get_state() == PLAYBACK_STOPPED) {
+                current = STATE_HOME;
+            }
+        }
+    }
+
     int mouse_sel = platform_get_mouse_track_selection();
     if (mouse_sel >= 0 && mouse_sel < g_track_count) {
         g_cursor = mouse_sel;
@@ -238,25 +311,40 @@ AppState pad_update(AppState current) {
 
         case INPUT_SELECT:
             if (g_track_count > 0) {
-                printf("[INPUT] Select: Playing [%d/%d] \"%s\"\n",
-                       g_cursor + 1, g_track_count, g_tracks[g_cursor].title);
                 TrackMetadata *cur = app_get_current_track();
-                if (cur) {
-                    if (strcmp(cur->id, g_tracks[g_cursor].id) == 0 &&
-                        (audio_get_state() == PLAYBACK_PLAYING || audio_get_state() == PLAYBACK_BUFFERING)) {
-                        /* Already streaming this track */
-                        break;
-                    }
-                    audio_reset_progress();
-                    *cur = g_tracks[g_cursor];
-                    char url[512];
-                    net_resolve_stream(cur->id, url, sizeof(url));
-                    net_start_stream(url, app_get_ring());
-                    cover_art_request(cur->id, cur->cover_url);
-                    current = STATE_PLAYING;
+                if (cur && strcmp(cur->id, g_tracks[g_cursor].id) == 0 &&
+                    (audio_get_state() == PLAYBACK_PLAYING || audio_get_state() == PLAYBACK_BUFFERING)) {
+                    /* Already streaming this track */
+                    break;
                 }
+                ui_play_track_at(g_cursor);
+                current = STATE_PLAYING;
             }
             break;
+
+        case INPUT_NEXT_TRACK:
+            printf("[INPUT] Next Track (⏭)\n");
+            ui_track_next();
+            current = STATE_PLAYING;
+            break;
+
+        case INPUT_PREV_TRACK:
+            printf("[INPUT] Previous Track (⏮)\n");
+            ui_track_prev();
+            current = STATE_PLAYING;
+            break;
+
+        case INPUT_SHUFFLE:
+            s_shuffle_mode = !s_shuffle_mode;
+            printf("[INPUT] Shuffle Mode: %s (🔀)\n", s_shuffle_mode ? "ON" : "OFF");
+            break;
+
+        case INPUT_REPEAT: {
+            s_repeat_mode = (RepeatMode)((s_repeat_mode + 1) % 3);
+            static const char *s_rep_names[] = { "OFF", "ALL", "ONE" };
+            printf("[INPUT] Repeat Mode: %s (🔁)\n", s_rep_names[s_repeat_mode]);
+            break;
+        }
 
         case INPUT_PLAY_PAUSE:
             if (audio_get_state() == PLAYBACK_PLAYING) {

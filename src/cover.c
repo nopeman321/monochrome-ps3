@@ -130,8 +130,29 @@ static void cover_worker_func(void *arg) {
         if (id[0] == '\0') continue;
 
         bool loaded = false;
+        char cache_path[512];
+        platform_get_cache_cover_path(id, cache_path, sizeof(cache_path));
 
-        if (url[0] != '\0') {
+        /* 1. Check persistent disk cache (instant 0 ms load) */
+        if (platform_file_exists(cache_path)) {
+            PlatformFileHandle f = platform_file_open_read(cache_path);
+            if (f) {
+                size_t expected = COVER_SIZE * COVER_SIZE * sizeof(uint32_t);
+                size_t n = platform_file_read(f, s_current_cover.pixels, expected);
+                platform_file_close(f);
+                if (n == expected) {
+                    s_current_cover.width = COVER_SIZE;
+                    s_current_cover.height = COVER_SIZE;
+                    strncpy(s_current_cover.track_id, id, sizeof(s_current_cover.track_id) - 1);
+                    s_current_cover.ready = true;
+                    loaded = true;
+                    printf("[COVER] Persistent Cache HIT: %s (instant 0 ms load)\n", cache_path);
+                }
+            }
+        }
+
+        /* 2. Download from network if not cached */
+        if (!loaded && url[0] != '\0') {
             printf("[COVER] Downloading album artwork: %s\n", url);
             char  *raw_buf = NULL;
             size_t raw_len = 0;
@@ -153,6 +174,14 @@ static void cover_worker_func(void *arg) {
                         printf("[COVER] Successfully decoded cover artwork (%dx%d -> %dx%d)\n",
                                w, h, COVER_SIZE, COVER_SIZE);
                         stbi_image_free(rgb);
+
+                        /* Save to persistent disk cache */
+                        PlatformFileHandle f = platform_file_open_write(cache_path);
+                        if (f) {
+                            platform_file_write(f, s_current_cover.pixels, COVER_SIZE * COVER_SIZE * sizeof(uint32_t));
+                            platform_file_close(f);
+                            printf("[COVER] Saved 80x80 decoded texture to cache: %s\n", cache_path);
+                        }
                     }
                 }
             }
@@ -172,6 +201,7 @@ static void cover_worker_func(void *arg) {
 }
 
 void cover_art_init(void) {
+    platform_ensure_cache_dirs();
     memset(&s_current_cover, 0, sizeof(s_current_cover));
     s_current_cover.width = COVER_SIZE;
     s_current_cover.height = COVER_SIZE;

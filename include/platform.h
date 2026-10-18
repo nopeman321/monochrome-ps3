@@ -34,7 +34,11 @@ typedef enum {
     INPUT_CANCEL,      /* Circle (○) on PS3 / Escape on PC */
     INPUT_ACTION_SEARCH,/* Square (□) on PS3 / 'S' on PC */
     INPUT_PLAY_PAUSE,  /* Triangle (△) on PS3 / Space on PC */
-    INPUT_QUIT         /* PS Button on PS3 / 'Q' on PC */
+    INPUT_NEXT_TRACK,  /* R1 on PS3 / 'N' on PC */
+    INPUT_PREV_TRACK,  /* L1 on PS3 / 'P' on PC */
+    INPUT_SHUFFLE,     /* Select on PS3 / 'H' on PC */
+    INPUT_REPEAT,      /* L2 on PS3 / 'R' on PC */
+    INPUT_QUIT         /* PS Button / Start on PS3 / 'Q' on PC */
 } InputAction;
 
 /* ── Lifecycle & Timer ───────────────────────────────────────────── */
@@ -42,6 +46,21 @@ int      platform_init(void);
 void     platform_shutdown(void);
 void     platform_sleep_ms(uint32_t ms);
 uint64_t platform_get_time_ms(void);
+
+/* ── File I/O & Persistent Cache Abstraction ─────────────────────── */
+typedef void *PlatformFileHandle;
+
+int  platform_ensure_cache_dirs(void);
+bool platform_file_exists(const char *path);
+PlatformFileHandle platform_file_open_read(const char *path);
+PlatformFileHandle platform_file_open_write(const char *path);
+size_t platform_file_read(PlatformFileHandle handle, void *buffer, size_t bytes);
+size_t platform_file_write(PlatformFileHandle handle, const void *buffer, size_t bytes);
+void   platform_file_close(PlatformFileHandle handle);
+size_t platform_file_size(const char *path);
+
+void platform_get_cache_track_path(const char *track_id, char *out_path, size_t max_len);
+void platform_get_cache_cover_path(const char *track_id, char *out_path, size_t max_len);
 
 /* ── Thread Abstraction ─────────────────────────────────────────── */
 typedef void (*PlatformThreadFunc)(void *arg);

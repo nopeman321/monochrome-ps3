@@ -31,6 +31,7 @@ static bool g_net_ready = false;
 
 /* ── Init / Shutdown ─────────────────────────────────────────────── */
 int net_init(void) {
+    platform_ensure_cache_dirs();
     printf("[NET] Initialising sys_net socket layer…\n");
     /* Real PS3: sys_net_initialize_network() */
 
@@ -245,6 +246,7 @@ static StreamWorkerState s_worker = {0};
 
 typedef struct {
     char                 url[512];
+    char                 cache_path[512];
     uint8_t             *data;
     size_t               capacity;
     volatile size_t      received;
@@ -296,17 +298,19 @@ static drflac_bool32 flac_stream_tell(void *pUserData, drflac_int64 *pCursor) {
     return DRFLAC_TRUE;
 }
 
+#if defined(PLATFORM_IS_PS3)
+    #define STREAM_BUFFER_CAPACITY (16 * 1024 * 1024)
+#else
+    #define STREAM_BUFFER_CAPACITY (48 * 1024 * 1024)
+#endif
+
 static bool on_http_stream_chunk(const uint8_t *chunk, size_t chunk_len, void *userdata) {
     FlacStreamContext *ctx = (FlacStreamContext *)userdata;
     if (!ctx || ctx->abort) return false;
 
     if (ctx->received + chunk_len > ctx->capacity) {
-        size_t new_cap = (ctx->received + chunk_len) * 2;
-        if (new_cap < 1024 * 1024) new_cap = 1024 * 1024;
-        uint8_t *new_data = (uint8_t *)realloc(ctx->data, new_cap);
-        if (!new_data) return false;
-        ctx->data = new_data;
-        ctx->capacity = new_cap;
+        printf("[STREAM] Warning: Track exceeds stream buffer capacity (%zu MB)\n", ctx->capacity / (1024*1024));
+        return false;
     }
 
     memcpy(ctx->data + ctx->received, chunk, chunk_len);
@@ -320,6 +324,17 @@ static void download_worker_func(void *arg) {
     if (!ctx) return;
     platform_http_get_streaming(ctx->url, on_http_stream_chunk, ctx);
     ctx->eof = true;
+
+    /* If completed without abort and has valid data, save to persistent cache immediately */
+    if (!ctx->abort && ctx->received > 1024 && ctx->cache_path[0] != '\0') {
+        PlatformFileHandle cf = platform_file_open_write(ctx->cache_path);
+        if (cf) {
+            platform_file_write(cf, ctx->data, ctx->received);
+            platform_file_close(cf);
+            printf("[STREAM] Download complete: Saved %zu KB to persistent cache: %s\n",
+                   ctx->received / 1024, ctx->cache_path);
+        }
+    }
 }
 
 static void ring_write_pcm(AudioRingBuffer *rb, const int16_t *samples, size_t frames) {
@@ -350,7 +365,7 @@ static void stream_worker_func(void *arg) {
 
     FlacStreamContext ctx;
     memset(&ctx, 0, sizeof(ctx));
-    ctx.capacity = 1024 * 1024;
+    ctx.capacity = STREAM_BUFFER_CAPACITY;
     ctx.data = (uint8_t *)malloc(ctx.capacity);
     if (!ctx.data) {
         printf("[STREAM] Error: Failed to allocate initial stream buffer!\n");
@@ -361,29 +376,76 @@ static void stream_worker_func(void *arg) {
 
     snprintf(ctx.url, sizeof(ctx.url), "%s", worker->url);
 
-    /* 1. Launch download worker thread */
-    ctx.dl_thread = platform_thread_create(download_worker_func, &ctx);
-    if (!ctx.dl_thread) {
-        printf("[STREAM] Error: Failed to spawn download thread!\n");
-        free(ctx.data);
-        worker->is_running = false;
-        audio_set_state(PLAYBACK_STOPPED);
-        return;
+    /* Extract track ID from url (e.g. https://.../track/<id>) */
+    char track_id[64] = {0};
+    const char *p_id = strstr(worker->url, "/track/");
+    if (p_id) {
+        p_id += 7;
+        size_t k = 0;
+        while (p_id[k] && p_id[k] != '?' && p_id[k] != '/' && k < sizeof(track_id) - 1) {
+            track_id[k] = p_id[k];
+            k++;
+        }
+        track_id[k] = '\0';
     }
 
-    /* 2. Wait until pre-buffer has >= 64 KB, EOF, or abort */
-    while (ctx.received < 64 * 1024 && !ctx.eof && !worker->abort_requested) {
-        platform_sleep_ms(10);
+    char cache_path[512] = {0};
+    bool is_cached = false;
+    if (track_id[0] != '\0') {
+        platform_get_cache_track_path(track_id, cache_path, sizeof(cache_path));
+        size_t c_size = platform_file_size(cache_path);
+        if (c_size > 1024) {
+            PlatformFileHandle cf = platform_file_open_read(cache_path);
+            if (cf) {
+                uint8_t *cached_data = (uint8_t *)malloc(c_size);
+                if (cached_data) {
+                    size_t n_read = platform_file_read(cf, cached_data, c_size);
+                    platform_file_close(cf);
+                    if (n_read == c_size) {
+                        free(ctx.data);
+                        ctx.data = cached_data;
+                        ctx.capacity = c_size;
+                        ctx.received = c_size;
+                        ctx.eof = true;
+                        is_cached = true;
+                        printf("[STREAM] Persistent Cache HIT: %s (%zu KB, instant zero-network playback)\n",
+                               cache_path, c_size / 1024);
+                    } else {
+                        free(cached_data);
+                    }
+                } else {
+                    platform_file_close(cf);
+                }
+            }
+        }
     }
 
-    if (worker->abort_requested || (ctx.eof && ctx.received < 4)) {
-        printf("[STREAM] Worker aborted or network error before decoder startup (recv=%zu)\n", ctx.received);
-        ctx.abort = true;
-        platform_thread_join(ctx.dl_thread);
-        free(ctx.data);
-        worker->is_running = false;
-        audio_set_state(PLAYBACK_STOPPED);
-        return;
+    /* 1. Launch download worker thread if not cached */
+    if (!is_cached) {
+        snprintf(ctx.cache_path, sizeof(ctx.cache_path), "%s", cache_path);
+        ctx.dl_thread = platform_thread_create(download_worker_func, &ctx);
+        if (!ctx.dl_thread) {
+            printf("[STREAM] Error: Failed to spawn download thread!\n");
+            free(ctx.data);
+            worker->is_running = false;
+            audio_set_state(PLAYBACK_STOPPED);
+            return;
+        }
+
+        /* 2. Wait until pre-buffer has >= 64 KB, EOF, or abort */
+        while (ctx.received < 64 * 1024 && !ctx.eof && !worker->abort_requested) {
+            platform_sleep_ms(10);
+        }
+
+        if (worker->abort_requested || (ctx.eof && ctx.received < 4)) {
+            printf("[STREAM] Worker aborted or network error before decoder startup (recv=%zu)\n", ctx.received);
+            ctx.abort = true;
+            platform_thread_join(ctx.dl_thread);
+            free(ctx.data);
+            worker->is_running = false;
+            audio_set_state(PLAYBACK_STOPPED);
+            return;
+        }
     }
 
     /* 3. Open FLAC stream using non-blocking/progressive callbacks */
@@ -392,7 +454,7 @@ static void stream_worker_func(void *arg) {
     if (!pFlac) {
         printf("[STREAM] Error: corrupted or unsupported FLAC stream format.\n");
         ctx.abort = true;
-        platform_thread_join(ctx.dl_thread);
+        if (ctx.dl_thread) platform_thread_join(ctx.dl_thread);
         free(ctx.data);
         worker->is_running = false;
         audio_set_state(PLAYBACK_STOPPED);
@@ -402,7 +464,7 @@ static void stream_worker_func(void *arg) {
     uint32_t sample_rate = pFlac->sampleRate;
     uint8_t channels = (uint8_t)pFlac->channels;
     uint64_t total_frames = pFlac->totalPCMFrameCount;
-    printf("[STREAM] SUCCESS: Opened progressive FLAC stream (%zu KB downloaded)!\n", ctx.received / 1024);
+    printf("[STREAM] SUCCESS: Opened progressive FLAC stream (%zu KB buffered)!\n", ctx.received / 1024);
     printf("[STREAM] FLAC Format: %u Hz | %d ch | %llu frames (%.1f sec)\n",
            sample_rate, (int)channels, (unsigned long long)total_frames,
            (sample_rate > 0) ? (float)total_frames / (float)sample_rate : 0.0f);
@@ -456,9 +518,22 @@ static void stream_worker_func(void *arg) {
         total_decoded_frames += out_frames;
     }
 
-    /* 5. Clean teardown */
+    /* 5. Clean teardown & Save to Persistent Cache */
     ctx.abort = true;
-    platform_thread_join(ctx.dl_thread);
+    if (ctx.dl_thread) {
+        platform_thread_join(ctx.dl_thread);
+        ctx.dl_thread = NULL;
+    }
+
+    if (!is_cached && !worker->abort_requested && ctx.received > 1024 && cache_path[0] != '\0') {
+        PlatformFileHandle cf = platform_file_open_write(cache_path);
+        if (cf) {
+            platform_file_write(cf, ctx.data, ctx.received);
+            platform_file_close(cf);
+            printf("[STREAM] Saved %zu KB to persistent cache: %s\n", ctx.received / 1024, cache_path);
+        }
+    }
+
     drflac_close(pFlac);
     free(ctx.data);
     worker->is_running = false;

@@ -1,6 +1,7 @@
-# Build outputs
+# Build outputs & Runtime Caches
 build/
 bin/
+cache/
 *.o
 *.elf
 *.bin

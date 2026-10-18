@@ -31,6 +31,13 @@ extern int  ps3_sys_ppu_thread_create(uint64_t *thread_id, void (*entry)(uint64_
 extern int  ps3_sys_ppu_thread_join(uint64_t thread_id, uint64_t *val);
 extern void ps3_sys_ppu_thread_exit(uint64_t val);
 
+extern int  ps3_sys_fs_open(const char *path, int flags, int *fd, int mode, const void *arg, uint64_t size);
+extern int  ps3_sys_fs_read(int fd, void *buf, uint64_t nbytes, uint64_t *nread);
+extern int  ps3_sys_fs_write(int fd, const void *buf, uint64_t nbytes, uint64_t *nwritten);
+extern int  ps3_sys_fs_close(int fd);
+extern int  ps3_sys_fs_stat(const char *path, void *sb);
+extern int  ps3_sys_fs_mkdir(const char *path, int mode);
+
 /* Convenience wrappers */
 static void tty(const char *fmt, ...) {
     char buf[256];
@@ -74,6 +81,88 @@ void platform_sleep_ms(uint32_t ms) {
 
 uint64_t platform_get_time_ms(void) {
     return ps3_time_ms();
+}
+
+/* ── File I/O & Persistent Cache Abstraction (PS3 GameOS) ────────── */
+#define PS3_CACHE_DIR_BASE   "/dev_hdd0/game/MCRM00001/USRDIR/cache"
+#define PS3_CACHE_DIR_TRACKS "/dev_hdd0/game/MCRM00001/USRDIR/cache/tracks"
+#define PS3_CACHE_DIR_COVERS "/dev_hdd0/game/MCRM00001/USRDIR/cache/covers"
+
+int platform_ensure_cache_dirs(void) {
+    ps3_sys_fs_mkdir(PS3_CACHE_DIR_BASE, 0777);
+    ps3_sys_fs_mkdir(PS3_CACHE_DIR_TRACKS, 0777);
+    ps3_sys_fs_mkdir(PS3_CACHE_DIR_COVERS, 0777);
+    return 0;
+}
+
+bool platform_file_exists(const char *path) {
+    if (!path || !path[0]) return false;
+    uint8_t stat_buf[128];
+    int ret = ps3_sys_fs_stat(path, stat_buf);
+    return (ret == 0);
+}
+
+PlatformFileHandle platform_file_open_read(const char *path) {
+    if (!path || !path[0]) return NULL;
+    int fd = -1;
+    int ret = ps3_sys_fs_open(path, 0, &fd, 0, NULL, 0); /* CELL_FS_O_RDONLY */
+    if (ret != 0 || fd < 0) return NULL;
+    return (PlatformFileHandle)(uintptr_t)(fd + 1);
+}
+
+PlatformFileHandle platform_file_open_write(const char *path) {
+    if (!path || !path[0]) return NULL;
+    platform_ensure_cache_dirs();
+    int fd = -1;
+    /* CELL_FS_O_WRONLY (1) | CELL_FS_O_CREAT (0x200) | CELL_FS_O_TRUNC (0x400) = 0x601 */
+    int ret = ps3_sys_fs_open(path, 0x601, &fd, 0666, NULL, 0);
+    if (ret != 0 || fd < 0) return NULL;
+    return (PlatformFileHandle)(uintptr_t)(fd + 1);
+}
+
+size_t platform_file_read(PlatformFileHandle handle, void *buffer, size_t bytes) {
+    if (!handle || !buffer || bytes == 0) return 0;
+    int fd = (int)(uintptr_t)handle - 1;
+    uint64_t nread = 0;
+    int ret = ps3_sys_fs_read(fd, buffer, (uint64_t)bytes, &nread);
+    if (ret != 0) return 0;
+    return (size_t)nread;
+}
+
+size_t platform_file_write(PlatformFileHandle handle, const void *buffer, size_t bytes) {
+    if (!handle || !buffer || bytes == 0) return 0;
+    int fd = (int)(uintptr_t)handle - 1;
+    uint64_t nwritten = 0;
+    int ret = ps3_sys_fs_write(fd, buffer, (uint64_t)bytes, &nwritten);
+    if (ret != 0) return 0;
+    return (size_t)nwritten;
+}
+
+void platform_file_close(PlatformFileHandle handle) {
+    if (!handle) return;
+    int fd = (int)(uintptr_t)handle - 1;
+    ps3_sys_fs_close(fd);
+}
+
+size_t platform_file_size(const char *path) {
+    if (!path || !path[0]) return 0;
+    uint8_t stat_buf[128];
+    if (ps3_sys_fs_stat(path, stat_buf) == 0) {
+        uint64_t sz = *(uint64_t *)&stat_buf[24];
+        if (sz == 0) sz = *(uint64_t *)&stat_buf[32];
+        return (size_t)sz;
+    }
+    return 0;
+}
+
+void platform_get_cache_track_path(const char *track_id, char *out_path, size_t max_len) {
+    if (!track_id || !out_path || max_len == 0) return;
+    snprintf(out_path, max_len, "%s/%s.flac", PS3_CACHE_DIR_TRACKS, track_id);
+}
+
+void platform_get_cache_cover_path(const char *track_id, char *out_path, size_t max_len) {
+    if (!track_id || !out_path || max_len == 0) return;
+    snprintf(out_path, max_len, "%s/%s.bin", PS3_CACHE_DIR_COVERS, track_id);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -682,7 +771,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     fb_str(20, 12, "MONOCHROME", COL_ACCENT, 2);
     fb_str(188, 18, "v01.00", COL_DIM, 1);
     fb_str_r(FB_WIDTH - 20, 14,
-             "[X]Play/Pause  [^/v]Vol  [L1/R1]Track  [O]Back",
+             "[X]Play  [L1/R1]Skip  [SEL]Shuf  [L2]Rep  [O]Back",
              COL_DIM, 1);
 
     /* ── Now-playing strip (41–109) ─────────────────────────────────────  */
@@ -715,6 +804,17 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
         fb_str(68, 78, meta, COL_DIM, 1);
     } else {
         fb_str(68, 58, "-- No track selected --", COL_DIM, 2);
+    }
+
+    /* Queue Modes (Shuffle & Repeat Badges) */
+    int rep = ui_get_repeat_mode();
+    bool shuf = ui_get_shuffle_mode();
+    char badges[32];
+    snprintf(badges, sizeof(badges), "%s %s",
+             shuf ? "[SHUF]" : "",
+             (rep == 1) ? "[REP:ALL]" : (rep == 2) ? "[REP:1]" : "");
+    if (badges[0] != '\0' && badges[0] != ' ') {
+        fb_str(FB_WIDTH - 150, 42, badges, COL_ACCENT, 1);
     }
 
     /* ── 16-Band Real-Time Audio Spectrum Visualizer (x: 360–504, y: 56–88) ── */
@@ -1160,14 +1260,24 @@ InputAction platform_poll_input(void) {
     /* Triangle (△): Toggle Play / Pause */
     if (n3 & 0x10) return INPUT_PLAY_PAUSE;
 
-    /* L1 (0x04) / R1 (0x08): Adjust master volume */
-    if (n3 & 0x04) {
-        platform_audio_set_volume(s_master_volume - 0.05f);
-        tty("[PAD] L1: Volume -> %.2f\n", s_master_volume);
-    }
-    if (n3 & 0x08) {
+    /* R1 (0x08) / L1 (0x04): Skip Next / Previous track */
+    if (n3 & 0x08) return INPUT_NEXT_TRACK;
+    if (n3 & 0x04) return INPUT_PREV_TRACK;
+
+    /* Select (0x01 on b2): Toggle Shuffle */
+    if (n2 & 0x01) return INPUT_SHUFFLE;
+
+    /* L2 (0x01 on b3): Cycle Repeat mode */
+    if (n3 & 0x01) return INPUT_REPEAT;
+
+    /* R2 (0x02 on b3) / L3 (0x02 on b2): Adjust master volume */
+    if (n3 & 0x02) {
         platform_audio_set_volume(s_master_volume + 0.05f);
-        tty("[PAD] R1: Volume -> %.2f\n", s_master_volume);
+        tty("[PAD] R2: Volume -> %.2f\n", s_master_volume);
+    }
+    if (n2 & 0x02) {
+        platform_audio_set_volume(s_master_volume - 0.05f);
+        tty("[PAD] L3: Volume -> %.2f\n", s_master_volume);
     }
 
     /* Start: Quit */
