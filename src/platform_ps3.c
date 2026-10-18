@@ -581,7 +581,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     fb_str(20, 12, "MONOCHROME", COL_ACCENT, 2);
     fb_str(188, 18, "v01.00", COL_DIM, 1);
     fb_str_r(FB_WIDTH - 20, 14,
-             "[X]Play  [O]Back  [/\\ ]Pause",
+             "[X]Play/Pause  [^/v]Vol  [L1/R1]Track  [O]Back",
              COL_DIM, 1);
 
     /* ── Now-playing strip (41–109) ─────────────────────────────────────  */
@@ -604,6 +604,30 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     } else {
         fb_str(20, 58, "-- No track selected --", COL_DIM, 2);
     }
+
+    /* ── Volume HUD & DMA Ring-Buffer Occupancy ───────────────────────── */
+    extern float platform_audio_get_volume_hud(void);
+    extern uint32_t platform_audio_get_dma_occ(void);
+    extern uint32_t platform_audio_get_nblk(void);
+
+    int vx = FB_WIDTH - 180, vy = 52, vw = 80, vh = 8;
+    fb_str(vx - 32, vy, "VOL", COL_DIM, 1);
+    fb_rect(vx, vy, vw, vh, COL_BAR_BG);
+    float cur_vol = platform_audio_get_volume_hud();
+    int vfill = (int)(vw * cur_vol);
+    if (vfill > 0) fb_rect(vx, vy, vfill, vh, COL_ACCENT);
+    char vstr[16]; snprintf(vstr, sizeof(vstr), "%d%%", (int)(cur_vol * 100.0f + 0.5f));
+    fb_str(vx + vw + 8, vy, vstr, COL_FG, 1);
+
+    int dx = FB_WIDTH - 180, dy = 72, dw = 80, dh = 8;
+    fb_str(dx - 32, dy, "DMA", COL_DIM, 1);
+    fb_rect(dx, dy, dw, dh, COL_BAR_BG);
+    uint32_t occ = platform_audio_get_dma_occ();
+    uint32_t nblk = platform_audio_get_nblk();
+    int dfill = (int)(dw * ((float)occ / (float)(nblk ? nblk : 8)));
+    if (dfill > 0) fb_rect(dx, dy, dfill, dh, COL_GREEN);
+    char dstr[16]; snprintf(dstr, sizeof(dstr), "%u/%u", occ, nblk ? nblk : 8);
+    fb_str(dx + dw + 8, dy, dstr, COL_DIM, 1);
 
     /* ── Progress bar (98–108) ───────────────────────────────────────────  */
     int bx = 20, by = 98, bw = FB_WIDTH - 40, bh = 6;
@@ -759,10 +783,27 @@ static uint32_t   s_aport  = 0;
 static int        s_aready = 0;
 static float     *s_adma   = NULL;
 static volatile uint64_t *s_aridx = NULL;
-static uint64_t   s_awrite = 0;
+static uint32_t   s_audio_write_block = 0;
 static uint32_t   s_anblk  = 8;
 static uint32_t   s_astride = AUDIO_BLOCK_SAMPLES * 2; /* floats per block */
 static uint32_t   s_ach    = 2;
+static float      s_master_volume = 1.0f;
+static int        s_audio_playing = 1;
+
+float platform_audio_get_volume_hud(void) {
+    return s_master_volume;
+}
+
+uint32_t platform_audio_get_nblk(void) {
+    return s_anblk;
+}
+
+uint32_t platform_audio_get_dma_occ(void) {
+    uint64_t hw_read_idx = s_aridx ? *s_aridx : 0;
+    uint32_t hw_blk = (uint32_t)(hw_read_idx % s_anblk);
+    uint32_t wr_blk = s_audio_write_block % s_anblk;
+    return (wr_blk >= hw_blk) ? (wr_blk - hw_blk) : (s_anblk - (hw_blk - wr_blk));
+}
 
 int platform_audio_init(uint32_t sample_rate, uint8_t channels) {
     (void)sample_rate;
@@ -823,36 +864,57 @@ void platform_audio_write(const int16_t *samples, size_t frames) {
 
     size_t done = 0;
     while (done < frames) {
-        /* Wait while every free block would still be overwritten */
-        uint64_t ridx = s_aridx ? *s_aridx : s_awrite;
-        int spin = 100;
-        while (spin-- > 0 && (s_awrite - ridx) >= (uint64_t)s_anblk) {
-            ps3_sleep_ms(1);
-            ridx = s_aridx ? *s_aridx : s_awrite;
+        /* Read current hardware consumed block counter from EA (big-endian PPU64) */
+        uint64_t hw_read_idx = s_aridx ? *s_aridx : 0;
+        uint32_t hw_read_block = (uint32_t)(hw_read_idx % s_anblk);
+
+        /* Only write when target block is not currently being read by hardware DMA */
+        int timeout_us = 10000;
+        while ((s_audio_write_block % s_anblk) == hw_read_block && timeout_us > 0) {
+            ps3_sys_timer_usleep(200);
+            timeout_us -= 200;
+            if (s_aridx) {
+                hw_read_idx = *s_aridx;
+                hw_read_block = (uint32_t)(hw_read_idx % s_anblk);
+            }
         }
 
-        uint32_t bpos = (uint32_t)(s_awrite % s_anblk);
-        float   *dst  = s_adma + (size_t)bpos * s_astride;
+        uint32_t cur_block = s_audio_write_block % s_anblk;
+        float *dst = s_adma + (size_t)cur_block * s_astride;
 
         size_t chunk = AUDIO_BLOCK_SAMPLES;
         if (chunk > frames - done) chunk = frames - done;
 
-        const int16_t *src = samples + done * s_ach;
-        for (size_t i = 0; i < chunk * s_ach; i++)
-            dst[i] = (float)src[i] / 32768.0f;
-        for (size_t i = chunk * s_ach; i < AUDIO_BLOCK_SAMPLES * s_ach; i++)
-            dst[i] = 0.0f;
+        if (!s_audio_playing) {
+            /* Paused: fill DMA blocks with 0.0f */
+            for (size_t i = 0; i < AUDIO_BLOCK_SAMPLES * s_ach; i++) {
+                dst[i] = 0.0f;
+            }
+        } else {
+            const int16_t *src = samples + done * s_ach;
+            for (size_t i = 0; i < chunk * s_ach; i++) {
+                dst[i] = (float)src[i] / 32768.0f;
+            }
+            for (size_t i = chunk * s_ach; i < AUDIO_BLOCK_SAMPLES * s_ach; i++) {
+                dst[i] = 0.0f;
+            }
+        }
 
-        s_awrite++;
+        /* PowerPC memory barrier before advancing write block index */
+        __asm__ volatile("lwsync" ::: "memory");
+
+        s_audio_write_block = (s_audio_write_block + 1) % s_anblk;
         done += chunk;
     }
 }
 
-/* kept alive via 'used': volume control will be wired to the UI later,
- * and LTO would otherwise drop this (and its import slot) unused. */
+/* kept alive via 'used': volume control wired to DualShock 3 & HUD */
 __attribute__((used))
 void platform_audio_set_volume(float vol) {
-    if (s_aready && SCE_BOUND(cellAudioSetPortLevel)) aud_set_level(s_aport, vol);
+    if (vol < 0.0f) vol = 0.0f;
+    if (vol > 1.0f) vol = 1.0f;
+    s_master_volume = vol;
+    if (s_aready && SCE_BOUND(cellAudioSetPortLevel)) aud_set_level(s_aport, s_master_volume);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -861,6 +923,7 @@ void platform_audio_set_volume(float vol) {
  *  CellPadData.button[] u16 slots:
  *    [2] digital1: 0x10=Up  0x20=Right  0x40=Down  0x80=Left  0x08=Start
  *    [3] digital2: 0x10=Triangle  0x20=Circle  0x40=Cross  0x80=Square
+ *                  0x04=L1  0x08=R1  0x01=L2  0x02=R2
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 typedef struct {
@@ -907,15 +970,42 @@ InputAction platform_poll_input(void) {
     uint16_t n2 = (uint16_t)(b2 & ~s_prev2), n3 = (uint16_t)(b3 & ~s_prev3);
     s_prev2 = b2; s_prev3 = b3;
 
-    if (n2 & 0x10) return INPUT_UP;
-    if (n2 & 0x40) return INPUT_DOWN;
-    if (n2 & 0x80) return INPUT_LEFT;
-    if (n2 & 0x20) return INPUT_RIGHT;
-    if (n3 & 0x40) return INPUT_SELECT;        /* Cross     */
-    if (n3 & 0x20) return INPUT_CANCEL;        /* Circle    */
-    if (n3 & 0x80) return INPUT_ACTION_SEARCH; /* Square    */
-    if (n3 & 0x10) return INPUT_PLAY_PAUSE;    /* Triangle  */
-    if (n2 & 0x08) return INPUT_QUIT;          /* Start     */
+    /* D-Pad Up / Down: Adjust master volume in steps of 0.05f */
+    if (n2 & 0x10) { /* D-Pad Up */
+        platform_audio_set_volume(s_master_volume + 0.05f);
+        tty("[PAD] D-Pad UP: Volume -> %.2f\n", s_master_volume);
+    }
+    if (n2 & 0x40) { /* D-Pad Down */
+        platform_audio_set_volume(s_master_volume - 0.05f);
+        tty("[PAD] D-Pad DOWN: Volume -> %.2f\n", s_master_volume);
+    }
+
+    /* Cross (✕): Toggle Play / Pause */
+    if (n3 & 0x40) {
+        s_audio_playing = !s_audio_playing;
+        tty("[PAD] Cross (X): Play/Pause toggled -> %s\n", s_audio_playing ? "PLAYING" : "PAUSED");
+        return INPUT_PLAY_PAUSE;
+    }
+
+    /* L1 (0x04) / R1 (0x08) or D-Pad Left (0x80) / Right (0x20): Navigate track */
+    if ((n3 & 0x04) || (n2 & 0x80)) return INPUT_UP;
+    if ((n3 & 0x08) || (n2 & 0x20)) return INPUT_DOWN;
+
+    /* Triangle (△): Play / Pause alternate */
+    if (n3 & 0x10) {
+        s_audio_playing = !s_audio_playing;
+        return INPUT_PLAY_PAUSE;
+    }
+
+    /* Square (□): Action / Search */
+    if (n3 & 0x80) return INPUT_ACTION_SEARCH;
+
+    /* Circle (○): Cancel */
+    if (n3 & 0x20) return INPUT_CANCEL;
+
+    /* Start: Quit */
+    if (n2 & 0x08) return INPUT_QUIT;
+
     return INPUT_NONE;
 }
 
