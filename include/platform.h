@@ -43,12 +43,18 @@ void     platform_shutdown(void);
 void     platform_sleep_ms(uint32_t ms);
 uint64_t platform_get_time_ms(void);
 
+/* ── Thread Abstraction ─────────────────────────────────────────── */
+typedef void (*PlatformThreadFunc)(void *arg);
+typedef void *PlatformThreadHandle;
+
+PlatformThreadHandle platform_thread_create(PlatformThreadFunc func, void *arg);
+void platform_thread_join(PlatformThreadHandle thread);
+
 /* ── Network & HTTPS Abstraction ─────────────────────────────────── */
-/**
- * Performs a synchronous HTTPS GET request.
- * Allocates *response_out buffer. Caller must free with platform_http_free().
- */
+typedef bool (*PlatformHttpChunkCallback)(const uint8_t *chunk, size_t chunk_len, void *userdata);
+
 int  platform_http_get(const char *url, char **response_out, size_t *size_out);
+int  platform_http_get_streaming(const char *url, PlatformHttpChunkCallback on_chunk, void *userdata);
 void platform_http_free(char *response);
 
 /* ── Audio Output Abstraction ────────────────────────────────────── */

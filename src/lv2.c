@@ -43,6 +43,36 @@ static inline int64_t lv2_sc1(uint64_t num, uint64_t r3) {
     return (int64_t)_r3;
 }
 
+static inline int64_t lv2_sc2(uint64_t num, uint64_t r3, uint64_t r4) {
+    register uint64_t _r11 asm("r11") = num;
+    register uint64_t _r3  asm("r3")  = r3;
+    register uint64_t _r4  asm("r4")  = r4;
+    asm volatile(
+        "sc\n"
+        : "+r"(_r3)
+        : "r"(_r11), "r"(_r4)
+        : "r0", "r5", "r6", "r7", "r8", "r9", "r10", "r12", "lr", "ctr", "xer", "cr0", "cr1", "cr5", "cr6", "cr7", "memory"
+    );
+    return (int64_t)_r3;
+}
+
+static inline int64_t lv2_sc7(uint64_t num, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9) {
+    register uint64_t _r11 asm("r11") = num;
+    register uint64_t _r3  asm("r3")  = r3;
+    register uint64_t _r4  asm("r4")  = r4;
+    register uint64_t _r5  asm("r5")  = r5;
+    register uint64_t _r6  asm("r6")  = r6;
+    register uint64_t _r7  asm("r7")  = r7;
+    register uint64_t _r8  asm("r8")  = r8;
+    register uint64_t _r9  asm("r9")  = r9;
+    asm volatile(
+        "sc\n"
+        : "+r"(_r3)
+        : "r"(_r11), "r"(_r4), "r"(_r5), "r"(_r6), "r"(_r7), "r"(_r8), "r"(_r9)
+        : "r0", "r10", "r12", "lr", "ctr", "xer", "cr0", "cr1", "cr5", "cr6", "cr7", "memory"
+    );
+    return (int64_t)_r3;
+}
 
 int ps3_sys_tty_write(int ch, const void *buf, uint32_t len, uint32_t *pwdata) {
     return (int)lv2_sc4(403, (uint64_t)ch, (uint64_t)buf, (uint64_t)len, (uint64_t)pwdata);
@@ -58,6 +88,31 @@ int ps3_sys_timer_sleep(uint64_t sec) {
 
 void ps3_sys_process_exit(int status) {
     lv2_sc1(3, (uint64_t)status);
+    while (1) {
+        asm volatile("nop");
+    }
+}
+
+int ps3_sys_ppu_thread_create(uint64_t *thread_id, void (*entry)(uint64_t), uint64_t arg, int32_t prio, uint64_t stack_size, uint64_t flags, const char *thread_name) {
+    int ret = (int)lv2_sc7(52, (uint64_t)(uintptr_t)thread_id, (uint64_t)(uintptr_t)entry, arg, (uint64_t)prio, stack_size, flags, (uint64_t)(uintptr_t)thread_name);
+    if (ret != 0) {
+        int ret2 = (int)lv2_sc7(44, (uint64_t)(uintptr_t)thread_id, (uint64_t)(uintptr_t)entry, arg, (uint64_t)prio, stack_size, flags, (uint64_t)(uintptr_t)thread_name);
+        if (ret2 == 0) return ret2;
+    }
+    return ret;
+}
+
+int ps3_sys_ppu_thread_join(uint64_t thread_id, uint64_t *val) {
+    int ret = (int)lv2_sc2(44, thread_id, (uint64_t)(uintptr_t)val);
+    if (ret != 0) {
+        int ret2 = (int)lv2_sc2(49, thread_id, (uint64_t)(uintptr_t)val);
+        if (ret2 == 0) return ret2;
+    }
+    return ret;
+}
+
+void ps3_sys_ppu_thread_exit(uint64_t val) {
+    lv2_sc1(41, val);
     while (1) {
         asm volatile("nop");
     }

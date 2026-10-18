@@ -27,6 +27,9 @@
 extern int  ps3_sys_tty_write(int ch, const void *buf, uint32_t len, uint32_t *pwdata);
 extern int  ps3_sys_timer_usleep(uint64_t usec);
 extern void ps3_sys_process_exit(int status);
+extern int  ps3_sys_ppu_thread_create(uint64_t *thread_id, void (*entry)(uint64_t), uint64_t arg, int32_t prio, uint64_t stack_size, uint64_t flags, const char *thread_name);
+extern int  ps3_sys_ppu_thread_join(uint64_t thread_id, uint64_t *val);
+extern void ps3_sys_ppu_thread_exit(uint64_t val);
 
 /* Convenience wrappers */
 static void tty(const char *fmt, ...) {
@@ -71,6 +74,91 @@ void platform_sleep_ms(uint32_t ms) {
 
 uint64_t platform_get_time_ms(void) {
     return ps3_time_ms();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ *  SECTION 1.5 — PPU THREADING (Cell B.E. / GameOS sys_ppu_thread)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+#define MAX_PLATFORM_THREADS 8
+
+typedef struct {
+    uint64_t thread_id;
+    PlatformThreadFunc func;
+    void *arg;
+    volatile int in_use;
+} __attribute__((aligned(16))) Ps3ThreadContext;
+
+static Ps3ThreadContext s_thread_pool[MAX_PLATFORM_THREADS];
+
+static void ps3_thread_entry_stub(uint64_t raw_arg) {
+    Ps3ThreadContext *ctx = (Ps3ThreadContext *)(uintptr_t)raw_arg;
+    if (ctx && ctx->func) {
+        PlatformThreadFunc f = ctx->func;
+        void *a = ctx->arg;
+        f(a);
+    }
+    ps3_sys_ppu_thread_exit(0);
+}
+
+PlatformThreadHandle platform_thread_create(PlatformThreadFunc func, void *arg) {
+    if (!func) return NULL;
+
+    Ps3ThreadContext *ctx = NULL;
+    for (int i = 0; i < MAX_PLATFORM_THREADS; i++) {
+        if (!s_thread_pool[i].in_use) {
+            ctx = &s_thread_pool[i];
+            ctx->in_use = 1;
+            break;
+        }
+    }
+
+    if (!ctx) {
+        tty("[THREAD] Error: No free thread slot in pool\n");
+        return NULL;
+    }
+
+    ctx->func = func;
+    ctx->arg = arg;
+    ctx->thread_id = 0;
+
+    /*
+     * sys_ppu_thread_create:
+     * - entry: ps3_thread_entry_stub (OPD descriptor under PPC64 ELFv1)
+     * - arg: ctx pointer passed in r3
+     * - prio: 1000 (standard priority)
+     * - stack size: 64 KB (65536 bytes)
+     * - flags: SYS_PPU_THREAD_CREATE_JOINABLE (1)
+     */
+    uint64_t tid = 0;
+    int ret = ps3_sys_ppu_thread_create(&tid, ps3_thread_entry_stub, (uint64_t)(uintptr_t)ctx,
+                                        1000, 65536, 1, "monochrome_stream");
+    if (ret != 0 || tid == 0) {
+        tty("[THREAD] sys_ppu_thread_create failed (code %d)\n", ret);
+        ctx->in_use = 0;
+        return NULL;
+    }
+
+    ctx->thread_id = tid;
+    tty("[THREAD] PPU Thread %llu created successfully (entry=%p, stack=64KB)\n",
+        (unsigned long long)tid, (void *)ps3_thread_entry_stub);
+    return (PlatformThreadHandle)ctx;
+}
+
+void platform_thread_join(PlatformThreadHandle thread) {
+    if (!thread) return;
+
+    Ps3ThreadContext *ctx = (Ps3ThreadContext *)thread;
+    if (ctx->thread_id != 0) {
+        uint64_t exit_val = 0;
+        int ret = ps3_sys_ppu_thread_join(ctx->thread_id, &exit_val);
+        tty("[THREAD] PPU Thread %llu joined (code %d, exit_val=%llu)\n",
+            (unsigned long long)ctx->thread_id, ret, (unsigned long long)exit_val);
+        ctx->thread_id = 0;
+    }
+    ctx->func = NULL;
+    ctx->arg = NULL;
+    ctx->in_use = 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1038,6 +1126,14 @@ int platform_http_get(const char *url, char **resp, size_t *sz) {
     if (!b) return -1;
     memcpy(b, k_catalog, n + 1);
     *resp = b; *sz = n;
+    return 0;
+}
+
+int platform_http_get_streaming(const char *url, PlatformHttpChunkCallback on_chunk, void *userdata) {
+    if (!on_chunk) return -1;
+    tty("[NET] Streaming %s (PS3 fallback catalogue)\n", url ? url : "(null)");
+    size_t n = strlen(k_catalog);
+    on_chunk((const uint8_t *)k_catalog, n, userdata);
     return 0;
 }
 

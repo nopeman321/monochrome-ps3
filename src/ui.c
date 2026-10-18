@@ -37,6 +37,12 @@ int gfx_init(void) {
            SCREEN_WIDTH, SCREEN_HEIGHT);
     printf("[RSX] VRAM allocated: 2× %.1f MB (framebuffers) + 16 MB (textures)\n",
            (float)(SCREEN_WIDTH * SCREEN_HEIGHT * 4) / (1024.0f * 1024.0f));
+
+    /* Pre-load initial catalogue immediately so it is available before first input tick */
+    if (!g_initial_load) {
+        g_track_count = net_search("trending", g_tracks, MAX_SEARCH_RESULTS);
+        g_initial_load = true;
+    }
     return 0;
 }
 
@@ -126,12 +132,16 @@ AppState pad_update(AppState current) {
                        g_cursor + 1, g_track_count, g_tracks[g_cursor].title);
                 TrackMetadata *cur = app_get_current_track();
                 if (cur) {
+                    if (strcmp(cur->id, g_tracks[g_cursor].id) == 0 &&
+                        (audio_get_state() == PLAYBACK_PLAYING || audio_get_state() == PLAYBACK_BUFFERING)) {
+                        /* Already streaming this track */
+                        break;
+                    }
                     audio_reset_progress();
                     *cur = g_tracks[g_cursor];
                     char url[512];
                     net_resolve_stream(cur->id, url, sizeof(url));
                     net_start_stream(url, app_get_ring());
-                    audio_set_state(PLAYBACK_PLAYING);
                     current = STATE_PLAYING;
                 }
             }

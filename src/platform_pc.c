@@ -153,7 +153,7 @@ int platform_init(void) {
         0
     );
     if (s_http_session) {
-        WinHttpSetTimeouts(s_http_session, 3000, 3000, 5000, 8000);
+        WinHttpSetTimeouts(s_http_session, 15000, 15000, 15000, 60000);
     }
 
     return (s_http_session != NULL) ? 0 : -1;
@@ -177,11 +177,47 @@ uint64_t platform_get_time_ms(void) {
     return (uint64_t)GetTickCount64();
 }
 
-/* ── WinHTTP GET Implementation ──────────────────────────────────── */
-int platform_http_get(const char *url, char **response_out, size_t *size_out) {
-    if (!url || !response_out || !size_out) return -1;
-    *response_out = NULL;
-    *size_out = 0;
+/* ── Thread Implementation ───────────────────────────────────────── */
+typedef struct {
+    PlatformThreadFunc func;
+    void *arg;
+} PcThreadWrapper;
+
+static DWORD WINAPI PcThreadEntry(LPVOID lpParam) {
+    PcThreadWrapper *wrap = (PcThreadWrapper *)lpParam;
+    if (wrap) {
+        PlatformThreadFunc f = wrap->func;
+        void *a = wrap->arg;
+        free(wrap);
+        if (f) f(a);
+    }
+    return 0;
+}
+
+PlatformThreadHandle platform_thread_create(PlatformThreadFunc func, void *arg) {
+    PcThreadWrapper *wrap = (PcThreadWrapper *)malloc(sizeof(PcThreadWrapper));
+    if (!wrap) return NULL;
+    wrap->func = func;
+    wrap->arg = arg;
+
+    HANDLE h = CreateThread(NULL, 0, PcThreadEntry, wrap, 0, NULL);
+    if (!h) {
+        free(wrap);
+        return NULL;
+    }
+    return (PlatformThreadHandle)h;
+}
+
+void platform_thread_join(PlatformThreadHandle thread) {
+    if (!thread) return;
+    HANDLE h = (HANDLE)thread;
+    WaitForSingleObject(h, INFINITE);
+    CloseHandle(h);
+}
+
+/* ── WinHTTP GET & Streaming Implementation ───────────────────────── */
+int platform_http_get_streaming(const char *url, PlatformHttpChunkCallback on_chunk, void *userdata) {
+    if (!url || !on_chunk) return -1;
 
     if (!s_http_session) {
         s_http_session = WinHttpOpen(L"Monochrome/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
@@ -266,40 +302,85 @@ int platform_http_get(const char *url, char **response_out, size_t *size_out) {
         return -4;
     }
 
-    /* Read stream chunks */
-    size_t capacity = 64 * 1024;
-    size_t total = 0;
-    char *buf = (char *)malloc(capacity);
-    if (!buf) {
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        return -5;
+    DWORD statusCode = 0;
+    DWORD statusSize = sizeof(statusCode);
+    if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX)) {
+        if (statusCode != 200 && statusCode != 206) {
+            printf("[HTTP] GET %s returned HTTP %lu\n", url, statusCode);
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            return -7;
+        }
     }
 
+    /* Read stream chunks and forward to callback */
+    BYTE chunk[64 * 1024];
     DWORD dwRead = 0;
     do {
         DWORD dwSize = 0;
-        if (!WinHttpQueryDataAvailable(hRequest, &dwSize) || dwSize == 0) break;
+        if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) {
+            break;
+        }
+        if (dwSize == 0) break;
 
-        if (total + dwSize + 1 > capacity) {
-            capacity = (total + dwSize + 1) * 2;
-            char *new_buf = (char *)realloc(buf, capacity);
-            if (!new_buf) { free(buf); buf = NULL; break; }
-            buf = new_buf;
+        DWORD to_read = (dwSize > sizeof(chunk)) ? sizeof(chunk) : dwSize;
+        if (!WinHttpReadData(hRequest, chunk, to_read, &dwRead)) {
+            break;
         }
 
-        if (!WinHttpReadData(hRequest, buf + total, dwSize, &dwRead)) break;
-        total += dwRead;
+        if (dwRead > 0) {
+            if (!on_chunk(chunk, dwRead, userdata)) {
+                /* Consumer aborted stream */
+                break;
+            }
+        }
     } while (dwRead > 0);
 
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
+    return 0;
+}
 
-    if (!buf) return -6;
+typedef struct {
+    char   *buf;
+    size_t  size;
+    size_t  capacity;
+} HttpAccumulator;
 
-    buf[total] = '\0';
-    *response_out = buf;
-    *size_out = total;
+static bool http_accum_cb(const uint8_t *chunk, size_t chunk_len, void *userdata) {
+    HttpAccumulator *acc = (HttpAccumulator *)userdata;
+    if (acc->size + chunk_len + 1 > acc->capacity) {
+        acc->capacity = (acc->size + chunk_len + 1) * 2;
+        char *new_buf = (char *)realloc(acc->buf, acc->capacity);
+        if (!new_buf) return false;
+        acc->buf = new_buf;
+    }
+    memcpy(acc->buf + acc->size, chunk, chunk_len);
+    acc->size += chunk_len;
+    acc->buf[acc->size] = '\0';
+    return true;
+}
+
+int platform_http_get(const char *url, char **response_out, size_t *size_out) {
+    if (!url || !response_out || !size_out) return -1;
+    *response_out = NULL;
+    *size_out = 0;
+
+    HttpAccumulator acc;
+    acc.capacity = 64 * 1024;
+    acc.size = 0;
+    acc.buf = (char *)malloc(acc.capacity);
+    if (!acc.buf) return -1;
+
+    int ret = platform_http_get_streaming(url, http_accum_cb, &acc);
+    if (ret != 0 || !acc.buf) {
+        if (acc.buf) free(acc.buf);
+        return ret;
+    }
+
+    *response_out = acc.buf;
+    *size_out = acc.size;
     return 0;
 }
 
@@ -676,6 +757,9 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     if (pstate == PLAYBACK_PLAYING) {
         SetTextColor(s_mem_dc, RGB(100, 240, 140));
         TextOutA(s_mem_dc, 440, 616, "▶ PLAYING (48,000 Hz LPCM DAC)", 30);
+    } else if (pstate == PLAYBACK_BUFFERING) {
+        SetTextColor(s_mem_dc, RGB(100, 200, 255));
+        TextOutA(s_mem_dc, 440, 616, "◌ STREAMING & DECODING FLAC...", 30);
     } else if (pstate == PLAYBACK_PAUSED) {
         SetTextColor(s_mem_dc, RGB(255, 200, 80));
         TextOutA(s_mem_dc, 440, 616, "⏸ PAUSED", 8);
@@ -738,31 +822,67 @@ InputAction platform_poll_input(void) {
         return act;
     }
 
-    /* 3. Fallback to console keyboard polling */
-    if (!_kbhit()) return INPUT_NONE;
+    /* 3. Check piped / redirected stdin for automated test harnesses */
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    if (hIn != NULL && hIn != INVALID_HANDLE_VALUE) {
+        DWORD ftype = GetFileType(hIn);
+        bool has_data = false;
+        if (ftype == FILE_TYPE_PIPE) {
+            DWORD bytesAvail = 0;
+            if (PeekNamedPipe(hIn, NULL, 0, NULL, &bytesAvail, NULL) && bytesAvail > 0) {
+                has_data = true;
+            }
+        } else if (ftype == FILE_TYPE_DISK) {
+            has_data = true;
+        }
 
-    int ch = _getch();
-    if (ch == 0 || ch == 224) { /* Extended keys */
-        int code = _getch();
-        switch (code) {
-            case 72: return INPUT_UP;
-            case 80: return INPUT_DOWN;
-            case 75: return INPUT_LEFT;
-            case 77: return INPUT_RIGHT;
-            default: return INPUT_NONE;
+        if (has_data) {
+            char ch = 0;
+            DWORD bytesRead = 0;
+            if (ReadFile(hIn, &ch, 1, &bytesRead, NULL) && bytesRead > 0) {
+                switch (ch) {
+                    case '\r':
+                    case '\n': return INPUT_SELECT;
+                    case ' ':  return INPUT_PLAY_PAUSE;
+                    case 's': case 'S': case '/': return INPUT_ACTION_SEARCH;
+                    case 'q': case 'Q': case 27:  return INPUT_QUIT;
+                    case 'w': case 'W': return INPUT_UP;
+                    case 'z': case 'Z': return INPUT_DOWN;
+                    default: break;
+                }
+            }
         }
     }
 
-    switch (ch) {
-        case 13: return INPUT_SELECT;        /* Enter */
-        case 27: return INPUT_QUIT;          /* ESC */
-        case ' ': return INPUT_PLAY_PAUSE;   /* Space */
-        case 's': case 'S': case '/': return INPUT_ACTION_SEARCH;
-        case 'q': case 'Q': return INPUT_QUIT;
-        case 'w': case 'W': return INPUT_UP;
-        case 'z': case 'Z': return INPUT_DOWN;
-        default: return INPUT_NONE;
+    /* 4. Fallback to console keyboard polling if console is attached */
+    if (GetConsoleWindow() != NULL) {
+        if (_kbhit()) {
+            int ch = _getch();
+            if (ch == 0 || ch == 224) { /* Extended keys */
+                int code = _getch();
+                switch (code) {
+                    case 72: return INPUT_UP;
+                    case 80: return INPUT_DOWN;
+                    case 75: return INPUT_LEFT;
+                    case 77: return INPUT_RIGHT;
+                    default: return INPUT_NONE;
+                }
+            }
+
+            switch (ch) {
+                case 13: return INPUT_SELECT;        /* Enter */
+                case 27: return INPUT_QUIT;          /* ESC */
+                case ' ': return INPUT_PLAY_PAUSE;   /* Space */
+                case 's': case 'S': case '/': return INPUT_ACTION_SEARCH;
+                case 'q': case 'Q': return INPUT_QUIT;
+                case 'w': case 'W': return INPUT_UP;
+                case 'z': case 'Z': return INPUT_DOWN;
+                default: return INPUT_NONE;
+            }
+        }
     }
+
+    return INPUT_NONE;
 }
 
 int platform_get_mouse_track_selection(void) {

@@ -13,6 +13,9 @@
 #include "monochrome.h"
 #include "cJSON.h"
 
+#define DR_FLAC_NO_STDIO
+#include "dr_flac.h"
+
 /* ── Fallback host table ─────────────────────────────────────────── */
 static const char *g_api_hosts[] = {
     DEFAULT_API_HOST,
@@ -129,8 +132,10 @@ static int parse_search(const char *json, TrackMetadata *out, int max) {
                 if (s) snprintf(t->album, sizeof(t->album), "%s", s);
             }
 
-            /* duration */
-            t->duration_sec = (uint32_t)json_int(item, "duration", 0);
+            /* duration: Tidal API returns milliseconds (e.g. 320357 ms = 320 sec) */
+            uint32_t dur = (uint32_t)json_int(item, "duration", 0);
+            if (dur > 10000) dur /= 1000;
+            t->duration_sec = dur;
 
             /* quality */
             s = json_str(item, "audioQuality");
@@ -227,56 +232,277 @@ int net_resolve_stream(const char *track_id, char *url_out, size_t url_len) {
     return 0;
 }
 
+/* ── Asynchronous FLAC Streaming Pipeline ─────────────────────────── */
+typedef struct {
+    char                 url[512];
+    AudioRingBuffer     *rb;
+    PlatformThreadHandle thread;
+    volatile bool        abort_requested;
+    volatile bool        is_running;
+} StreamWorkerState;
+
+static StreamWorkerState s_worker = {0};
+
+typedef struct {
+    char                 url[512];
+    uint8_t             *data;
+    size_t               capacity;
+    volatile size_t      received;
+    size_t               cursor;
+    volatile bool        eof;
+    volatile bool        abort;
+    PlatformThreadHandle dl_thread;
+} FlacStreamContext;
+
+static size_t flac_stream_read(void *pUserData, void *pBufferOut, size_t bytesToRead) {
+    FlacStreamContext *ctx = (FlacStreamContext *)pUserData;
+    while (ctx->cursor == ctx->received) {
+        if (ctx->eof || ctx->abort) return 0;
+        platform_sleep_ms(5);
+    }
+    size_t avail = ctx->received - ctx->cursor;
+    size_t to_copy = (avail < bytesToRead) ? avail : bytesToRead;
+    memcpy(pBufferOut, ctx->data + ctx->cursor, to_copy);
+    ctx->cursor += to_copy;
+    return to_copy;
+}
+
+static drflac_bool32 flac_stream_seek(void *pUserData, int offset, drflac_seek_origin origin) {
+    FlacStreamContext *ctx = (FlacStreamContext *)pUserData;
+    size_t new_pos = 0;
+    if (origin == DRFLAC_SEEK_SET) {
+        if (offset < 0) return DRFLAC_FALSE;
+        new_pos = (size_t)offset;
+    } else if (origin == DRFLAC_SEEK_CUR) {
+        if (offset < 0 && (size_t)(-offset) > ctx->cursor) return DRFLAC_FALSE;
+        new_pos = ctx->cursor + offset;
+    } else {
+        return DRFLAC_FALSE;
+    }
+
+    while (new_pos > ctx->received) {
+        if (ctx->eof || ctx->abort) return DRFLAC_FALSE;
+        platform_sleep_ms(5);
+    }
+
+    ctx->cursor = new_pos;
+    return DRFLAC_TRUE;
+}
+
+static drflac_bool32 flac_stream_tell(void *pUserData, drflac_int64 *pCursor) {
+    FlacStreamContext *ctx = (FlacStreamContext *)pUserData;
+    if (!ctx || !pCursor) return DRFLAC_FALSE;
+    *pCursor = (drflac_int64)ctx->cursor;
+    return DRFLAC_TRUE;
+}
+
+static bool on_http_stream_chunk(const uint8_t *chunk, size_t chunk_len, void *userdata) {
+    FlacStreamContext *ctx = (FlacStreamContext *)userdata;
+    if (!ctx || ctx->abort) return false;
+
+    if (ctx->received + chunk_len > ctx->capacity) {
+        size_t new_cap = (ctx->received + chunk_len) * 2;
+        if (new_cap < 1024 * 1024) new_cap = 1024 * 1024;
+        uint8_t *new_data = (uint8_t *)realloc(ctx->data, new_cap);
+        if (!new_data) return false;
+        ctx->data = new_data;
+        ctx->capacity = new_cap;
+    }
+
+    memcpy(ctx->data + ctx->received, chunk, chunk_len);
+    CELL_LWSYNC();
+    ctx->received += chunk_len;
+    return true;
+}
+
+static void download_worker_func(void *arg) {
+    FlacStreamContext *ctx = (FlacStreamContext *)arg;
+    if (!ctx) return;
+    platform_http_get_streaming(ctx->url, on_http_stream_chunk, ctx);
+    ctx->eof = true;
+}
+
+static void ring_write_pcm(AudioRingBuffer *rb, const int16_t *samples, size_t frames) {
+    if (!rb || !samples || frames == 0) return;
+    size_t bytes = frames * 2 * sizeof(int16_t);
+    size_t w = rb->write_pos;
+    size_t cap = rb->capacity;
+    size_t chunk1 = cap - w;
+    if (chunk1 >= bytes) {
+        memcpy(&rb->buffer[w], samples, bytes);
+        w += bytes;
+        if (w >= cap) w = 0;
+    } else {
+        memcpy(&rb->buffer[w], samples, chunk1);
+        size_t chunk2 = bytes - chunk1;
+        memcpy(&rb->buffer[0], ((const uint8_t *)samples) + chunk1, chunk2);
+        w = chunk2;
+    }
+    CELL_LWSYNC();
+    rb->write_pos = w;
+}
+
+static void stream_worker_func(void *arg) {
+    StreamWorkerState *worker = (StreamWorkerState *)arg;
+    if (!worker) return;
+
+    printf("[STREAM] Background worker starting progressive pipeline: %s\n", worker->url);
+
+    FlacStreamContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.capacity = 1024 * 1024;
+    ctx.data = (uint8_t *)malloc(ctx.capacity);
+    if (!ctx.data) {
+        printf("[STREAM] Error: Failed to allocate initial stream buffer!\n");
+        worker->is_running = false;
+        audio_set_state(PLAYBACK_STOPPED);
+        return;
+    }
+
+    snprintf(ctx.url, sizeof(ctx.url), "%s", worker->url);
+
+    /* 1. Launch download worker thread */
+    ctx.dl_thread = platform_thread_create(download_worker_func, &ctx);
+    if (!ctx.dl_thread) {
+        printf("[STREAM] Error: Failed to spawn download thread!\n");
+        free(ctx.data);
+        worker->is_running = false;
+        audio_set_state(PLAYBACK_STOPPED);
+        return;
+    }
+
+    /* 2. Wait until pre-buffer has >= 64 KB, EOF, or abort */
+    while (ctx.received < 64 * 1024 && !ctx.eof && !worker->abort_requested) {
+        platform_sleep_ms(10);
+    }
+
+    if (worker->abort_requested || (ctx.eof && ctx.received < 4)) {
+        printf("[STREAM] Worker aborted or network error before decoder startup (recv=%zu)\n", ctx.received);
+        ctx.abort = true;
+        platform_thread_join(ctx.dl_thread);
+        free(ctx.data);
+        worker->is_running = false;
+        audio_set_state(PLAYBACK_STOPPED);
+        return;
+    }
+
+    /* 3. Open FLAC stream using non-blocking/progressive callbacks */
+    drflac *pFlac = drflac_open_relaxed(flac_stream_read, flac_stream_seek, flac_stream_tell,
+                                        drflac_container_native, &ctx, NULL);
+    if (!pFlac) {
+        printf("[STREAM] Error: corrupted or unsupported FLAC stream format.\n");
+        ctx.abort = true;
+        platform_thread_join(ctx.dl_thread);
+        free(ctx.data);
+        worker->is_running = false;
+        audio_set_state(PLAYBACK_STOPPED);
+        return;
+    }
+
+    uint32_t sample_rate = pFlac->sampleRate;
+    uint8_t channels = (uint8_t)pFlac->channels;
+    uint64_t total_frames = pFlac->totalPCMFrameCount;
+    printf("[STREAM] SUCCESS: Opened progressive FLAC stream (%zu KB downloaded)!\n", ctx.received / 1024);
+    printf("[STREAM] FLAC Format: %u Hz | %d ch | %llu frames (%.1f sec)\n",
+           sample_rate, (int)channels, (unsigned long long)total_frames,
+           (sample_rate > 0) ? (float)total_frames / (float)sample_rate : 0.0f);
+
+    #define DECODE_CHUNK_FRAMES 2048
+    int16_t raw_pcm[DECODE_CHUNK_FRAMES * 2];
+    int16_t resampled_pcm[DECODE_CHUNK_FRAMES * 2 * 2];
+
+    /* Immediate playback startup */
+    audio_set_state(PLAYBACK_PLAYING);
+
+    size_t total_decoded_frames = 0;
+
+    /* 4. Progressive decode loop */
+    while (!worker->abort_requested && !ctx.abort) {
+        /* Check ring buffer space before decoding */
+        size_t max_bytes = 2500 * 2 * sizeof(int16_t);
+        if (ring_free(worker->rb) < max_bytes) {
+            platform_sleep_ms(10);
+            continue;
+        }
+
+        drflac_uint64 read = drflac_read_pcm_frames_s16(pFlac, DECODE_CHUNK_FRAMES, raw_pcm);
+        if (read == 0) {
+            if (ctx.eof) {
+                printf("[STREAM] End of FLAC stream reached (%zu frames total).\n", total_decoded_frames);
+                worker->rb->stream_eof = true;
+                break;
+            }
+            platform_sleep_ms(5);
+            continue;
+        }
+
+        const int16_t *out_pcm = raw_pcm;
+        size_t out_frames = (size_t)read;
+
+        /* Resample to 48000 Hz if needed */
+        if (sample_rate == 44100) {
+            spu_resample_44_to_48(raw_pcm, (size_t)read, resampled_pcm, &out_frames);
+            out_pcm = resampled_pcm;
+        } else if (sample_rate == 96000) {
+            for (size_t i = 0; i < (size_t)read / 2; i++) {
+                resampled_pcm[i * 2]     = raw_pcm[i * 4];
+                resampled_pcm[i * 2 + 1] = raw_pcm[i * 4 + 1];
+            }
+            out_frames = (size_t)read / 2;
+            out_pcm = resampled_pcm;
+        }
+
+        ring_write_pcm(worker->rb, out_pcm, out_frames);
+        total_decoded_frames += out_frames;
+    }
+
+    /* 5. Clean teardown */
+    ctx.abort = true;
+    platform_thread_join(ctx.dl_thread);
+    drflac_close(pFlac);
+    free(ctx.data);
+    worker->is_running = false;
+    printf("[STREAM] Background worker finished cleanly.\n");
+}
+
 int net_start_stream(const char *url, AudioRingBuffer *rb) {
     if (!url || !rb || !rb->buffer) return -1;
-    printf("[NET] Opening FLAC stream pipeline: %s\n", url);
+
+    net_stop_stream();
+
     rb->write_pos  = 0;
     rb->read_pos   = 0;
     rb->stream_eof = false;
 
-    /* Preload ring buffer immediately so playback starts instantly with zero latency */
-    size_t preload = 512 * 1024; /* 512 KB = ~1.3 seconds of 48 kHz stereo PCM */
-    if (preload > rb->capacity) preload = rb->capacity;
-    int16_t *samples = (int16_t *)rb->buffer;
-    size_t num_samples = preload / sizeof(int16_t);
-    for (size_t i = 0; i < num_samples; i += 2) {
-        int16_t wave = (int16_t)(((i * 14) & 0x1FFF) - 0x1000);
-        samples[i]     = wave;
-        samples[i + 1] = wave;
-    }
-    CELL_LWSYNC();
-    rb->write_pos = preload;
+    snprintf(s_worker.url, sizeof(s_worker.url), "%s", url);
+    s_worker.rb = rb;
+    s_worker.abort_requested = false;
+    s_worker.is_running = true;
 
-    char *flac_data = NULL;
-    size_t flac_len = 0;
-    int ret = platform_http_get(url, &flac_data, &flac_len);
+    audio_set_state(PLAYBACK_BUFFERING);
 
-    size_t max_frames = rb->capacity / (2 * sizeof(int16_t));
-    size_t frames_decoded = 0;
-    uint32_t sample_rate = 0;
-    uint8_t channels = 0;
-
-    if (ret == 0 && flac_data && flac_len > 4) {
-        int dres = flac_decode_memory((const uint8_t *)flac_data, flac_len,
-                                      (int16_t *)rb->buffer, max_frames,
-                                      &frames_decoded, &sample_rate, &channels);
-        platform_http_free(flac_data);
-
-        if (dres == 0 && frames_decoded > 0) {
-            size_t pcm_bytes = frames_decoded * 2 * sizeof(int16_t);
-            CELL_LWSYNC();
-            rb->write_pos = pcm_bytes;
-            printf("[NET] FLAC stream decoded: %zu frames (%zu KB) @ %u Hz %d ch\n",
-                   frames_decoded, pcm_bytes / 1024, sample_rate, (int)channels);
-        }
-    } else {
-        printf("[NET] Stream pre-buffer active: %zu KB in ring buffer\n", preload / 1024);
+    s_worker.thread = platform_thread_create(stream_worker_func, &s_worker);
+    if (!s_worker.thread) {
+        printf("[NET] Failed to spawn stream worker thread!\n");
+        s_worker.is_running = false;
+        audio_set_state(PLAYBACK_STOPPED);
+        return -1;
     }
 
+    printf("[NET] Stream pipeline spawned asynchronously: %s\n", url);
     return 0;
 }
 
-
 void net_stop_stream(void) {
-    printf("[NET] Stream stopped.\n");
+    if (s_worker.is_running) {
+        printf("[NET] Stopping active stream worker...\n");
+        s_worker.abort_requested = true;
+        if (s_worker.thread) {
+            platform_thread_join(s_worker.thread);
+            s_worker.thread = NULL;
+        }
+        s_worker.is_running = false;
+        printf("[NET] Stream worker stopped.\n");
+    }
 }
+

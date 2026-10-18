@@ -109,6 +109,15 @@ static inline size_t ring_free(const AudioRingBuffer *rb) {
 }
 
 /* ── FLAC Decoder ────────────────────────────────────────────────── */
+typedef struct FlacDecoder FlacDecoder;
+
+FlacDecoder *flac_decoder_create(const uint8_t *flac_data, size_t flac_size);
+size_t       flac_decoder_read_pcm16(FlacDecoder *dec, int16_t *pcm_out, size_t frames_to_read);
+uint32_t     flac_decoder_get_sample_rate(const FlacDecoder *dec);
+uint8_t      flac_decoder_get_channels(const FlacDecoder *dec);
+uint64_t     flac_decoder_get_total_frames(const FlacDecoder *dec);
+void         flac_decoder_destroy(FlacDecoder *dec);
+
 int flac_decode_memory(const uint8_t *flac_data, size_t flac_size,
                        int16_t *pcm_out, size_t max_pcm_frames,
                        size_t *frames_decoded, uint32_t *sample_rate, uint8_t *channels);

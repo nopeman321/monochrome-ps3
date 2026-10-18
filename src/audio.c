@@ -106,16 +106,9 @@ void audio_tick(void) {
             audio_set_state(PLAYBACK_STOPPED);
             return;
         }
-        /* Keep continuous sound generation to avoid DAC clicks/freezes */
-        for (size_t i = 0; i < AUDIO_BLOCK_FRAMES * 2; i += 2) {
-            static uint32_t s_tone = 0;
-            s_tone++;
-            int16_t w = (int16_t)(((s_tone * 14) & 0x1FFF) - 0x1000);
-            g_pcm_block[i] = w;
-            g_pcm_block[i + 1] = w;
-        }
+        /* Buffer underrun / buffering: output silence to keep hardware DAC active without clicks */
+        memset(g_pcm_block, 0, sizeof(g_pcm_block));
         platform_audio_write(g_pcm_block, AUDIO_BLOCK_FRAMES);
-        g_total_frames_played += AUDIO_BLOCK_FRAMES;
         return;
     }
 
