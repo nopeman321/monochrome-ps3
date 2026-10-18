@@ -10,10 +10,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int FindEdgePath(char *outPath, size_t maxLen) {
+static int FindPythonPath(char *outPath, size_t maxLen) {
     static const char *candidates[] = {
-        "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-        "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+        "C:\\Program Files\\Python311\\pythonw.exe",
+        "C:\\Program Files\\Python311\\python.exe",
+        "C:\\Program Files\\Python312\\pythonw.exe",
+        "C:\\Program Files\\Python312\\python.exe",
+        "C:\\Program Files\\Python310\\pythonw.exe",
+        "C:\\Program Files\\Python310\\python.exe",
         NULL
     };
     for (int i = 0; candidates[i]; i++) {
@@ -22,7 +26,21 @@ static int FindEdgePath(char *outPath, size_t maxLen) {
             return 0;
         }
     }
-    return -1;
+
+    /* Check PATH for pythonw or python */
+    char found[MAX_PATH];
+    if (SearchPathA(NULL, "pythonw.exe", NULL, sizeof(found), found, NULL) > 0) {
+        strncpy(outPath, found, maxLen);
+        return 0;
+    }
+    if (SearchPathA(NULL, "python.exe", NULL, sizeof(found), found, NULL) > 0) {
+        strncpy(outPath, found, maxLen);
+        return 0;
+    }
+
+    /* Fallback default command */
+    strncpy(outPath, "python", maxLen);
+    return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -35,47 +53,39 @@ int main(int argc, char *argv[]) {
     char testPath[MAX_PATH];
     snprintf(testPath, sizeof(testPath), "%s\\web\\index.html", projectDir);
     if (GetFileAttributesA(testPath) == INVALID_FILE_ATTRIBUTES) {
-        /* Fallback to exe location */
+        /* Fallback to exe location parent directory */
         GetModuleFileNameA(NULL, projectDir, MAX_PATH);
         char *s = strrchr(projectDir, '\\');
         if (s) *s = '\0';
-        s = strrchr(projectDir, '\\');
-        if (s) *s = '\0';
+        /* If inside bin\, go one level up */
+        char *sub = strrchr(projectDir, '\\');
+        if (sub && _stricmp(sub + 1, "bin") == 0) {
+            *sub = '\0';
+        }
     }
 
-    /* Start Python daemon in background (hidden) */
+    /* Find python executable */
+    char pythonExe[MAX_PATH];
+    FindPythonPath(pythonExe, sizeof(pythonExe));
+
+    /* Path to desktop_app.py */
     char scriptPath[MAX_PATH];
     snprintf(scriptPath, sizeof(scriptPath), "%s\\tools\\desktop_app.py", projectDir);
 
-    char cmdServer[MAX_PATH * 2];
-    snprintf(cmdServer, sizeof(cmdServer), "python \"%s\"", scriptPath);
+    char cmd[MAX_PATH * 3];
+    snprintf(cmd, sizeof(cmd), "\"%s\" \"%s\"", pythonExe, scriptPath);
 
     STARTUPINFOA si = { sizeof(STARTUPINFOA) };
     PROCESS_INFORMATION pi = {0};
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
 
-    CreateProcessA(NULL, cmdServer, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, projectDir, &si, &pi);
+    DWORD flags = CREATE_NO_WINDOW;
+    CreateProcessA(NULL, cmd, NULL, NULL, FALSE, flags, NULL, projectDir, &si, &pi);
 
-    /* Wait briefly for server */
-    Sleep(800);
-
-    /* Launch Edge in Dedicated App Mode */
-    char edgeExe[MAX_PATH];
-    if (FindEdgePath(edgeExe, sizeof(edgeExe)) == 0) {
-        char userDataDir[MAX_PATH];
-        snprintf(userDataDir, sizeof(userDataDir), "%s\\bin\\edge_user_data", projectDir);
-
-        char appCmd[MAX_PATH * 3];
-        snprintf(appCmd, sizeof(appCmd),
-                 "\"%s\" --app=http://127.0.0.1:7890 --user-data-dir=\"%s\" --window-size=1280,820 --autoplay-policy=no-user-gesture-required",
-                 edgeExe, userDataDir);
-
-        STARTUPINFOA siApp = { sizeof(STARTUPINFOA) };
-        PROCESS_INFORMATION piApp = {0};
-        CreateProcessA(NULL, appCmd, NULL, NULL, FALSE, 0, NULL, projectDir, &siApp, &piApp);
-    } else {
-        ShellExecuteA(NULL, "open", "http://127.0.0.1:7890", NULL, NULL, SW_SHOWNORMAL);
+    if (pi.hProcess) {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
     }
 
     return 0;

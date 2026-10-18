@@ -338,6 +338,16 @@ dom.audio.addEventListener('pause', () => {
     updatePlayerUI();
 });
 
+dom.audio.addEventListener('error', (e) => {
+    console.warn('[AUDIO ENGINE] Upstream FLAC playback error:', dom.audio.error);
+    if (dom.audioSpecBadge) {
+        dom.audioSpecBadge.textContent = 'NETWORK / CODEC ERROR';
+        dom.audioSpecBadge.style.color = '#ff6b6b';
+    }
+    state.isPlaying = false;
+    updatePlayerUI();
+});
+
 /* ── Scrubber & Volume Seek Controls ─────────────────────────────── */
 dom.progressTrack.addEventListener('click', (e) => {
     if (isNaN(dom.audio.duration) || dom.audio.duration <= 0) return;

@@ -14,17 +14,44 @@ import urllib.request
 import urllib.error
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
+# Ensure stdout and stderr are available even when launched via pythonw or CREATE_NO_WINDOW
+if sys.stdout is None or not hasattr(sys.stdout, 'write'):
+    sys.stdout = open(os.devnull, 'w', encoding='utf-8')
+if sys.stderr is None or not hasattr(sys.stderr, 'write'):
+    sys.stderr = open(os.devnull, 'w', encoding='utf-8')
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 WEB_DIR = os.path.join(PROJECT_DIR, "web")
 PORT = 7890
 
+class ReusableThreadingServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
 class MonochromeHTTPHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=WEB_DIR, **kwargs)
 
+    def do_GET(self):
+        # Handle favicon without 404
+        if self.path == '/favicon.ico':
+            icon_path = os.path.join(PROJECT_DIR, "pkg_build", "ICON0.PNG")
+            if os.path.exists(icon_path):
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                with open(icon_path, "rb") as f:
+                    self.wfile.write(f.read())
+                return
+            else:
+                self.send_response(204)
+                self.end_headers()
+                return
+        super().do_GET()
+
     def end_headers(self):
-        # Enable CORS and caching headers
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
@@ -35,48 +62,76 @@ class MonochromeHTTPHandler(SimpleHTTPRequestHandler):
         self.send_response(204)
         self.end_headers()
 
+    def log_message(self, format, *args):
+        # Quiet logger when running in background
+        try:
+            super().log_message(format, *args)
+        except Exception:
+            pass
+
 def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
         return s.connect_ex(('127.0.0.1', port)) == 0
 
-def find_edge_path():
+def find_browser_app_mode():
     candidates = [
+        # Microsoft Edge
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe")
+        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe"),
+        # Google Chrome
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        # Brave Browser
+        r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"),
     ]
     for c in candidates:
-        if os.path.exists(c):
+        if c and os.path.exists(c):
             return c
     return None
 
 def start_server():
-    server = ThreadingHTTPServer(('127.0.0.1', PORT), MonochromeHTTPHandler)
-    print(f"[SERVER] Monochrome local daemon running on http://127.0.0.1:{PORT}")
+    server = ReusableThreadingServer(('127.0.0.1', PORT), MonochromeHTTPHandler)
+    try:
+        print(f"[SERVER] Monochrome local daemon running on http://127.0.0.1:{PORT}")
+    except Exception:
+        pass
     server.serve_forever()
 
 def main():
-    print("=" * 60)
-    print("  MONOCHROME · Native Desktop Music Client (Tidal Hi-Res)")
-    print("=" * 60)
+    try:
+        print("=" * 60)
+        print("  MONOCHROME · Native Desktop Music Client (Tidal Hi-Res)")
+        print("=" * 60)
+    except Exception:
+        pass
 
     # 1. Start server in background thread if not already running
     if not is_port_in_use(PORT):
         t = threading.Thread(target=start_server, daemon=True)
         t.start()
-        time.sleep(0.5)
+        time.sleep(0.4)
     else:
-        print(f"[SERVER] Daemon already listening on port {PORT}")
+        try:
+            print(f"[SERVER] Daemon already listening on port {PORT}")
+        except Exception:
+            pass
 
     # 2. Launch Dedicated Desktop Window
-    edge_exe = find_edge_path()
+    browser_exe = find_browser_app_mode()
     app_url = f"http://127.0.0.1:{PORT}"
-    user_data_dir = os.path.join(PROJECT_DIR, "bin", "edge_user_data")
+    user_data_dir = os.path.join(PROJECT_DIR, "bin", "browser_user_data")
 
-    if edge_exe:
-        print(f"[APP] Launching Monochrome Dedicated Desktop Window...")
+    if browser_exe:
+        try:
+            print(f"[APP] Launching Monochrome Dedicated Desktop Window via {os.path.basename(browser_exe)}...")
+        except Exception:
+            pass
         cmd = [
-            edge_exe,
+            browser_exe,
             f"--app={app_url}",
             f"--user-data-dir={user_data_dir}",
             "--window-size=1280,820",
@@ -85,13 +140,19 @@ def main():
             "--autoplay-policy=no-user-gesture-required"
         ]
         proc = subprocess.Popen(cmd)
-        print(f"[APP] Monochrome active (PID: {proc.pid}). Press Ctrl+C in console to stop.")
+        try:
+            print(f"[APP] Monochrome active (PID: {proc.pid}).")
+        except Exception:
+            pass
         try:
             proc.wait()
         except KeyboardInterrupt:
             proc.terminate()
     else:
-        print(f"[APP] Opening default browser at {app_url}...")
+        try:
+            print(f"[APP] Opening default browser at {app_url}...")
+        except Exception:
+            pass
         import webbrowser
         webbrowser.open(app_url)
         try:
