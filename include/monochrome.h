@@ -34,11 +34,22 @@
 #define MAX_SEARCH_RESULTS       20
 #define MAX_PLAYLIST_SIZE        200
 
-/* ── API endpoints (from upstream monochrome-music/monochrome) ───── */
-#define DEFAULT_API_HOST   "tracks.monochrome.st"
-#define FALLBACK_API_HOSTS { "api.monochrome.tf", "wolf.qqdl.site", "maus.qqdl.site", "vogel.qqdl.site" }
-#define NUM_FALLBACK_HOSTS 4
-#define HTTPS_PORT         443
+/* ── API endpoints (Configurable Instances & Local Proxy) ────────── */
+#define API_HOST_PRIMARY        "tidal.qqdl.site"
+#define API_HOST_FALLBACK_1     "monochrome.tf"
+#define API_HOST_FALLBACK_2     "monochrome.samidy.com"
+#define API_HOST_FALLBACK_3     "wolf.qqdl.site"
+#define API_HOST_FALLBACK_4     "tracks.monochrome.st"
+
+#define DEFAULT_API_HOSTS       { API_HOST_PRIMARY, API_HOST_FALLBACK_1, API_HOST_FALLBACK_2, API_HOST_FALLBACK_3, API_HOST_FALLBACK_4 }
+#define NUM_API_HOSTS           5
+#define HTTPS_PORT              443
+
+/* Local proxy configuration (http://localhost:3000 or http://127.0.0.1:8080) */
+#define USE_LOCAL_PROXY         0       /* Set to 1 to enable local proxy */
+#define LOCAL_PROXY_HOST        "127.0.0.1"
+#define LOCAL_PROXY_PORT        3000
+#define LOCAL_PROXY_URL         "http://127.0.0.1:3000"
 
 /* ── Filesystem paths on dev_hdd0 ────────────────────────────────── */
 #define CERT_BUNDLE_PATH   "/dev_hdd0/game/" APP_TITLEID "/USRDIR/certs/cacert.pem"

@@ -1,9 +1,35 @@
 /**
  * Monochrome Web Client — Lossless Music Player Application Logic
- * Integrates directly with https://tracks.monochrome.st (Tidal Lossless Proxy)
+ * Supports dynamic Tidal/Monochrome API instance switching, failover, and local proxy.
  */
 
-const API_BASE = 'https://tracks.monochrome.st';
+const API_INSTANCES = [
+    { url: 'https://tidal.qqdl.site', label: 'tidal.qqdl.site' },
+    { url: 'https://monochrome.tf', label: 'monochrome.tf' },
+    { url: 'https://monochrome.samidy.com', label: 'monochrome.samidy.com' },
+    { url: 'https://wolf.qqdl.site', label: 'wolf.qqdl.site' },
+    { url: 'https://tracks.monochrome.st', label: 'tracks.monochrome.st' },
+    { url: 'http://127.0.0.1:3000', label: 'Local Proxy (127.0.0.1:3000)' }
+];
+let currentInstanceIndex = 0;
+
+function getApiBase() {
+    return API_INSTANCES[currentInstanceIndex].url;
+}
+
+function setApiInstanceByUrl(url) {
+    const idx = API_INSTANCES.findIndex(i => i.url === url);
+    if (idx !== -1) {
+        currentInstanceIndex = idx;
+        updateInstanceUI();
+    }
+}
+
+function updateInstanceUI() {
+    const inst = API_INSTANCES[currentInstanceIndex];
+    if (dom.instanceSelect) dom.instanceSelect.value = inst.url;
+    if (dom.sidebarInstanceText) dom.sidebarInstanceText.textContent = inst.label;
+}
 
 /* ── Application State ───────────────────────────────────────────── */
 const state = {
@@ -25,6 +51,19 @@ const dom = {
     trackCountBadge: document.getElementById('track-count-badge'),
     sectionTitle: document.getElementById('section-title'),
     sectionSubtitle: document.getElementById('section-subtitle'),
+    
+    // Topbar & Instance Selector
+    instanceSelect: document.getElementById('instance-select'),
+    sidebarInstanceText: document.getElementById('sidebar-instance-text'),
+    connectionIndicator: document.getElementById('connection-indicator'),
+    liveDot: document.getElementById('live-dot'),
+    liveText: document.getElementById('live-text'),
+    
+    // Visual Error / CORS Banner
+    errorBanner: document.getElementById('error-banner'),
+    errorText: document.getElementById('error-text'),
+    btnErrorRetry: document.getElementById('btn-error-retry'),
+    btnErrorDismiss: document.getElementById('btn-error-dismiss'),
     
     // Player controls
     btnPlayPause: document.getElementById('btn-play-pause'),
@@ -56,6 +95,28 @@ const dom = {
     volumeTrack: document.getElementById('volume-track'),
     volumeFill: document.getElementById('volume-fill')
 };
+
+function showErrorBanner(message, showRetry = true) {
+    if (!dom.errorBanner) return;
+    dom.errorText.textContent = message;
+    if (dom.btnErrorRetry) dom.btnErrorRetry.style.display = showRetry ? 'inline-block' : 'none';
+    dom.errorBanner.style.display = 'flex';
+    setConnectionStatus('CORS / OFFLINE', '#f59e0b');
+}
+
+function hideErrorBanner() {
+    if (!dom.errorBanner) return;
+    dom.errorBanner.style.display = 'none';
+}
+
+function setConnectionStatus(text, color) {
+    if (dom.liveText) dom.liveText.textContent = text;
+    if (dom.liveDot) dom.liveDot.style.backgroundColor = color;
+    if (dom.connectionIndicator) {
+        dom.connectionIndicator.style.borderColor = color;
+        dom.connectionIndicator.style.color = color;
+    }
+}
 
 /* ── Helper: Format Duration (seconds to mm:ss) ──────────────────── */
 function formatTime(seconds) {
@@ -106,49 +167,104 @@ const FALLBACK_TRACKS = [
 ];
 
 /* ── Fetch Tracks & Releases from Upstream API ───────────────────── */
+/* ── Fetch Tracks & Releases from Upstream API ───────────────────── */
 async function searchTracks(query) {
     dom.trackCountBadge.textContent = 'Searching...';
     const cleanQ = query.trim() || 'trending';
     state.currentQuery = cleanQ;
 
-    try {
-        const resp = await fetch(`${API_BASE}/search?q=${encodeURIComponent(cleanQ)}`);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        
-        const data = await resp.json();
-        const rawTracks = data.tracks || [];
+    let successful = false;
+    let lastError = null;
 
-        state.tracks = rawTracks.map(t => {
-            const artistName = (t.artistNames && t.artistNames.length > 0)
-                ? t.artistNames.join(', ')
-                : (t.artist || 'Unknown Artist');
+    // Try current instance, and failover across other instances if unreachable or CORS blocked
+    for (let attempt = 0; attempt < API_INSTANCES.length; attempt++) {
+        const instIndex = (currentInstanceIndex + attempt) % API_INSTANCES.length;
+        const inst = API_INSTANCES[instIndex];
+        const searchUrl = `${inst.url}/search?q=${encodeURIComponent(cleanQ)}`;
+
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+            const resp = await fetch(searchUrl, {
+                signal: controller.signal,
+                headers: { 'Accept': 'application/json' }
+            });
+            clearTimeout(timeoutId);
+
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+            const data = await resp.json();
             
-            const dur = (t.duration > 1000) ? Math.round(t.duration / 1000) : (t.duration || 0);
-            const isHiRes = Boolean(t.audioQuality && (t.audioQuality.includes('HI_RES') || t.audioQuality.includes('MASTER')));
-            
-            // Resolve cover artwork
-            let art = t.artwork || t.cover || '';
-            if (!art && t.releaseId) {
-                art = `${API_BASE}/proxy/mi/${t.releaseId}-1A01.jpg`;
+            // Support tracks, data, items, or root array
+            let rawTracks = data.tracks || data.data || data.items || [];
+            if (rawTracks && typeof rawTracks === 'object' && !Array.isArray(rawTracks)) {
+                rawTracks = rawTracks.items || rawTracks.tracks || [];
+            }
+            if (Array.isArray(data) && rawTracks.length === 0) {
+                rawTracks = data;
             }
 
-            return {
-                id: String(t.trackId || t.id),
-                title: t.title || 'Untitled',
-                artist: artistName,
-                album: t.albumTitle || (t.album && t.album.title) || 'Single / Release',
-                duration: dur,
-                isHiRes: isHiRes,
-                artwork: art
-            };
-        });
+            if (Array.isArray(rawTracks) && rawTracks.length > 0) {
+                state.tracks = rawTracks.map(t => {
+                    let artistName = 'Unknown Artist';
+                    if (Array.isArray(t.artistNames) && t.artistNames.length > 0) {
+                        artistName = t.artistNames.join(', ');
+                    } else if (Array.isArray(t.artists) && t.artists.length > 0) {
+                        artistName = t.artists.map(a => typeof a === 'object' ? a.name : a).join(', ');
+                    } else if (typeof t.artist === 'object' && t.artist) {
+                        artistName = t.artist.name || 'Unknown Artist';
+                    } else if (typeof t.artist === 'string') {
+                        artistName = t.artist;
+                    }
 
-        if (state.tracks.length === 0) {
-            state.tracks = FALLBACK_TRACKS;
+                    const dur = (t.duration > 1000) ? Math.round(t.duration / 1000) : (t.duration || 0);
+                    const q = (t.audioQuality || t.quality || '');
+                    const isHiRes = Boolean(q.includes('HI_RES') || q.includes('MASTER') || q.includes('96'));
+
+                    let art = t.artwork || t.cover || t.picture || '';
+                    if (!art && t.releaseId) {
+                        art = `${inst.url}/proxy/mi/${t.releaseId}-1A01.jpg`;
+                    }
+
+                    let albumTitle = 'Single / Release';
+                    if (typeof t.album === 'object' && t.album) albumTitle = t.album.title || t.album.name || albumTitle;
+                    else if (typeof t.album === 'string') albumTitle = t.album;
+                    else if (t.albumTitle) albumTitle = t.albumTitle;
+
+                    return {
+                        id: String(t.trackId || t.recordingId || t.id || Math.random()),
+                        title: t.title || t.name || 'Untitled Track',
+                        artist: artistName,
+                        album: albumTitle,
+                        duration: dur,
+                        isHiRes: isHiRes,
+                        artwork: art
+                    };
+                });
+
+                currentInstanceIndex = instIndex;
+                updateInstanceUI();
+                setConnectionStatus('ONLINE', '#10b981');
+                hideErrorBanner();
+                successful = true;
+                break;
+            } else if (Array.isArray(rawTracks) && rawTracks.length === 0) {
+                showErrorBanner(`No tracks found for "${cleanQ}". Showing trending tracks instead.`, false);
+                state.tracks = FALLBACK_TRACKS;
+                successful = true;
+                break;
+            }
+        } catch (err) {
+            console.warn(`[MONOCHROME] Search failed on ${inst.label}:`, err);
+            lastError = err;
         }
-    } catch (err) {
-        console.warn('[MONOCHROME] Live search error, utilizing offline catalogue:', err);
+    }
+
+    if (!successful) {
+        console.warn('[MONOCHROME] All live instances failed or CORS blocked. Engaging cached catalogue.');
         state.tracks = FALLBACK_TRACKS;
+        showErrorBanner(`Instances unreachable or blocked by CORS (${lastError ? lastError.message : 'timeout'}). Using offline cached catalogue.`, true);
     }
 
     renderView();
@@ -225,17 +341,23 @@ function playTrack(index) {
     state.currentIndex = index;
     const track = state.tracks[index];
 
-    // Set Audio Source to Upstream FLAC endpoint
-    const streamUrl = `${API_BASE}/track/${track.id}`;
+    // Set Audio Source to active instance FLAC endpoint
+    const streamUrl = `${getApiBase()}/track/${track.id}`;
     dom.audio.src = streamUrl;
     dom.audio.volume = state.isMuted ? 0 : state.volume;
 
     dom.audio.play().then(() => {
         state.isPlaying = true;
+        hideErrorBanner();
         updatePlayerUI();
     }).catch(err => {
-        console.error('[PLAY ERROR]', err);
+        console.warn('[PLAY ERROR]', err);
+        showErrorBanner(`Audio playback failed on ${API_INSTANCES[currentInstanceIndex].label} (${err.name || 'CORS block'}). Switch instance or check proxy.`, true);
     });
+
+    dom.audio.onerror = () => {
+        showErrorBanner(`Audio stream failed to load from ${API_INSTANCES[currentInstanceIndex].label} (CORS / 404). Click 'Retry Fallback' to switch instance.`, true);
+    };
 
     // Update Now-Playing Bar
     dom.npTitle.textContent = track.title;
@@ -247,6 +369,15 @@ function playTrack(index) {
         dom.npCoverPlaceholder.style.display = 'none';
     } else {
         dom.npCoverImg.style.display = 'none';
+        dom.npCoverPlaceholder.style.display = 'block';
+    }
+
+    dom.audioSpecBadge.textContent = track.isHiRes ? 'HI-RES 24/96 FLAC' : 'LOSSLESS FLAC';
+
+    // Highlight row in table
+    document.querySelectorAll('.track-row').forEach((r, i) => {
+        r.classList.toggle('active', i === index);
+    });
         dom.npCoverPlaceholder.style.display = 'block';
     }
 
@@ -458,7 +589,32 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
+/* ── Instance Selector & Error Banner Handlers ───────────────────── */
+if (dom.instanceSelect) {
+    dom.instanceSelect.addEventListener('change', (e) => {
+        setApiInstanceByUrl(e.target.value);
+        hideErrorBanner();
+        searchTracks(state.currentQuery || 'trending');
+    });
+}
+
+if (dom.btnErrorRetry) {
+    dom.btnErrorRetry.addEventListener('click', () => {
+        hideErrorBanner();
+        currentInstanceIndex = (currentInstanceIndex + 1) % API_INSTANCES.length;
+        updateInstanceUI();
+        searchTracks(state.currentQuery || 'trending');
+    });
+}
+
+if (dom.btnErrorDismiss) {
+    dom.btnErrorDismiss.addEventListener('click', () => {
+        hideErrorBanner();
+    });
+}
+
 /* ── Startup: Initialize Catalogue ───────────────────────────────── */
 window.addEventListener('DOMContentLoaded', () => {
+    updateInstanceUI();
     searchTracks('trending');
 });

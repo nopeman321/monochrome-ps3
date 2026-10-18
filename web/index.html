@@ -60,8 +60,8 @@
 
             <div class="sidebar-footer">
                 <div class="platform-badge">
-                    <span class="pulse-dot"></span>
-                    <span class="platform-text">tracks.monochrome.st</span>
+                    <span class="pulse-dot" id="sidebar-pulse"></span>
+                    <span class="platform-text" id="sidebar-instance-text">tidal.qqdl.site</span>
                 </div>
                 <div class="sub-badge">PS3 & PC Unified Engine</div>
             </div>
@@ -78,13 +78,36 @@
                 </div>
 
                 <div class="topbar-actions">
+                    <div class="instance-select-wrapper" title="Active Monochrome / Tidal API Instance">
+                        <span class="instance-icon">⚡</span>
+                        <select id="instance-select" class="instance-select">
+                            <option value="https://tidal.qqdl.site">tidal.qqdl.site</option>
+                            <option value="https://monochrome.tf">monochrome.tf</option>
+                            <option value="https://monochrome.samidy.com">monochrome.samidy.com</option>
+                            <option value="https://wolf.qqdl.site">wolf.qqdl.site</option>
+                            <option value="https://tracks.monochrome.st">tracks.monochrome.st</option>
+                            <option value="http://127.0.0.1:3000">Local Proxy (127.0.0.1:3000)</option>
+                        </select>
+                    </div>
                     <div class="quality-badge" title="Tidal Hi-Res FLAC Pipeline">FLAC 24-BIT / 96 KHZ</div>
-                    <div class="connection-indicator" title="Connected to Upstream">
-                        <span class="live-dot"></span>
-                        <span class="live-text">ONLINE</span>
+                    <div class="connection-indicator" id="connection-indicator" title="Connected to Upstream">
+                        <span class="live-dot" id="live-dot"></span>
+                        <span class="live-text" id="live-text">ONLINE</span>
                     </div>
                 </div>
             </header>
+
+            <!-- Visual Error / CORS Alert Banner -->
+            <div id="error-banner" class="error-banner" style="display: none;">
+                <div class="error-content">
+                    <span class="error-icon">⚠️</span>
+                    <span id="error-text" class="error-text">API error encountered</span>
+                </div>
+                <div class="error-actions">
+                    <button id="btn-error-retry" class="btn-error-action">Retry Fallback</button>
+                    <button id="btn-error-dismiss" class="btn-error-dismiss" title="Dismiss">✕</button>
+                </div>
+            </div>
 
             <!-- Quick Genre Tags Filter -->
             <div class="genre-pills-bar">

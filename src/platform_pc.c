@@ -185,10 +185,16 @@ int platform_http_get(const char *url, char **response_out, size_t *size_out) {
         if (!s_http_session) return -1;
     }
 
-    /* Parse Host and Path */
+    /* Detect Scheme (http vs https) */
+    bool is_https = true;
     const char *p = url;
-    if (strncmp(p, "https://", 8) == 0) p += 8;
-    else if (strncmp(p, "http://", 7) == 0) p += 7;
+    if (strncmp(p, "https://", 8) == 0) {
+        p += 8;
+        is_https = true;
+    } else if (strncmp(p, "http://", 7) == 0) {
+        p += 7;
+        is_https = false;
+    }
 
     char host[256] = {0};
     char path[1024] = {0};
@@ -204,14 +210,26 @@ int platform_http_get(const char *url, char **response_out, size_t *size_out) {
         snprintf(path, sizeof(path), "/");
     }
 
+    /* Parse optional port in host (e.g. 127.0.0.1:3000) */
+    INTERNET_PORT port = is_https ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT;
+    char *colon = strchr(host, ':');
+    if (colon) {
+        *colon = '\0';
+        int pval = atoi(colon + 1);
+        if (pval > 0 && pval <= 65535) {
+            port = (INTERNET_PORT)pval;
+        }
+    }
+
     wchar_t wHost[256];
     wchar_t wPath[1024];
     MultiByteToWideChar(CP_UTF8, 0, host, -1, wHost, 256);
     MultiByteToWideChar(CP_UTF8, 0, path, -1, wPath, 1024);
 
-    HINTERNET hConnect = WinHttpConnect(s_http_session, wHost, INTERNET_DEFAULT_HTTPS_PORT, 0);
+    HINTERNET hConnect = WinHttpConnect(s_http_session, wHost, port, 0);
     if (!hConnect) return -2;
 
+    DWORD openFlags = is_https ? WINHTTP_FLAG_SECURE : 0;
     HINTERNET hRequest = WinHttpOpenRequest(
         hConnect,
         L"GET",
@@ -219,11 +237,19 @@ int platform_http_get(const char *url, char **response_out, size_t *size_out) {
         NULL,
         WINHTTP_NO_REFERER,
         WINHTTP_DEFAULT_ACCEPT_TYPES,
-        WINHTTP_FLAG_SECURE
+        openFlags
     );
     if (!hRequest) {
         WinHttpCloseHandle(hConnect);
         return -3;
+    }
+
+    if (is_https) {
+        DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                         SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                         SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                         SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(secFlags));
     }
 
     BOOL bRes = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
@@ -235,14 +261,26 @@ int platform_http_get(const char *url, char **response_out, size_t *size_out) {
         return -4;
     }
 
-    /* Read stream chunks */
+    /* Check HTTP Status Code */
+    DWORD statusCode = 0;
+    DWORD scSize = sizeof(statusCode);
+    if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &scSize, WINHTTP_NO_HEADER_INDEX)) {
+        if (statusCode >= 400) {
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            return -5;
+        }
+    }
+
+    /* Read stream chunks with dynamic buffer */
     size_t capacity = 64 * 1024;
     size_t total = 0;
     char *buf = (char *)malloc(capacity);
     if (!buf) {
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
-        return -5;
+        return -6;
     }
 
     DWORD dwRead = 0;
@@ -253,7 +291,11 @@ int platform_http_get(const char *url, char **response_out, size_t *size_out) {
         if (total + dwSize + 1 > capacity) {
             capacity = (total + dwSize + 1) * 2;
             char *new_buf = (char *)realloc(buf, capacity);
-            if (!new_buf) { free(buf); buf = NULL; break; }
+            if (!new_buf) {
+                free(buf);
+                buf = NULL;
+                break;
+            }
             buf = new_buf;
         }
 
@@ -264,7 +306,17 @@ int platform_http_get(const char *url, char **response_out, size_t *size_out) {
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
 
-    if (!buf) return -6;
+    if (!buf) return -7;
+
+    /* Guarantee null termination */
+    if (total + 1 > capacity) {
+        char *new_buf = (char *)realloc(buf, total + 1);
+        if (!new_buf) {
+            free(buf);
+            return -8;
+        }
+        buf = new_buf;
+    }
 
     buf[total] = '\0';
     *response_out = buf;

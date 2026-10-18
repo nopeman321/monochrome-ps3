@@ -13,13 +13,19 @@ LIBS    := -L$(PS3DEV)/portlibs/ppu/lib \
            -ltiny3d -lgcm_sys -lio -laudio -lnet -lsysutil \
            -lmbedtls -lmbedcrypto -lmbedx509 -lcurl -lm
 FSELF   := make_fself
+
+CFILES  := main.c ui.c audio.c flac_decoder.c network.c cJSON.c lv2.c platform_ps3.c
+SFILES  := entry.s
 else
 # Host-native build for testing on PC (no PSL1GHT required)
 CC      := gcc
 CFLAGS  := -O2 -Wall -Wextra -Werror=return-type --std=gnu99 -g
 LDFLAGS :=
-LIBS    := -lm
+LIBS    := -lwinhttp -lwinmm -lgdi32 -luser32 -lws2_32 -lm
 FSELF   :=
+
+CFILES  := main.c ui.c audio.c flac_decoder.c network.c cJSON.c platform_pc.c
+SFILES  :=
 endif
 
 # ── Paths ────────────────────────────────────────────────────────────
@@ -38,8 +44,7 @@ INCLUDES  += -I$(PS3DEV)/portlibs/ppu/include
 endif
 
 # ── Source files ─────────────────────────────────────────────────────
-CFILES := $(notdir $(wildcard $(SOURCE)/*.c))
-OFILES := $(addprefix $(BUILD)/,$(CFILES:.c=.o))
+OFILES := $(addprefix $(BUILD)/,$(CFILES:.c=.o) $(SFILES:.s=.o))
 ELF    := $(BUILD)/monochrome.elf
 EBOOT  := $(PKG_DIR)/USRDIR/EBOOT.BIN
 
@@ -54,6 +59,10 @@ $(ELF): $(OFILES)
 	@echo "[OK] ELF built: $@"
 
 $(BUILD)/%.o: $(SOURCE)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/%.o: $(SOURCE)/%.s
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 

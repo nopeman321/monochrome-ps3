@@ -14,15 +14,7 @@
 #include "cJSON.h"
 
 /* ── Fallback host table ─────────────────────────────────────────── */
-static const char *g_api_hosts[] = {
-    DEFAULT_API_HOST,
-    "api.monochrome.tf",
-    "wolf.qqdl.site",
-    "maus.qqdl.site",
-    "vogel.qqdl.site",
-};
-#define NUM_API_HOSTS  (sizeof(g_api_hosts) / sizeof(g_api_hosts[0]))
-
+static const char *g_api_hosts[] = DEFAULT_API_HOSTS;
 static int g_current_host = 0;
 static bool g_net_ready = false;
 
@@ -61,11 +53,15 @@ static const char *json_str(const cJSON *obj, const char *key) {
 
 static int json_int(const cJSON *obj, const char *key, int fallback) {
     cJSON *v = cJSON_GetObjectItemCaseSensitive(obj, key);
-    return (v && cJSON_IsNumber(v)) ? v->valueint : fallback;
+    if (!v) return fallback;
+    if (cJSON_IsNumber(v)) return v->valueint;
+    return fallback;
 }
 
 /* ── Parse API search response ───────────────────────────────────── */
 static int parse_search(const char *json, TrackMetadata *out, int max) {
+    if (!json || !out || max <= 0) return -1;
+
     cJSON *root = cJSON_Parse(json);
     if (!root) {
         printf("[NET] JSON parse error near: %.40s\n",
@@ -73,9 +69,20 @@ static int parse_search(const char *json, TrackMetadata *out, int max) {
         return -1;
     }
 
-    /* Monochrome wraps results in "data" or "tracks", or returns bare array */
-    cJSON *items = cJSON_GetObjectItemCaseSensitive(root, "data");
-    if (!items) items = cJSON_GetObjectItemCaseSensitive(root, "tracks");
+    /* Monochrome/Tidal can wrap in:
+     * - root["tracks"]
+     * - root["data"] -> array, or root["data"]["items"]
+     * - root["items"]
+     * - root bare array [...]
+     */
+    cJSON *items = cJSON_GetObjectItemCaseSensitive(root, "tracks");
+    if (!items) items = cJSON_GetObjectItemCaseSensitive(root, "data");
+    if (items && cJSON_IsObject(items)) {
+        cJSON *sub = cJSON_GetObjectItemCaseSensitive(items, "items");
+        if (!sub) sub = cJSON_GetObjectItemCaseSensitive(items, "tracks");
+        if (sub) items = sub;
+    }
+    if (!items) items = cJSON_GetObjectItemCaseSensitive(root, "items");
     if (!items && cJSON_IsArray(root)) items = root;
 
     int count = 0;
@@ -83,71 +90,104 @@ static int parse_search(const char *json, TrackMetadata *out, int max) {
         int n = cJSON_GetArraySize(items);
         for (int i = 0; i < n && count < max; i++) {
             cJSON *item = cJSON_GetArrayItem(items, i);
-            if (!item) continue;
+            if (!item || !cJSON_IsObject(item)) continue;
 
             TrackMetadata *t = &out[count];
             memset(t, 0, sizeof(*t));
 
-            /* id: trackId, recordingId, or id */
+            /* Track ID: trackId, recordingId, or id */
             cJSON *jid = cJSON_GetObjectItemCaseSensitive(item, "trackId");
             if (!jid) jid = cJSON_GetObjectItemCaseSensitive(item, "recordingId");
             if (!jid) jid = cJSON_GetObjectItemCaseSensitive(item, "id");
-            if (jid && cJSON_IsString(jid))
+            if (jid && cJSON_IsString(jid) && jid->valuestring) {
                 snprintf(t->id, sizeof(t->id), "%s", jid->valuestring);
-            else if (jid && cJSON_IsNumber(jid))
+            } else if (jid && cJSON_IsNumber(jid)) {
                 snprintf(t->id, sizeof(t->id), "%.0f", jid->valuedouble);
+            } else {
+                snprintf(t->id, sizeof(t->id), "track_%d", count + 1);
+            }
 
-            /* title */
-            const char *s = json_str(item, "title");
-            if (s) snprintf(t->title, sizeof(t->title), "%s", s);
+            /* Title: title, name */
+            const char *title_str = json_str(item, "title");
+            if (!title_str) title_str = json_str(item, "name");
+            if (title_str) snprintf(t->title, sizeof(t->title), "%s", title_str);
+            else snprintf(t->title, sizeof(t->title), "Track %d", count + 1);
 
-            /* artist: artistNames array or artist object/string */
+            /* Artist: artistNames array, artists array, or artist object/string */
             cJSON *jarr = cJSON_GetObjectItemCaseSensitive(item, "artistNames");
             if (jarr && cJSON_IsArray(jarr) && cJSON_GetArraySize(jarr) > 0) {
-                cJSON *first = cJSON_GetArrayItem(jarr, 0);
-                if (first && cJSON_IsString(first))
-                    snprintf(t->artist, sizeof(t->artist), "%s", first->valuestring);
-            } else {
-                cJSON *ja = cJSON_GetObjectItemCaseSensitive(item, "artist");
-                if (ja && cJSON_IsString(ja))
-                    snprintf(t->artist, sizeof(t->artist), "%s", ja->valuestring);
-                else if (ja && cJSON_IsObject(ja)) {
-                    s = json_str(ja, "name");
-                    if (s) snprintf(t->artist, sizeof(t->artist), "%s", s);
+                char artist_buf[256] = {0};
+                int an = cJSON_GetArraySize(jarr);
+                for (int ai = 0; ai < an && ai < 3; ai++) {
+                    cJSON *af = cJSON_GetArrayItem(jarr, ai);
+                    if (af && cJSON_IsString(af)) {
+                        if (artist_buf[0]) strncat(artist_buf, ", ", sizeof(artist_buf) - strlen(artist_buf) - 1);
+                        strncat(artist_buf, af->valuestring, sizeof(artist_buf) - strlen(artist_buf) - 1);
+                    }
+                }
+                if (artist_buf[0]) snprintf(t->artist, sizeof(t->artist), "%s", artist_buf);
+            }
+            if (t->artist[0] == '\0') {
+                cJSON *jartists = cJSON_GetObjectItemCaseSensitive(item, "artists");
+                if (jartists && cJSON_IsArray(jartists) && cJSON_GetArraySize(jartists) > 0) {
+                    cJSON *first_a = cJSON_GetArrayItem(jartists, 0);
+                    if (first_a && cJSON_IsObject(first_a)) {
+                        const char *aname = json_str(first_a, "name");
+                        if (aname) snprintf(t->artist, sizeof(t->artist), "%s", aname);
+                    }
                 }
             }
+            if (t->artist[0] == '\0') {
+                cJSON *ja = cJSON_GetObjectItemCaseSensitive(item, "artist");
+                if (ja && cJSON_IsString(ja)) {
+                    snprintf(t->artist, sizeof(t->artist), "%s", ja->valuestring);
+                } else if (ja && cJSON_IsObject(ja)) {
+                    const char *aname = json_str(ja, "name");
+                    if (aname) snprintf(t->artist, sizeof(t->artist), "%s", aname);
+                }
+            }
+            if (t->artist[0] == '\0') {
+                snprintf(t->artist, sizeof(t->artist), "Unknown Artist");
+            }
 
-            /* album */
+            /* Album */
             cJSON *jal = cJSON_GetObjectItemCaseSensitive(item, "album");
-            if (jal && cJSON_IsString(jal))
+            if (jal && cJSON_IsString(jal)) {
                 snprintf(t->album, sizeof(t->album), "%s", jal->valuestring);
-            else if (jal && cJSON_IsObject(jal)) {
-                s = json_str(jal, "title");
-                if (s) snprintf(t->album, sizeof(t->album), "%s", s);
+            } else if (jal && cJSON_IsObject(jal)) {
+                const char *al_name = json_str(jal, "title");
+                if (!al_name) al_name = json_str(jal, "name");
+                if (al_name) snprintf(t->album, sizeof(t->album), "%s", al_name);
             } else {
-                s = json_str(item, "albumTitle");
-                if (s) snprintf(t->album, sizeof(t->album), "%s", s);
+                const char *al_title = json_str(item, "albumTitle");
+                if (al_title) snprintf(t->album, sizeof(t->album), "%s", al_title);
+                else snprintf(t->album, sizeof(t->album), "Single / EP");
             }
 
-            /* duration */
-            t->duration_sec = (uint32_t)json_int(item, "duration", 0);
+            /* Duration: seconds or milliseconds */
+            int dur = json_int(item, "duration", 0);
+            if (dur > 10000) dur /= 1000; /* Milliseconds to seconds */
+            t->duration_sec = (uint32_t)dur;
 
-            /* quality */
-            s = json_str(item, "audioQuality");
-            if (s && (strstr(s, "HI_RES") || strstr(s, "MASTER"))) {
-                t->is_hi_res    = true;
-                t->sample_rate  = 96000;
-                t->bit_depth    = 24;
+            /* Quality */
+            const char *q = json_str(item, "audioQuality");
+            if (!q) q = json_str(item, "quality");
+            if (q && (strstr(q, "HI_RES") || strstr(q, "MASTER") || strstr(q, "LOSSLESS_96"))) {
+                t->is_hi_res   = true;
+                t->sample_rate = 96000;
+                t->bit_depth   = 24;
             } else {
-                t->is_hi_res    = false;
-                t->sample_rate  = 44100;
-                t->bit_depth    = 16;
+                t->is_hi_res   = false;
+                t->sample_rate = 44100;
+                t->bit_depth   = 16;
             }
 
-            /* cover URL: artwork or cover */
-            s = json_str(item, "artwork");
-            if (!s) s = json_str(item, "cover");
-            if (s) snprintf(t->cover_url, sizeof(t->cover_url), "%s", s);
+            /* Cover URL */
+            const char *art = json_str(item, "artwork");
+            if (!art) art = json_str(item, "cover");
+            if (!art) art = json_str(item, "picture");
+            if (!art) art = json_str(item, "albumCover");
+            if (art) snprintf(t->cover_url, sizeof(t->cover_url), "%s", art);
 
             count++;
         }
@@ -167,62 +207,76 @@ int net_search(const char *query, TrackMetadata *out, int max) {
         clean_q[j++] = (query[i] == ' ') ? '+' : query[i];
     }
 
-    char url[512];
-    snprintf(url, sizeof(url), "https://%s/search?q=%s",
-             g_api_hosts[g_current_host], clean_q);
-
-    printf("[NET] Querying live API: %s\n", url);
-
-    char *json_data = NULL;
-    size_t json_len = 0;
-    int ret = platform_http_get(url, &json_data, &json_len);
-
     int found = 0;
-    if (ret == 0 && json_data && json_len > 0) {
-        found = parse_search(json_data, out, max);
-        platform_http_free(json_data);
+
+    /* Try current host, and if that fails, try fallback hosts */
+    for (int attempt = 0; attempt < NUM_API_HOSTS; attempt++) {
+        int host_idx = (g_current_host + attempt) % NUM_API_HOSTS;
+        char url[512];
+
+#if USE_LOCAL_PROXY
+        snprintf(url, sizeof(url), "%s/search?q=%s", LOCAL_PROXY_URL, clean_q);
+#else
+        snprintf(url, sizeof(url), "https://%s/search?q=%s", g_api_hosts[host_idx], clean_q);
+#endif
+
+        printf("[NET] Querying API (%d/%d): %s\n", attempt + 1, NUM_API_HOSTS, url);
+
+        char *json_data = NULL;
+        size_t json_len = 0;
+        int ret = platform_http_get(url, &json_data, &json_len);
+
+        if (ret == 0 && json_data && json_len > 0) {
+            found = parse_search(json_data, out, max);
+            platform_http_free(json_data);
+            if (found > 0) {
+                g_current_host = host_idx;
+                printf("[NET] Live search succeeded on %s: %d tracks found\n",
+                       g_api_hosts[host_idx], found);
+                return found;
+            }
+        }
+
+#if USE_LOCAL_PROXY
+        break;
+#endif
     }
 
     /* Fallback to embedded catalogue if offline or network error */
-    if (found <= 0) {
-        static const char fallback_mock[] =
-            "{\"tracks\":["
-            "{\"trackId\":\"155102881689636864\",\"title\":\"Harder, Better, Faster, Stronger\","
-             "\"artistNames\":[\"Daft Punk\"],\"albumTitle\":\"Discovery\","
-             "\"duration\":224,\"audioQuality\":\"LOSSLESS\","
-             "\"artwork\":\"https://tracks.monochrome.st/cover/155102881689636864\"},"
-            "{\"trackId\":\"155102871061270528\",\"title\":\"One More Time\","
-             "\"artistNames\":[\"Daft Punk\"],\"albumTitle\":\"Discovery\","
-             "\"duration\":320,\"audioQuality\":\"LOSSLESS\","
-             "\"artwork\":\"https://tracks.monochrome.st/cover/155102871061270528\"},"
-            "{\"trackId\":\"155142491052445696\",\"title\":\"Instant Crush\","
-             "\"artistNames\":[\"Daft Punk\",\"Julian Casablancas\"],\"albumTitle\":\"Random Access Memories\","
-             "\"duration\":337,\"audioQuality\":\"HI_RES\","
-             "\"artwork\":\"https://tracks.monochrome.st/cover/155142491052445696\"},"
-            "{\"trackId\":\"155142502393843712\",\"title\":\"Get Lucky\","
-             "\"artistNames\":[\"Daft Punk\",\"Pharrell Williams\"],\"albumTitle\":\"Random Access Memories\","
-             "\"duration\":248,\"audioQuality\":\"HI_RES\","
-             "\"artwork\":\"https://tracks.monochrome.st/cover/155142502393843712\"}"
-            "]}";
+    static const char fallback_mock[] =
+        "{\"tracks\":["
+        "{\"trackId\":\"155102881689636864\",\"title\":\"Harder, Better, Faster, Stronger\","
+         "\"artistNames\":[\"Daft Punk\"],\"albumTitle\":\"Discovery\","
+         "\"duration\":224,\"audioQuality\":\"LOSSLESS\","
+         "\"artwork\":\"https://tracks.monochrome.st/cover/155102881689636864\"},"
+        "{\"trackId\":\"155102871061270528\",\"title\":\"One More Time\","
+         "\"artistNames\":[\"Daft Punk\"],\"albumTitle\":\"Discovery\","
+         "\"duration\":320,\"audioQuality\":\"LOSSLESS\","
+         "\"artwork\":\"https://tracks.monochrome.st/cover/155102871061270528\"},"
+        "{\"trackId\":\"155142491052445696\",\"title\":\"Instant Crush\","
+         "\"artistNames\":[\"Daft Punk\",\"Julian Casablancas\"],\"albumTitle\":\"Random Access Memories\","
+         "\"duration\":337,\"audioQuality\":\"HI_RES\","
+         "\"artwork\":\"https://tracks.monochrome.st/cover/155142491052445696\"},"
+        "{\"trackId\":\"155142502393843712\",\"title\":\"Get Lucky\","
+         "\"artistNames\":[\"Daft Punk\",\"Pharrell Williams\"],\"albumTitle\":\"Random Access Memories\","
+         "\"duration\":248,\"audioQuality\":\"HI_RES\","
+         "\"artwork\":\"https://tracks.monochrome.st/cover/155142502393843712\"}"
+        "]}";
 
-        found = parse_search(fallback_mock, out, max);
-        if (found < 0) {
-            g_current_host = (g_current_host + 1) % NUM_API_HOSTS;
-            return 0;
-        }
+    found = parse_search(fallback_mock, out, max);
+    if (found > 0) {
         printf("[NET] Live fetch unavailable, using offline cached catalogue (%d tracks)\n", found);
-    } else {
-        printf("[NET] Live search succeeded: %d tracks found\n", found);
     }
-
-    return found;
+    return (found > 0) ? found : 0;
 }
 
 int net_resolve_stream(const char *track_id, char *url_out, size_t url_len) {
     if (!track_id || !url_out) return -1;
-    /* Upstream track streaming: GET https://tracks.monochrome.st/track/:id */
-    snprintf(url_out, url_len, "https://%s/track/%s",
-             g_api_hosts[g_current_host], track_id);
+#if USE_LOCAL_PROXY
+    snprintf(url_out, url_len, "%s/track/%s", LOCAL_PROXY_URL, track_id);
+#else
+    snprintf(url_out, url_len, "https://%s/track/%s", g_api_hosts[g_current_host], track_id);
+#endif
     printf("[NET] Stream URL → %s\n", url_out);
     return 0;
 }
@@ -238,13 +292,37 @@ int net_start_stream(const char *url, AudioRingBuffer *rb) {
     size_t flac_len = 0;
     int ret = platform_http_get(url, &flac_data, &flac_len);
 
+    /* If response is JSON manifest {"url": "https://..."}, resolve real stream URL */
+    if (ret == 0 && flac_data && flac_len > 2 && flac_data[0] == '{') {
+        cJSON *sroot = cJSON_Parse(flac_data);
+        if (sroot) {
+            const char *stream_link = json_str(sroot, "url");
+            if (!stream_link) stream_link = json_str(sroot, "streamUrl");
+            if (!stream_link) {
+                cJSON *sdata = cJSON_GetObjectItemCaseSensitive(sroot, "data");
+                if (sdata) stream_link = json_str(sdata, "url");
+            }
+
+            if (stream_link && strlen(stream_link) > 4) {
+                char resolved_url[512];
+                snprintf(resolved_url, sizeof(resolved_url), "%s", stream_link);
+                platform_http_free(flac_data);
+                flac_data = NULL;
+                flac_len = 0;
+                printf("[NET] Redirected to underlying audio stream: %s\n", resolved_url);
+                ret = platform_http_get(resolved_url, &flac_data, &flac_len);
+            }
+            cJSON_Delete(sroot);
+        }
+    }
+
     size_t max_frames = rb->capacity / (2 * sizeof(int16_t));
     size_t frames_decoded = 0;
     uint32_t sample_rate = 0;
     uint8_t channels = 0;
 
     bool decoded = false;
-    if (ret == 0 && flac_data && flac_len > 4) {
+    if (ret == 0 && flac_data && flac_len >= 4) {
         int dres = flac_decode_memory((const uint8_t *)flac_data, flac_len,
                                       (int16_t *)rb->buffer, max_frames,
                                       &frames_decoded, &sample_rate, &channels);
@@ -257,6 +335,8 @@ int net_start_stream(const char *url, AudioRingBuffer *rb) {
             printf("[NET] FLAC decoded successfully: %zu frames (%zu KB) @ %u Hz %d ch\n",
                    frames_decoded, pcm_bytes / 1024, sample_rate, (int)channels);
             decoded = true;
+        } else {
+            printf("[NET] FLAC decoding returned code %d, engaging synthesized stream fallback\n", dres);
         }
     }
 
@@ -277,7 +357,6 @@ int net_start_stream(const char *url, AudioRingBuffer *rb) {
 
     return 0;
 }
-
 
 void net_stop_stream(void) {
     printf("[NET] Stream stopped.\n");
