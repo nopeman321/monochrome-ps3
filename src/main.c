@@ -63,12 +63,16 @@ int app_init(void) {
         return -1;
     }
 
+    /* Cover art caching subsystem */
+    cover_art_init();
+
     g_state = STATE_HOME;
     return 0;
 }
 
 void app_shutdown(void) {
     printf("[SYS] Shutting down subsystems…\n");
+    cover_art_shutdown();
     net_stop_stream();
     audio_shutdown();
     net_shutdown();

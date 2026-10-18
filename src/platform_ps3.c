@@ -416,6 +416,7 @@ static const uint8_t FONT8[95][8] = {
 #define COL_BAR_FG  0xFF29B6F6u
 #define COL_GREEN   0xFF6EC472u
 #define COL_HEAD    0xFF121212u
+#define COL_CARD    0xFF141824u
 
 /* ── Pixel / rect / text helpers ───────────────────────────────────────── */
 static inline void fb_px(int x, int y, uint32_t c) {
@@ -461,6 +462,18 @@ static void trunc(char *dst, size_t dsz, const char *src, int maxch) {
     int k = maxch - 3; if (k < 0) k = 0;
     strncpy(dst, src, (size_t)k);
     dst[k]='.'; dst[k+1]='.'; dst[k+2]='.'; dst[k+3]='\0';
+}
+
+static void fb_blit_cover(int dst_x, int dst_y, int dst_w, int dst_h,
+                          const uint32_t *src_pixels, int src_w, int src_h) {
+    if (!src_pixels || src_w <= 0 || src_h <= 0) return;
+    for (int y = 0; y < dst_h; y++) {
+        int sy = (y * src_h) / dst_h;
+        for (int x = 0; x < dst_w; x++) {
+            int sx = (x * src_w) / dst_w;
+            fb_px(dst_x + x, dst_y + y, src_pixels[sy * src_w + sx]);
+        }
+    }
 }
 
 /* ── RSX / GCM Abstraction ──────────────────────────────────────────────── */
@@ -676,21 +689,45 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     fb_rect(0, 40, FB_WIDTH, 1, COL_DIM);
     fb_rect(0, 41, FB_WIDTH, 68, 0xFF0D1B2Au);
 
+    /* 40x40 Album Cover Art Thumbnail */
+    const CoverArtImage *cover = cover_art_get_current();
+    if (cover && cover->ready) {
+        fb_blit_cover(16, 48, 42, 42, cover->pixels, cover->width, cover->height);
+        fb_rect(15, 47, 44, 1, COL_ACCENT);
+        fb_rect(15, 90, 44, 1, COL_ACCENT);
+        fb_rect(15, 47, 1, 44, COL_ACCENT);
+        fb_rect(59, 47, 1, 44, COL_ACCENT);
+    } else {
+        fb_rect(16, 48, 42, 42, COL_CARD);
+        fb_str(30, 60, ">", COL_FG, 2);
+    }
+
     if (track && track->title[0]) {
         const char *icon = (pstate == (int)PLAYBACK_PLAYING) ? "> " : "|| ";
-        char ttl[64]; trunc(ttl, sizeof(ttl), track->title, 26);
-        fb_str(20, 52, icon, COL_GREEN, 2);
-        fb_str(20 + (int)strlen(icon)*16, 52, ttl, COL_FG, 2);
+        char ttl[64]; trunc(ttl, sizeof(ttl), track->title, 20);
+        fb_str(68, 52, icon, COL_GREEN, 2);
+        fb_str(68 + (int)strlen(icon)*16, 52, ttl, COL_FG, 2);
 
         char meta[128];
-        snprintf(meta, sizeof(meta), "%s  |  %s  |  %u Hz  %u-bit",
+        snprintf(meta, sizeof(meta), "%s  |  %s",
                  track->artist[0] ? track->artist : "Unknown",
-                 track->album[0]  ? track->album  : "Unknown",
-                 track->sample_rate ? track->sample_rate : 48000u,
-                 track->bit_depth   ? (unsigned)track->bit_depth : 16u);
-        fb_str(20, 78, meta, COL_DIM, 1);
+                 track->album[0]  ? track->album  : "Unknown");
+        fb_str(68, 78, meta, COL_DIM, 1);
     } else {
-        fb_str(20, 58, "-- No track selected --", COL_DIM, 2);
+        fb_str(68, 58, "-- No track selected --", COL_DIM, 2);
+    }
+
+    /* ── 16-Band Real-Time Audio Spectrum Visualizer (x: 360–504, y: 56–88) ── */
+    float vis_bands[VIS_BANDS];
+    audio_get_visualization(vis_bands, VIS_BANDS);
+    for (int b = 0; b < VIS_BANDS; b++) {
+        int bar_x = 360 + b * 9;
+        int bar_h = (int)(vis_bands[b] * 28.0f);
+        if (bar_h < 2) bar_h = 2;
+        if (bar_h > 28) bar_h = 28;
+        int bar_y = 86 - bar_h;
+        fb_rect(bar_x, bar_y, 6, bar_h, COL_ACCENT);
+        fb_rect(bar_x, bar_y - 2, 6, 2, COL_FG);
     }
 
     /* ── Volume HUD & DMA Ring-Buffer Occupancy ───────────────────────── */
@@ -787,7 +824,54 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     /* ── Status bar ──────────────────────────────────────────────────── */
     fb_rect(0, FB_HEIGHT-16, FB_WIDTH, 16, 0xFF080808u);
     char st[80]; snprintf(st, sizeof(st), "%d tracks  |  MONOCHROME PS3 Homebrew", track_count);
-    fb_str(20, FB_HEIGHT-12, st, COL_DIM, 1);
+    /* ── On-Screen Keyboard Modal Overlay (when state == STATE_SEARCH) ── */
+    if (state == (int)STATE_SEARCH) {
+        int osk_r = 0, osk_c = 0;
+        const char *osk_q = NULL;
+        ui_get_osk_state(&osk_r, &osk_c, &osk_q);
+
+        /* Modal Background Box (centered: 720x480 screen) */
+        int mx = 40, my = 50, mw = FB_WIDTH - 80, mh = 370;
+        fb_rect(mx, my, mw, mh, 0xFF0D1B2Au);
+        fb_rect(mx, my, mw, 2, COL_ACCENT);
+        fb_rect(mx, my + mh - 2, mw, 2, COL_ACCENT);
+        fb_rect(mx, my, 2, mh, COL_ACCENT);
+        fb_rect(mx + mw - 2, my, 2, mh, COL_ACCENT);
+
+        fb_str(mx + 20, my + 15, "SEARCH TIDAL / MONOCHROME", COL_FG, 2);
+        char qdisp[80];
+        snprintf(qdisp, sizeof(qdisp), "Query: %s_", osk_q ? osk_q : "");
+        fb_str(mx + 20, my + 45, qdisp, COL_ACCENT, 2);
+
+        static const char *k_grid[4][10] = {
+            { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" },
+            { "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P" },
+            { "A", "S", "D", "F", "G", "H", "J", "K", "L", "-" },
+            { "Z", "X", "C", "V", "B", "N", "M", "SPC", "DEL", "GO" }
+        };
+
+        for (int r = 0; r < 4; r++) {
+            for (int c = 0; c < 10; c++) {
+                int kx = mx + 20 + c * 60;
+                int ky = my + 85 + r * 55;
+                int kw = 52, kh = 42;
+                bool is_sel = (r == osk_r && c == osk_c);
+                uint32_t bg_col = is_sel ? COL_ACCENT : 0xFF1C2541u;
+                uint32_t fg_col = is_sel ? COL_FG : COL_DIM;
+                fb_rect(kx, ky, kw, kh, bg_col);
+                if (is_sel) {
+                    fb_rect(kx, ky, kw, 1, COL_FG);
+                    fb_rect(kx, ky + kh - 1, kw, 1, COL_FG);
+                    fb_rect(kx, ky, 1, kh, COL_FG);
+                    fb_rect(kx + kw - 1, ky, 1, kh, COL_FG);
+                }
+                fb_str(kx + 14, ky + 12, k_grid[r][c], fg_col, 2);
+            }
+        }
+
+        fb_str(mx + 20, my + mh - 35, "[D-Pad] Navigate  [X] Select  [Triangle] Delete  [O] Cancel", COL_DIM, 1);
+        fb_str(mx + 20, my + mh - 18, "[Square] Quick Preset  Select [GO] to search live API", COL_ACCENT, 1);
+    }
 
     /* ── Flush to RSX ─────────────────────────────────────────────────── */
     rsx_flip();
@@ -1058,44 +1142,40 @@ InputAction platform_poll_input(void) {
     uint16_t n2 = (uint16_t)(b2 & ~s_prev2), n3 = (uint16_t)(b3 & ~s_prev3);
     s_prev2 = b2; s_prev3 = b3;
 
-    /* D-Pad Up / Down: Adjust master volume in steps of 0.05f */
-    if (n2 & 0x10) { /* D-Pad Up */
-        platform_audio_set_volume(s_master_volume + 0.05f);
-        tty("[PAD] D-Pad UP: Volume -> %.2f\n", s_master_volume);
-    }
-    if (n2 & 0x40) { /* D-Pad Down */
-        platform_audio_set_volume(s_master_volume - 0.05f);
-        tty("[PAD] D-Pad DOWN: Volume -> %.2f\n", s_master_volume);
-    }
+    /* D-Pad Up / Down / Left / Right: Menu & OSK navigation */
+    if (n2 & 0x10) return INPUT_UP;
+    if (n2 & 0x40) return INPUT_DOWN;
+    if (n2 & 0x80) return INPUT_LEFT;
+    if (n2 & 0x20) return INPUT_RIGHT;
 
-    /* Cross (✕): Toggle Play / Pause */
-    if (n3 & 0x40) {
-        s_audio_playing = !s_audio_playing;
-        tty("[PAD] Cross (X): Play/Pause toggled -> %s\n", s_audio_playing ? "PLAYING" : "PAUSED");
-        return INPUT_PLAY_PAUSE;
-    }
+    /* Cross (✕): Select track / Confirm OSK key */
+    if (n3 & 0x40) return INPUT_SELECT;
 
-    /* L1 (0x04) / R1 (0x08) or D-Pad Left (0x80) / Right (0x20): Navigate track */
-    if ((n3 & 0x04) || (n2 & 0x80)) return INPUT_UP;
-    if ((n3 & 0x08) || (n2 & 0x20)) return INPUT_DOWN;
+    /* Circle (○): Cancel / Back */
+    if (n3 & 0x20) return INPUT_CANCEL;
 
-    /* Triangle (△): Play / Pause alternate */
-    if (n3 & 0x10) {
-        s_audio_playing = !s_audio_playing;
-        return INPUT_PLAY_PAUSE;
-    }
-
-    /* Square (□): Action / Search */
+    /* Square (□): Action / Search (OSK) */
     if (n3 & 0x80) return INPUT_ACTION_SEARCH;
 
-    /* Circle (○): Cancel */
-    if (n3 & 0x20) return INPUT_CANCEL;
+    /* Triangle (△): Toggle Play / Pause */
+    if (n3 & 0x10) return INPUT_PLAY_PAUSE;
+
+    /* L1 (0x04) / R1 (0x08): Adjust master volume */
+    if (n3 & 0x04) {
+        platform_audio_set_volume(s_master_volume - 0.05f);
+        tty("[PAD] L1: Volume -> %.2f\n", s_master_volume);
+    }
+    if (n3 & 0x08) {
+        platform_audio_set_volume(s_master_volume + 0.05f);
+        tty("[PAD] R1: Volume -> %.2f\n", s_master_volume);
+    }
 
     /* Start: Quit */
     if (n2 & 0x08) return INPUT_QUIT;
 
     return INPUT_NONE;
 }
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  SECTION 5 — NETWORK (pre-cached fallback catalogue)

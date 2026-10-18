@@ -42,6 +42,9 @@ int gfx_init(void) {
     if (!g_initial_load) {
         g_track_count = net_search("trending", g_tracks, MAX_SEARCH_RESULTS);
         g_initial_load = true;
+        if (g_track_count > 0) {
+            cover_art_request(g_tracks[0].id, g_tracks[0].cover_url);
+        }
     }
     return 0;
 }
@@ -98,11 +101,118 @@ void gfx_render(AppState state, const TrackMetadata *track,
                         s_search_presets[s_preset_idx]);
 }
 
+static char g_search_query[64] = "Daft Punk";
+static int  g_search_query_len = 9;
+static int  g_osk_row = 1;
+static int  g_osk_col = 0;
+
+static const char *s_osk_grid[4][10] = {
+    { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" },
+    { "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P" },
+    { "A", "S", "D", "F", "G", "H", "J", "K", "L", "-" },
+    { "Z", "X", "C", "V", "B", "N", "M", "SPC", "DEL", "GO" }
+};
+
+void ui_get_osk_state(int *row, int *col, const char **query) {
+    if (row)   *row   = g_osk_row;
+    if (col)   *col   = g_osk_col;
+    if (query) *query = g_search_query;
+}
+
+void ui_osk_input_char(char ch) {
+    if (ch == '\b' || ch == 127) {
+        if (g_search_query_len > 0) {
+            g_search_query[--g_search_query_len] = '\0';
+        }
+    } else if (ch >= 32 && ch < 127) {
+        if (g_search_query_len < (int)sizeof(g_search_query) - 1) {
+            g_search_query[g_search_query_len++] = ch;
+            g_search_query[g_search_query_len] = '\0';
+        }
+    }
+}
+
+void ui_osk_set_cursor(int row, int col) {
+    if (row >= 0 && row < 4)  g_osk_row = row;
+    if (col >= 0 && col < 10) g_osk_col = col;
+}
+
 /* ── Input polling → state transitions ───────────────────────────── */
 AppState pad_update(AppState current) {
     InputAction act = platform_poll_input();
 
-    /* Direct mouse track selection support */
+    /* ── SEARCH STATE (On-Screen Keyboard Overlay) ─────────────────── */
+    if (current == STATE_SEARCH) {
+        switch (act) {
+            case INPUT_UP:
+                g_osk_row = (g_osk_row - 1 + 4) % 4;
+                break;
+            case INPUT_DOWN:
+                g_osk_row = (g_osk_row + 1) % 4;
+                break;
+            case INPUT_LEFT:
+                g_osk_col = (g_osk_col - 1 + 10) % 10;
+                break;
+            case INPUT_RIGHT:
+                g_osk_col = (g_osk_col + 1) % 10;
+                break;
+
+            case INPUT_SELECT: {
+                const char *key = s_osk_grid[g_osk_row][g_osk_col];
+                if (strcmp(key, "GO") == 0) {
+                    if (g_search_query_len > 0) {
+                        printf("[UI] Searching Tidal live API for: '%s'...\n", g_search_query);
+                        g_track_count = net_search(g_search_query, g_tracks, MAX_SEARCH_RESULTS);
+                        g_cursor = 0;
+                    }
+                    current = STATE_HOME;
+                } else if (strcmp(key, "DEL") == 0) {
+                    if (g_search_query_len > 0) {
+                        g_search_query[--g_search_query_len] = '\0';
+                    }
+                } else if (strcmp(key, "SPC") == 0) {
+                    if (g_search_query_len < (int)sizeof(g_search_query) - 1) {
+                        g_search_query[g_search_query_len++] = ' ';
+                        g_search_query[g_search_query_len] = '\0';
+                    }
+                } else {
+                    if (g_search_query_len < (int)sizeof(g_search_query) - 1) {
+                        g_search_query[g_search_query_len++] = key[0];
+                        g_search_query[g_search_query_len] = '\0';
+                    }
+                }
+                break;
+            }
+
+            case INPUT_PLAY_PAUSE: /* Triangle / Space shortcut for Delete in OSK */
+                if (g_search_query_len > 0) {
+                    g_search_query[--g_search_query_len] = '\0';
+                }
+                break;
+
+            case INPUT_ACTION_SEARCH: /* Cycle quick suggestions */
+                s_preset_idx = (s_preset_idx + 1) % NUM_SEARCH_PRESETS;
+                snprintf(g_search_query, sizeof(g_search_query), "%s", s_search_presets[s_preset_idx]);
+                g_search_query_len = (int)strlen(g_search_query);
+                printf("[UI] Quick preset: '%s'\n", g_search_query);
+                break;
+
+            case INPUT_CANCEL:
+                printf("[UI] Search cancelled.\n");
+                current = STATE_HOME;
+                break;
+
+            case INPUT_QUIT:
+                app_request_exit();
+                break;
+
+            default:
+                break;
+        }
+        return current;
+    }
+
+    /* ── HOME & PLAYING STATES ─────────────────────────────────────── */
     int mouse_sel = platform_get_mouse_track_selection();
     if (mouse_sel >= 0 && mouse_sel < g_track_count) {
         g_cursor = mouse_sel;
@@ -142,6 +252,7 @@ AppState pad_update(AppState current) {
                     char url[512];
                     net_resolve_stream(cur->id, url, sizeof(url));
                     net_start_stream(url, app_get_ring());
+                    cover_art_request(cur->id, cur->cover_url);
                     current = STATE_PLAYING;
                 }
             }
@@ -158,12 +269,8 @@ AppState pad_update(AppState current) {
             break;
 
         case INPUT_ACTION_SEARCH:
-            s_preset_idx = (s_preset_idx + 1) % NUM_SEARCH_PRESETS;
-            printf("[INPUT] Search triggered for genre/query: '%s'...\n", s_search_presets[s_preset_idx]);
+            printf("[INPUT] Opening Search On-Screen Keyboard (OSK)...\n");
             current = STATE_SEARCH;
-            g_track_count = net_search(s_search_presets[s_preset_idx], g_tracks, MAX_SEARCH_RESULTS);
-            g_cursor = 0;
-            current = STATE_HOME;
             break;
 
         case INPUT_QUIT:
@@ -177,4 +284,5 @@ AppState pad_update(AppState current) {
 
     return current;
 }
+
 

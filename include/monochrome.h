@@ -144,7 +144,8 @@ void audio_tick(void);  /* called from main loop — feeds sys_audio_out */
 void audio_set_state(PlaybackState state);
 PlaybackState audio_get_state(void);
 float audio_get_progress(uint32_t total_duration_sec);
-uint32_t audio_get_elapsed_sec(void);
+#define VIS_BANDS 16
+void audio_get_visualization(float *out_bands, int count);
 void audio_reset_progress(void);
 
 /* ── SPU DSP kernels ─────────────────────────────────────────────── */
@@ -157,5 +158,22 @@ void gfx_shutdown(void);
 void gfx_render(AppState state, const TrackMetadata *track,
                 PlaybackState pstate, float progress);
 AppState pad_update(AppState current);
+void     ui_get_osk_state(int *row, int *col, const char **query);
+void     ui_osk_input_char(char ch);
+void     ui_osk_set_cursor(int row, int col);
+/* ── Cover Art Caching Subsystem ─────────────────────────────────── */
+#define COVER_SIZE 80
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pixels[COVER_SIZE * COVER_SIZE];
+    char     track_id[64];
+    volatile bool ready;
+} CoverArtImage;
+
+void cover_art_init(void);
+void cover_art_shutdown(void);
+void cover_art_request(const char *track_id, const char *cover_url);
+const CoverArtImage *cover_art_get_current(void);
 
 #endif /* MONOCHROME_PS3_H */

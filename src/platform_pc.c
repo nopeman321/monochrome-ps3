@@ -73,29 +73,74 @@ static HPEN         s_pen_dim       = NULL;
 /* Input Queues */
 static InputAction  s_queued_action = INPUT_NONE;
 static int          s_mouse_clicked_track = -1;
+static int          s_current_state = 0;
 
 /* ── Window Procedure ────────────────────────────────────────────── */
 static LRESULT CALLBACK PlatformWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
         case WM_KEYDOWN: {
-            switch (wParam) {
-                case VK_UP:     s_queued_action = INPUT_UP; break;
-                case VK_DOWN:   s_queued_action = INPUT_DOWN; break;
-                case VK_LEFT:   s_queued_action = INPUT_LEFT; break;
-                case VK_RIGHT:  s_queued_action = INPUT_RIGHT; break;
-                case VK_RETURN: s_queued_action = INPUT_SELECT; break;
-                case VK_SPACE:  s_queued_action = INPUT_PLAY_PAUSE; break;
-                case 'S':       s_queued_action = INPUT_ACTION_SEARCH; break;
-                case VK_ESCAPE:
-                case 'Q':       s_queued_action = INPUT_QUIT; break;
-                default: break;
+            if (s_current_state == (int)STATE_SEARCH) {
+                switch (wParam) {
+                    case VK_UP:     s_queued_action = INPUT_UP; break;
+                    case VK_DOWN:   s_queued_action = INPUT_DOWN; break;
+                    case VK_LEFT:   s_queued_action = INPUT_LEFT; break;
+                    case VK_RIGHT:  s_queued_action = INPUT_RIGHT; break;
+                    case VK_RETURN:
+                        ui_osk_set_cursor(3, 9); /* Move to GO key */
+                        s_queued_action = INPUT_SELECT;
+                        break;
+                    case VK_BACK:   ui_osk_input_char('\b'); break;
+                    case VK_ESCAPE: s_queued_action = INPUT_CANCEL; break;
+                    default: break;
+                }
+            } else {
+                switch (wParam) {
+                    case VK_UP:     s_queued_action = INPUT_UP; break;
+                    case VK_DOWN:   s_queued_action = INPUT_DOWN; break;
+                    case VK_LEFT:   s_queued_action = INPUT_LEFT; break;
+                    case VK_RIGHT:  s_queued_action = INPUT_RIGHT; break;
+                    case VK_RETURN: s_queued_action = INPUT_SELECT; break;
+                    case VK_SPACE:  s_queued_action = INPUT_PLAY_PAUSE; break;
+                    case 'S':       s_queued_action = INPUT_ACTION_SEARCH; break;
+                    case VK_ESCAPE:
+                    case 'Q':       s_queued_action = INPUT_QUIT; break;
+                    default: break;
+                }
             }
             return 0;
+        }
+
+        case WM_CHAR: {
+            if (s_current_state == (int)STATE_SEARCH) {
+                if (wParam >= 32 && wParam < 127) {
+                    ui_osk_input_char((char)wParam);
+                }
+                return 0;
+            }
+            break;
         }
 
         case WM_LBUTTONDOWN: {
             int mx = LOWORD(lParam);
             int my = HIWORD(lParam);
+
+            if (s_current_state == (int)STATE_SEARCH) {
+                /* OSK Key Clicks (x: 220-1060, y: 245-485) */
+                if (mx >= 220 && mx < 220 + 10 * 84 && my >= 245 && my < 245 + 4 * 60) {
+                    int c = (mx - 220) / 84;
+                    int r = (my - 245) / 60;
+                    if (c >= 0 && c < 10 && r >= 0 && r < 4) {
+                        int cur_r = 0, cur_c = 0;
+                        ui_get_osk_state(&cur_r, &cur_c, NULL);
+                        while (cur_r < r) { s_queued_action = INPUT_DOWN; cur_r++; }
+                        while (cur_r > r) { s_queued_action = INPUT_UP; cur_r--; }
+                        while (cur_c < c) { s_queued_action = INPUT_RIGHT; cur_c++; }
+                        while (cur_c > c) { s_queued_action = INPUT_LEFT; cur_c--; }
+                        s_queued_action = INPUT_SELECT;
+                    }
+                }
+                return 0;
+            }
 
             /* Track rows clicked */
             if (my >= 155 && my < 155 + 10 * 43) {
@@ -138,6 +183,7 @@ static LRESULT CALLBACK PlatformWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
         default:
             return DefWindowProc(hwnd, uMsg, wParam, lParam);
     }
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
 /* ── Lifecycle & Timers ──────────────────────────────────────────── */
@@ -595,6 +641,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
                          int pstate, float progress,
                          const struct TrackMetadata *tracks, int track_count, int cursor,
                          const char *search_query) {
+    s_current_state = state;
     if (!s_mem_dc || !s_window_open) return;
 
     SetBkMode(s_mem_dc, TRANSPARENT);
@@ -730,13 +777,36 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     MoveToEx(s_mem_dc, 0, 595, NULL);
     LineTo(s_mem_dc, s_win_width, 595);
 
-    /* Cover Art Square */
+    /* Cover Art Square (80x80) */
     RECT r_art = { 35, 610, 115, 690 };
-    FillRect(s_mem_dc, &r_art, s_br_card);
-    FrameRect(s_mem_dc, &r_art, s_br_highlight);
-    SelectObject(s_mem_dc, s_font_heading);
-    SetTextColor(s_mem_dc, RGB(255, 255, 255));
-    DrawTextA(s_mem_dc, "♫", -1, &r_art, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    const CoverArtImage *cover = cover_art_get_current();
+    if (cover && cover->ready) {
+        BITMAPINFO bmi;
+        memset(&bmi, 0, sizeof(bmi));
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = (LONG)cover->width;
+        bmi.bmiHeader.biHeight = -(LONG)cover->height; /* top-down */
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        StretchDIBits(
+            s_mem_dc,
+            35, 610, 80, 80,
+            0, 0, cover->width, cover->height,
+            cover->pixels,
+            &bmi,
+            DIB_RGB_COLORS,
+            SRCCOPY
+        );
+        FrameRect(s_mem_dc, &r_art, s_br_highlight);
+    } else {
+        FillRect(s_mem_dc, &r_art, s_br_card);
+        FrameRect(s_mem_dc, &r_art, s_br_highlight);
+        SelectObject(s_mem_dc, s_font_heading);
+        SetTextColor(s_mem_dc, RGB(255, 255, 255));
+        DrawTextA(s_mem_dc, "♫", -1, &r_art, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
 
     /* Track metadata */
     const char *now_t = (track && track->title[0] != '\0') ? track->title : "No Track Selected";
@@ -787,6 +857,23 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     SetTextColor(s_mem_dc, RGB(180, 185, 200));
     TextOutA(s_mem_dc, 440, 665, cur_time_str, (int)strlen(cur_time_str));
 
+    /* 16-Band Real-Time Audio Spectrum Visualizer (x: 725 - 917, y: 606 - 640) */
+    float vis_bands[VIS_BANDS];
+    audio_get_visualization(vis_bands, VIS_BANDS);
+    for (int b = 0; b < VIS_BANDS; b++) {
+        int bar_x = 725 + b * 12;
+        int bar_h = (int)(vis_bands[b] * 30.0f);
+        if (bar_h < 2) bar_h = 2;
+        if (bar_h > 30) bar_h = 30;
+        int bar_y = 640 - bar_h;
+        RECT r_bar = { bar_x, bar_y, bar_x + 8, 640 };
+        FillRect(s_mem_dc, &r_bar, s_br_accent);
+
+        /* Peak dot */
+        RECT r_dot = { bar_x, bar_y - 2, bar_x + 8, bar_y };
+        FillRect(s_mem_dc, &r_dot, s_br_highlight);
+    }
+
     /* Right Keybindings & Engine Specs (x: 950 - 1245) */
     SelectObject(s_mem_dc, s_font_mono);
     SetTextColor(s_mem_dc, RGB(120, 180, 255));
@@ -795,16 +882,86 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
 
     SetTextColor(s_mem_dc, RGB(160, 165, 180));
     TextOutA(s_mem_dc, 950, 655, "[▲/▼] Navigate | [ENTER] Play", 29);
-    TextOutA(s_mem_dc, 950, 672, "[SPACE] Pause  | [S] Cycle Genre", 32);
+    TextOutA(s_mem_dc, 950, 672, "[SPACE] Pause  | [S] Search (OSK)", 33);
     TextOutA(s_mem_dc, 950, 689, "[CLICK] Select | [ESC] Exit", 27);
 
-    /* 6. Blit from memory DC to Window DC */
+    /* 6. On-Screen Keyboard Modal Overlay (when state == STATE_SEARCH) */
+    if (state == (int)STATE_SEARCH) {
+        int osk_r = 0, osk_c = 0;
+        const char *osk_q = NULL;
+        ui_get_osk_state(&osk_r, &osk_c, &osk_q);
+
+        /* Dim card overlay */
+        RECT r_modal_bg = { 180, 100, 1100, 580 };
+        FillRect(s_mem_dc, &r_modal_bg, s_br_dock);
+        FrameRect(s_mem_dc, &r_modal_bg, s_br_accent);
+
+        /* OSK Header */
+        SelectObject(s_mem_dc, s_font_heading);
+        SetTextColor(s_mem_dc, RGB(255, 255, 255));
+        TextOutA(s_mem_dc, 220, 120, "TIDAL / MONOCHROME CATALOGUE SEARCH", 35);
+
+        SelectObject(s_mem_dc, s_font_sub);
+        SetTextColor(s_mem_dc, RGB(160, 165, 180));
+        TextOutA(s_mem_dc, 220, 150, "Type query with keyboard or navigate virtual keys with D-Pad", 61);
+
+        /* Query Input Box */
+        RECT r_qbox = { 220, 180, 1060, 225 };
+        FillRect(s_mem_dc, &r_qbox, s_br_card);
+        FrameRect(s_mem_dc, &r_qbox, s_br_highlight);
+
+        char display_query[128];
+        snprintf(display_query, sizeof(display_query), "🔍 %s|", osk_q ? osk_q : "");
+        SelectObject(s_mem_dc, s_font_track);
+        SetTextColor(s_mem_dc, RGB(255, 255, 255));
+        RECT r_qtext = { 235, 185, 1045, 220 };
+        DrawTextA(s_mem_dc, display_query, -1, &r_qtext, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        /* Virtual Key Grid (4 rows x 10 cols) */
+        static const char *k_grid[4][10] = {
+            { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" },
+            { "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P" },
+            { "A", "S", "D", "F", "G", "H", "J", "K", "L", "-" },
+            { "Z", "X", "C", "V", "B", "N", "M", "SPC", "DEL", "GO" }
+        };
+
+        SelectObject(s_mem_dc, s_font_mono);
+        for (int row = 0; row < 4; row++) {
+            for (int col = 0; col < 10; col++) {
+                int kx = 220 + col * 84;
+                int ky = 245 + row * 60;
+                RECT r_key = { kx, ky, kx + 76, ky + 48 };
+
+                bool is_active = (row == osk_r && col == osk_c);
+                if (is_active) {
+                    FillRect(s_mem_dc, &r_key, s_br_highlight);
+                    FrameRect(s_mem_dc, &r_key, s_br_accent);
+                    SetTextColor(s_mem_dc, RGB(255, 255, 255));
+                } else {
+                    FillRect(s_mem_dc, &r_key, s_br_card);
+                    FrameRect(s_mem_dc, &r_key, s_br_dock);
+                    SetTextColor(s_mem_dc, RGB(200, 205, 220));
+                }
+
+                DrawTextA(s_mem_dc, k_grid[row][col], -1, &r_key, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+        }
+
+        /* Footer guidance */
+        SelectObject(s_mem_dc, s_font_mono);
+        SetTextColor(s_mem_dc, RGB(140, 210, 255));
+        TextOutA(s_mem_dc, 220, 500, "[ARROWS] Navigate  |  [ENTER/SELECT] Choose  |  [SPACE] Delete  |  [ESC] Cancel", 77);
+        TextOutA(s_mem_dc, 220, 525, "[S / SQUARE] Quick Preset  |  Select [GO] to search live Tidal API", 67);
+    }
+
+    /* 7. Blit from memory DC to Window DC */
     HDC hdc = GetDC(s_hwnd);
     BitBlt(hdc, 0, 0, s_win_width, s_win_height, s_mem_dc, 0, 0, SRCCOPY);
     ReleaseDC(s_hwnd, hdc);
 
-    (void)state;
+    s_current_state = state;
 }
+
 
 /* ── Mouse & Keyboard Input Polling ──────────────────────────────── */
 InputAction platform_poll_input(void) {
@@ -840,15 +997,28 @@ InputAction platform_poll_input(void) {
             char ch = 0;
             DWORD bytesRead = 0;
             if (ReadFile(hIn, &ch, 1, &bytesRead, NULL) && bytesRead > 0) {
-                switch (ch) {
-                    case '\r':
-                    case '\n': return INPUT_SELECT;
-                    case ' ':  return INPUT_PLAY_PAUSE;
-                    case 's': case 'S': case '/': return INPUT_ACTION_SEARCH;
-                    case 'q': case 'Q': case 27:  return INPUT_QUIT;
-                    case 'w': case 'W': return INPUT_UP;
-                    case 'z': case 'Z': return INPUT_DOWN;
-                    default: break;
+                if (s_current_state == (int)STATE_SEARCH) {
+                    if (ch == '\r' || ch == '\n') {
+                        ui_osk_set_cursor(3, 9); /* Move to GO key */
+                        return INPUT_SELECT;
+                    }
+                    if (ch == 27) return INPUT_CANCEL;
+                    if (ch == 8) { ui_osk_input_char('\b'); return INPUT_NONE; }
+                    if (ch >= 32 && ch < 127) {
+                        ui_osk_input_char(ch);
+                        return INPUT_NONE;
+                    }
+                } else {
+                    switch (ch) {
+                        case '\r':
+                        case '\n': return INPUT_SELECT;
+                        case ' ':  return INPUT_PLAY_PAUSE;
+                        case 's': case 'S': case '/': return INPUT_ACTION_SEARCH;
+                        case 'q': case 'Q': case 27:  return INPUT_QUIT;
+                        case 'w': case 'W': return INPUT_UP;
+                        case 'z': case 'Z': return INPUT_DOWN;
+                        default: break;
+                    }
                 }
             }
         }
@@ -869,15 +1039,31 @@ InputAction platform_poll_input(void) {
                 }
             }
 
-            switch (ch) {
-                case 13: return INPUT_SELECT;        /* Enter */
-                case 27: return INPUT_QUIT;          /* ESC */
-                case ' ': return INPUT_PLAY_PAUSE;   /* Space */
-                case 's': case 'S': case '/': return INPUT_ACTION_SEARCH;
-                case 'q': case 'Q': return INPUT_QUIT;
-                case 'w': case 'W': return INPUT_UP;
-                case 'z': case 'Z': return INPUT_DOWN;
-                default: return INPUT_NONE;
+            if (s_current_state == (int)STATE_SEARCH) {
+                switch (ch) {
+                    case 13:
+                        ui_osk_set_cursor(3, 9); /* Move to GO key */
+                        return INPUT_SELECT;
+                    case 27: return INPUT_CANCEL;        /* ESC */
+                    case 8:  ui_osk_input_char('\b'); return INPUT_NONE;
+                    default:
+                        if (ch >= 32 && ch < 127) {
+                            ui_osk_input_char((char)ch);
+                            return INPUT_NONE;
+                        }
+                        break;
+                }
+            } else {
+                switch (ch) {
+                    case 13: return INPUT_SELECT;        /* Enter */
+                    case 27: return INPUT_QUIT;          /* ESC */
+                    case ' ': return INPUT_PLAY_PAUSE;   /* Space */
+                    case 's': case 'S': case '/': return INPUT_ACTION_SEARCH;
+                    case 'q': case 'Q': return INPUT_QUIT;
+                    case 'w': case 'W': return INPUT_UP;
+                    case 'z': case 'Z': return INPUT_DOWN;
+                    default: return INPUT_NONE;
+                }
             }
         }
     }

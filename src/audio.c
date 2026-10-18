@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "monochrome.h"
 
@@ -95,13 +96,30 @@ void spu_resample_44_to_48(const int16_t *src, size_t frames_in,
 }
 
 static uint64_t g_total_frames_played = 0;
+static float    s_vis_bands[VIS_BANDS] = {0};
+
+void audio_get_visualization(float *out_bands, int count) {
+    if (!out_bands || count <= 0) return;
+    int n = (count < VIS_BANDS) ? count : VIS_BANDS;
+    for (int i = 0; i < n; i++) {
+        out_bands[i] = s_vis_bands[i];
+    }
+}
 
 /* ── Main-loop tick: feed sys_audio_out ───────────────────────────── */
 void audio_tick(void) {
-    if (g_pstate != PLAYBACK_PLAYING || !g_rb) return;
+    if (g_pstate != PLAYBACK_PLAYING || !g_rb) {
+        for (int b = 0; b < VIS_BANDS; b++) {
+            s_vis_bands[b] *= 0.82f;
+        }
+        return;
+    }
 
     size_t avail = ring_available(g_rb);
     if (avail < AUDIO_BLOCK_BYTES) {
+        for (int b = 0; b < VIS_BANDS; b++) {
+            s_vis_bands[b] *= 0.82f;
+        }
         if (g_rb->stream_eof) {
             audio_set_state(PLAYBACK_STOPPED);
             return;
@@ -128,6 +146,25 @@ void audio_tick(void) {
     CELL_LWSYNC();
     g_rb->read_pos = r;
 
+    /* Compute 16-band energy spectrum for UI visualizer */
+    int samples_per_band = AUDIO_BLOCK_FRAMES / VIS_BANDS; /* 16 */
+    for (int b = 0; b < VIS_BANDS; b++) {
+        float sum = 0.0f;
+        for (int s = 0; s < samples_per_band; s++) {
+            int idx = (b * samples_per_band + s) * 2;
+            float l = (float)g_pcm_block[idx] / 32768.0f;
+            float r_s = (float)g_pcm_block[idx + 1] / 32768.0f;
+            sum += (l * l + r_s * r_s) * 0.5f;
+        }
+        float rms = sqrtf(sum / (float)samples_per_band) * 3.8f;
+        if (rms > 1.0f) rms = 1.0f;
+        if (rms >= s_vis_bands[b]) {
+            s_vis_bands[b] = rms;
+        } else {
+            s_vis_bands[b] = s_vis_bands[b] * 0.78f + rms * 0.22f;
+        }
+    }
+
     /* Output audio block to hardware (waveOut on PC / sys_audio_out on PS3) */
     platform_audio_write(g_pcm_block, AUDIO_BLOCK_FRAMES);
 
@@ -143,6 +180,7 @@ void audio_tick(void) {
 
 void audio_reset_progress(void) {
     g_total_frames_played = 0;
+    memset(s_vis_bands, 0, sizeof(s_vis_bands));
 }
 
 uint32_t audio_get_elapsed_sec(void) {
