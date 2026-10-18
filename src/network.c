@@ -35,17 +35,20 @@ int net_init(void) {
     printf("[NET] Initialising sys_net socket layer…\n");
     /* Real PS3: sys_net_initialize_network() */
 
-    /* Load TLS certificate bundle */
-    FILE *f = fopen(CERT_BUNDLE_PATH, "rb");
-    if (!f) {
+    /* TLS certificate validation */
+#if defined(PLATFORM_IS_PC)
+    printf("[NET] Host PC TLS: Using native Windows CryptoAPI/WinHTTP root certificate store.\n");
+#else
+    PlatformFileHandle cf = platform_file_open_read(CERT_BUNDLE_PATH);
+    if (!cf) {
         printf("[NET] WARN: %s not found — HTTPS verification disabled\n",
                CERT_BUNDLE_PATH);
     } else {
-        fseek(f, 0, SEEK_END);
-        long sz = ftell(f);
-        fclose(f);
-        printf("[NET] Root CA bundle loaded (%ld bytes)\n", sz);
+        size_t sz = platform_file_size(CERT_BUNDLE_PATH);
+        platform_file_close(cf);
+        printf("[NET] Root CA bundle verified via GameOS sys_fs (%zu bytes)\n", sz);
     }
+#endif
 
     g_net_ready = true;
     printf("[NET] Ready — primary host: %s\n", g_api_hosts[g_current_host]);

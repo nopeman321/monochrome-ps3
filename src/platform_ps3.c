@@ -95,11 +95,22 @@ int platform_ensure_cache_dirs(void) {
     return 0;
 }
 
+typedef struct {
+    uint32_t st_mode;
+    uint32_t st_uid;
+    uint32_t st_gid;
+    uint32_t st_blksize;
+    uint64_t st_size;
+    uint64_t st_atime;
+    uint64_t st_mtime;
+    uint64_t st_ctime;
+} __attribute__((packed, aligned(8))) CellFsStat;
+
 bool platform_file_exists(const char *path) {
     if (!path || !path[0]) return false;
-    uint8_t stat_buf[128];
-    int ret = ps3_sys_fs_stat(path, stat_buf);
-    return (ret == 0);
+    CellFsStat sb;
+    memset(&sb, 0, sizeof(sb));
+    return (ps3_sys_fs_stat(path, &sb) == 0);
 }
 
 PlatformFileHandle platform_file_open_read(const char *path) {
@@ -146,11 +157,16 @@ void platform_file_close(PlatformFileHandle handle) {
 
 size_t platform_file_size(const char *path) {
     if (!path || !path[0]) return 0;
-    uint8_t stat_buf[128];
-    if (ps3_sys_fs_stat(path, stat_buf) == 0) {
-        uint64_t sz = *(uint64_t *)&stat_buf[24];
-        if (sz == 0) sz = *(uint64_t *)&stat_buf[32];
-        return (size_t)sz;
+    uint8_t raw[128];
+    memset(raw, 0, sizeof(raw));
+    if (ps3_sys_fs_stat(path, raw) == 0) {
+        uint32_t w40 = ((uint32_t)raw[40] << 24) | ((uint32_t)raw[41] << 16) |
+                       ((uint32_t)raw[42] << 8)  |  (uint32_t)raw[43];
+        uint32_t w44 = ((uint32_t)raw[44] << 24) | ((uint32_t)raw[45] << 16) |
+                       ((uint32_t)raw[46] << 8)  |  (uint32_t)raw[47];
+        if (w40 > 0 && w44 == 0) return (size_t)w40;
+        if (w44 > 0) return (size_t)(((uint64_t)w40 << 32) | (uint64_t)w44);
+        return (size_t)w40;
     }
     return 0;
 }
