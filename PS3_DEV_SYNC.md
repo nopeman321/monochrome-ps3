@@ -4,7 +4,7 @@
 
 * `Versión actual: 1.0.0`
 * `Target activo: PS3HEN / CFW (Free NPDRM SELF / MCRM00001.pkg)`
-* `Última compilación: Exitosa (261,392 bytes)`
+* `Última compilación: Exitosa (260,912 bytes / commit db2fa6d)`
 * `Estado de sincronización: [ESTADO: COMPLETADO - ESPERANDO REVISIÓN DE ARGON]`
 
 ---
@@ -26,7 +26,7 @@
 
 ### Ejecución TASK-001 (2026-10-18)
 - **Estado de Build:** ✅ ÉXITO (`MCRM00001.pkg` generado)
-- **Tamaño del PKG:** 261,392 bytes
+- **Tamaño del PKG:** 260,912 bytes
 - **Subagente:** `@opencode_runner`
 - **Validación en Emulador:** RPCS3 60 FPS VSync activo, RSX Double-Buffering flip verificado (`cellGcmSetFlipMode(GCM_FLIP_VSYNC)`), audio 48kHz stereo LPCM DMA activo vía `cellAudioPortStart`, sondeo de gamepad `cellPadInit` / `cellPadGetData` enlazado.
 - **Log de Compilación (PPU64 / SCETool / PKG Builder):**
