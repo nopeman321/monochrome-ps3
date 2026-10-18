@@ -63,20 +63,21 @@ def parse_task(content):
     """Checks if there is a pending task from Argon."""
     normalized = content.replace(r"\[", "[").replace(r"\]", "]")
     
-    if not re.search(r"ESTADO\s*:\s*PENDIENTE", normalized, re.IGNORECASE):
+    # Must explicitly match the state line in the document header, not mentions in prose
+    state_match = re.search(
+        r"^\s*[\*\-]?\s*(?:`|\*\*)?Estado(?:\s+de\s+sincronizaci[oó]n)?\s*:\s*(?:`|\*\*)?\s*\[?ESTADO\s*:\s*PENDIENTE\]?",
+        normalized,
+        re.MULTILINE | re.IGNORECASE
+    )
+    if not state_match:
         return None
     
+    # Must have an actual section header for TAREA PENDIENTE
     task_match = re.search(
-        r"#+\s*(?:\*\*)?\[?TAREA PENDIENTE\]?(?:\*\*)?(.*?)(?=\n#+|\Z)",
+        r"^#+\s*(?:\*\*)?\[?TAREA PENDIENTE\]?(?:\*\*)?(.*?)(?=^#+|\Z)",
         normalized,
-        re.DOTALL | re.IGNORECASE
+        re.MULTILINE | re.DOTALL | re.IGNORECASE
     )
-    if not task_match:
-        task_match = re.search(
-            r"TAREA PENDIENTE.*?\n(.*?)(?=\n#+|\Z)",
-            normalized,
-            re.DOTALL | re.IGNORECASE
-        )
     if not task_match:
         return None
     
