@@ -828,3 +828,53 @@ body {
     border-radius: 2px;
     pointer-events: none;
 }
+
+/* ── Responsive Compact Mode (Minimum Resolution Support) ── */
+@media (max-width: 950px) {
+    .sidebar {
+        width: 72px;
+        padding: 20px 8px 12px 8px;
+    }
+    .brand-text,
+    .nav-item span,
+    .nav-section-label,
+    .sidebar-footer {
+        display: none;
+    }
+    .brand {
+        justify-content: center;
+        padding-left: 0;
+        margin-bottom: 20px;
+    }
+    .nav-item {
+        justify-content: center;
+        padding: 10px 0;
+    }
+    .player-left {
+        width: 220px;
+    }
+    .player-right {
+        width: 180px;
+    }
+    .audio-stream-badge {
+        display: none;
+    }
+}
+
+@media (max-width: 700px) {
+    .sidebar {
+        display: none;
+    }
+    .player-left {
+        width: 160px;
+    }
+    .np-artist {
+        display: none;
+    }
+    .volume-container {
+        display: none;
+    }
+    .player-right {
+        width: auto;
+    }
+}

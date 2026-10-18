@@ -130,11 +130,20 @@ def main():
             print(f"[APP] Launching Monochrome Dedicated Desktop Window via {os.path.basename(browser_exe)}...")
         except Exception:
             pass
+        # Resolution: minimum compact desktop window (800x500 default)
+        win_size = "800,500"
+        for arg in sys.argv[1:]:
+            if "," in arg or "x" in arg:
+                win_size = arg.replace("x", ",")
+                break
+        if "MONOCHROME_WINDOW_SIZE" in os.environ:
+            win_size = os.environ["MONOCHROME_WINDOW_SIZE"].replace("x", ",")
+
         cmd = [
             browser_exe,
             f"--app={app_url}",
             f"--user-data-dir={user_data_dir}",
-            "--window-size=1280,820",
+            f"--window-size={win_size}",
             "--disable-features=TranslateUI",
             "--enable-features=WebAssembly",
             "--autoplay-policy=no-user-gesture-required"

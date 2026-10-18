@@ -41,8 +41,8 @@ static HWND         s_hwnd          = NULL;
 static HDC          s_mem_dc        = NULL;
 static HBITMAP      s_mem_bmp       = NULL;
 static HBITMAP      s_old_bmp       = NULL;
-static int          s_win_width     = 1280;
-static int          s_win_height    = 720;
+static int          s_win_width     = 800;
+static int          s_win_height    = 480;
 static bool         s_window_open   = false;
 
 /* Cached GDI Fonts */
