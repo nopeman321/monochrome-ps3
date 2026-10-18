@@ -60,37 +60,49 @@ PlaybackState audio_get_state(void) {
     return g_pstate;
 }
 
-/* ── SPU resampler: 44100 → 48000 (ratio 160 / 147) ─────────────── */
+/* ── SPU / SIMD DSP Resampler: 44100 → 48000 (ratio 160 / 147) ─── */
 void spu_resample_44_to_48(const int16_t *src, size_t frames_in,
                            int16_t *dst, size_t *frames_out) {
     /*
-     * Linear interpolation resampler.
-     * Phase accumulator steps by 44100/48000 = 147/160 per output sample.
-     * On the real SPU this runs in the 256 KB Local Store with SIMD
-     * vector signed short operations on quadwords.
+     * High-Performance Fixed-Point Linear Resampler.
+     * Ratio: 44100 / 48000 = 147 / 160.
+     * Fixed-point 16.16 step: (147 << 16) / 160 = 60211.2 -> 60211.
+     * Zero divisions, zero modulos, vectorized by Clang/Zig PPC64/x86.
      */
-    const size_t RATIO_NUM = 147;
-    const size_t RATIO_DEN = 160;
+    const uint32_t STEP_16_16 = (147u << 16) / 160u;
 
     size_t out = 0;
-    size_t phase_num = 0;  /* fractional position numerator */
+    uint32_t phase = 0;
 
-    while (phase_num / RATIO_DEN < frames_in - 1) {
-        size_t idx  = phase_num / RATIO_DEN;       /* integer sample index */
-        size_t frac = phase_num % RATIO_DEN;       /* fractional part */
+    while ((phase >> 16) < frames_in - 1) {
+        uint32_t idx  = phase >> 16;
+        int32_t  frac = (int32_t)(phase & 0xFFFF);
 
-        /* Left channel: linear interpolation between src[idx] and src[idx+1] */
+        /* Left channel: linear interpolation with 16-bit shift */
         int32_t l0 = src[idx * 2];
         int32_t l1 = src[(idx + 1) * 2];
-        dst[out * 2] = (int16_t)(l0 + (l1 - l0) * (int32_t)frac / (int32_t)RATIO_DEN);
+        dst[out * 2] = (int16_t)(l0 + (((l1 - l0) * frac) >> 16));
 
         /* Right channel */
         int32_t r0 = src[idx * 2 + 1];
         int32_t r1 = src[(idx + 1) * 2 + 1];
-        dst[out * 2 + 1] = (int16_t)(r0 + (r1 - r0) * (int32_t)frac / (int32_t)RATIO_DEN);
+        dst[out * 2 + 1] = (int16_t)(r0 + (((r1 - r0) * frac) >> 16));
 
         out++;
-        phase_num += RATIO_NUM;
+        phase += STEP_16_16;
+    }
+    *frames_out = out;
+}
+
+/* ── SPU / SIMD DSP Decimator: 96000 → 48000 (2:1 anti-aliasing box filter) ─── */
+void spu_decimate_96_to_48(const int16_t *src, size_t frames_in,
+                           int16_t *dst, size_t *frames_out) {
+    size_t out = frames_in / 2;
+    for (size_t i = 0; i < out; i++) {
+        int32_t l = ((int32_t)src[i * 4 + 0] + (int32_t)src[i * 4 + 2]) >> 1;
+        int32_t r = ((int32_t)src[i * 4 + 1] + (int32_t)src[i * 4 + 3]) >> 1;
+        dst[i * 2 + 0] = (int16_t)l;
+        dst[i * 2 + 1] = (int16_t)r;
     }
     *frames_out = out;
 }
@@ -146,17 +158,22 @@ void audio_tick(void) {
     CELL_LWSYNC();
     g_rb->read_pos = r;
 
-    /* Compute 16-band energy spectrum for UI visualizer */
-    int samples_per_band = AUDIO_BLOCK_FRAMES / VIS_BANDS; /* 16 */
+    /* Compute 16-band frequency spectrum for UI visualizer via differential filterbank */
     for (int b = 0; b < VIS_BANDS; b++) {
+        int stride = 1 + (b * b * (AUDIO_BLOCK_FRAMES / 2)) / (VIS_BANDS * VIS_BANDS);
+        if (stride < 1) stride = 1;
+        if (stride > AUDIO_BLOCK_FRAMES - 1) stride = AUDIO_BLOCK_FRAMES - 1;
+
         float sum = 0.0f;
-        for (int s = 0; s < samples_per_band; s++) {
-            int idx = (b * samples_per_band + s) * 2;
-            float l = (float)g_pcm_block[idx] / 32768.0f;
-            float r_s = (float)g_pcm_block[idx + 1] / 32768.0f;
-            sum += (l * l + r_s * r_s) * 0.5f;
+        int count = 0;
+        for (int s = 0; s < AUDIO_BLOCK_FRAMES - stride; s += 2) {
+            float l0 = (float)g_pcm_block[s * 2] / 32768.0f;
+            float l1 = (float)g_pcm_block[(s + stride) * 2] / 32768.0f;
+            float diff = (b < 4) ? (l0 + l1) * 0.5f : (l0 - l1);
+            sum += diff * diff;
+            count++;
         }
-        float rms = sqrtf(sum / (float)samples_per_band) * 3.8f;
+        float rms = (count > 0) ? sqrtf(sum / (float)count) * (3.0f + (float)b * 0.2f) : 0.0f;
         if (rms > 1.0f) rms = 1.0f;
         if (rms >= s_vis_bands[b]) {
             s_vis_bands[b] = rms;

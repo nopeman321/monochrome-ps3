@@ -165,6 +165,8 @@ void audio_reset_progress(void);
 /* ── SPU DSP kernels ─────────────────────────────────────────────── */
 void spu_resample_44_to_48(const int16_t *src, size_t frames_in,
                            int16_t *dst, size_t *frames_out);
+void spu_decimate_96_to_48(const int16_t *src, size_t frames_in,
+                           int16_t *dst, size_t *frames_out);
 
 /* ── Graphics / UI (RSX + DualShock 3) ───────────────────────────── */
 int  gfx_init(void);

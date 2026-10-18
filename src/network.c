@@ -506,11 +506,7 @@ static void stream_worker_func(void *arg) {
             spu_resample_44_to_48(raw_pcm, (size_t)read, resampled_pcm, &out_frames);
             out_pcm = resampled_pcm;
         } else if (sample_rate == 96000) {
-            for (size_t i = 0; i < (size_t)read / 2; i++) {
-                resampled_pcm[i * 2]     = raw_pcm[i * 4];
-                resampled_pcm[i * 2 + 1] = raw_pcm[i * 4 + 1];
-            }
-            out_frames = (size_t)read / 2;
+            spu_decimate_96_to_48(raw_pcm, (size_t)read, resampled_pcm, &out_frames);
             out_pcm = resampled_pcm;
         }
 
