@@ -61,7 +61,7 @@ System:
 
 Video:
   Renderer: Vulkan
-  Resolution: 1280x720
+  Resolution: 720x480
   Aspect ratio: 16:9
   VSync Mode: Enabled
   Frame limit: 60

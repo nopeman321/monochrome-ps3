@@ -85,8 +85,8 @@ uint64_t platform_get_time_ms(void) {
  *  check so a missing HLE stub causes silent degradation, not a crash.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-#define FB_WIDTH    1280
-#define FB_HEIGHT    720
+#define FB_WIDTH     720
+#define FB_HEIGHT    480
 #define FB_PITCH    (FB_WIDTH * 4)
 #define FB_SIZE     (FB_PITCH * FB_HEIGHT)
 #define NUM_BUFS    2
@@ -375,9 +375,9 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     /* ── Header (0–39) ──────────────────────────────────────────────────  */
     fb_rect(0, 0, FB_WIDTH, 40, COL_HEAD);
     fb_str(20, 12, "MONOCHROME", COL_ACCENT, 2);
-    fb_str(192, 18, "Music Client  v01.00", COL_DIM, 1);
+    fb_str(188, 18, "v01.00", COL_DIM, 1);
     fb_str_r(FB_WIDTH - 20, 14,
-             "[X]Play  [O]Back  [/\\]Pause  [SQ]Search  [Start]Quit",
+             "[X]Play  [O]Back  [/\\ ]Pause",
              COL_DIM, 1);
 
     /* ── Now-playing strip (41–109) ─────────────────────────────────────  */
@@ -386,7 +386,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
 
     if (track && track->title[0]) {
         const char *icon = (pstate == (int)PLAYBACK_PLAYING) ? "> " : "|| ";
-        char ttl[64]; trunc(ttl, sizeof(ttl), track->title, 38);
+        char ttl[64]; trunc(ttl, sizeof(ttl), track->title, 26);
         fb_str(20, 52, icon, COL_GREEN, 2);
         fb_str(20 + (int)strlen(icon)*16, 52, ttl, COL_FG, 2);
 
@@ -437,23 +437,23 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
         fb_str(20, ty+4, num, (idx==cursor) ? COL_ACCENT : COL_DIM, 1);
 
         /* Title */
-        char ttl[56]; trunc(ttl, sizeof(ttl), t->title, 52);
+        char ttl[56]; trunc(ttl, sizeof(ttl), t->title, 38);
         fb_str(56, ty+4, ttl, (idx==cursor) ? COL_FG : 0xFFCCCCCCu, 1);
 
         /* Artist */
-        char art[48]; trunc(art, sizeof(art), t->artist, 44);
+        char art[48]; trunc(art, sizeof(art), t->artist, 32);
         fb_str(56, ty+18, art, COL_DIM, 1);
 
         /* Duration */
         char dur[12];
         uint32_t d = t->duration_sec;
         snprintf(dur, sizeof(dur), "%u:%02u", d/60u, d%60u);
-        fb_str_r(FB_WIDTH-20, ty+4, dur, COL_DIM, 1);
+        fb_str_r(FB_WIDTH-16, ty+4, dur, COL_DIM, 1);
 
         /* Quality badge */
-        const char *qlabel = t->is_hi_res ? "HI-RES" : "LOSSLESS";
+        const char *qlabel = t->is_hi_res ? "HI-RES" : "FLAC";
         uint32_t qcol      = t->is_hi_res ? COL_ACCENT : COL_GREEN;
-        fb_str_r(FB_WIDTH-80, ty+4, qlabel, qcol, 1);
+        fb_str_r(FB_WIDTH-64, ty+4, qlabel, qcol, 1);
 
         /* Separator */
         fb_rect(0, ty+item_h-1, FB_WIDTH, 1, 0xFF1A1A1Au);

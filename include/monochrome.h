@@ -23,10 +23,10 @@
 #define APP_VERSION        "01.00"
 #define APP_TITLEID        "MCRM00001"
 
-/* ── Display ─────────────────────────────────────────────────────── */
-#define SCREEN_WIDTH       1280
-#define SCREEN_HEIGHT      720
-#define TARGET_FPS         60
+/* ── Display (PS3 480p Minimum Resolution) ───────────────────────── */
+#define SCREEN_WIDTH        720
+#define SCREEN_HEIGHT       480
+#define TARGET_FPS          60
 
 /* ── Memory budgets (XDR DRAM) ───────────────────────────────────── */
 #define STREAM_RING_BUFFER_SIZE  (8 * 1024 * 1024)   /* 8 MB FLAC stream */
