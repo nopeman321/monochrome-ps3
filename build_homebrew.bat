@@ -39,6 +39,7 @@ echo [DEPLOY] Updating RPCS3 virtual HDD...
 if exist "%SCRIPT_DIR%emulator\rpcs3\dev_hdd0\game" (
     if not exist "%SCRIPT_DIR%emulator\rpcs3\dev_hdd0\game\MCRM00001" mkdir "%SCRIPT_DIR%emulator\rpcs3\dev_hdd0\game\MCRM00001"
     xcopy /E /I /Y "%SCRIPT_DIR%pkg_build" "%SCRIPT_DIR%emulator\rpcs3\dev_hdd0\game\MCRM00001" >nul
+    python "%SCRIPT_DIR%tools\configure_rpcs3.py"
 )
 
 echo ========================================================
