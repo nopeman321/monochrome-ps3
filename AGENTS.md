@@ -55,3 +55,15 @@
   ```cmd
   run_web.bat
   ```
+
+---
+
+## Multi-Agent Orchestration & Automation
+- **Lead Cloud Architect (Gemini Web)**: Argon
+- **Local Subagents**:
+  - `@opencode_runner`: Delegates and synchronizes tasks with OpenCode Desktop and CLI (`opencode-cli.exe run --continue --auto`).
+  - `@dsh_runner`: DeepSeek Harness runner for algorithmic analysis and deep reasoning (`dsh headless`).
+- **Argon Sync Daemon**:
+  - Script: [`tools/argon_sync_daemon.py`](file:///C:/Users/Juanjo/.gemini/antigravity/scratch/ps3-monochrome/tools/argon_sync_daemon.py)
+  - Automatically polls Google Drive (`PS3_DEV_SYNC`) every 30 seconds.
+  - When `[ESTADO: PENDIENTE]` is detected, executes changes via `@opencode_runner` or `@dsh_runner`, compiles `build_homebrew.bat` to produce `MCRM00001.pkg`, and writes the compilation logs back to Google Drive changing state to `[ESTADO: COMPLETADO - ESPERANDO REVISIÓN DE ARGON]`.

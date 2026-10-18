@@ -195,6 +195,20 @@ void *realloc(void *ptr, size_t size) {
     return new_p;
 }
 
+/* memalign must live on the bump pool too: the linker otherwise resolves it
+ * to the musl dlmalloc implementation, which faults on its very first call
+ * because GameOS has no brk/mmap heap for it to manage.  Used by the RSX
+ * layer for 1 MB-aligned command rings and framebuffer mappings. */
+void *memalign(size_t alignment, size_t size) {
+    if (alignment < 16) alignment = 16;
+    size_t base   = (size_t)&s_heap_pool[s_heap_used];
+    size_t aligned = (base + alignment - 1) & ~(alignment - 1);
+    size_t used   = (aligned - (size_t)s_heap_pool) + ((size + 15) & ~(size_t)15);
+    if (used > HEAP_POOL_SIZE) return NULL;
+    s_heap_used = used;
+    return (void *)aligned;
+}
+
 /* ── GameOS PPU Thread Entry Point ───────────────────────────────── */
 extern int main(int argc, char *argv[]);
 

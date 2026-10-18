@@ -1,25 +1,17 @@
 @echo off
-title Monochrome - Lossless Music Player
+title Monochrome - Lossless Music Player (PC Native)
 cd /d "%~dp0"
 
-where pythonw >nul 2>&1
-if %ERRORLEVEL% equ 0 (
-    start "" pythonw tools\desktop_app.py
-    exit
-)
-
-where python >nul 2>&1
-if %ERRORLEVEL% equ 0 (
-    start "" python tools\desktop_app.py
-    exit
+if not exist "bin\monochrome_pc.exe" (
+    echo [INFO] Compiling native PC client...
+    call build_pc.bat
 )
 
 if exist "bin\monochrome_pc.exe" (
     start "" "bin\monochrome_pc.exe"
-    exit
+    exit /b 0
 )
 
-echo [INFO] Compiling launcher...
-call build_pc.bat
-start "" "bin\monochrome_pc.exe"
-exit
+echo [ERROR] Failed to find or compile bin\monochrome_pc.exe
+pause
+exit /b 1

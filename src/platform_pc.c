@@ -389,6 +389,10 @@ void platform_audio_set_volume(float vol) {
 
 /* ── Win32 Visual Window & GDI Renderer ──────────────────────────── */
 int platform_gfx_init(int width, int height, const char *title) {
+    if (width < 1280 || height < 720) {
+        width = 1280;
+        height = 720;
+    }
     s_win_width  = width;
     s_win_height = height;
 

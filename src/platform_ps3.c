@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <unistd.h>
 
 #include "platform.h"
 #include "monochrome.h"   /* TrackMetadata, AppState, etc. */
@@ -75,14 +76,14 @@ uint64_t platform_get_time_ms(void) {
 /* ═══════════════════════════════════════════════════════════════════════════
  *  SECTION 2 — RSX FRAMEBUFFER GRAPHICS
  *
- *  A 1280×720 ARGB8 software framebuffer in main XDR memory is rendered
- *  each frame and copied to RSX local memory via gcmMapMainMemory +
- *  gcmSetDisplayBuffer + gcmSetFlip.
+ *  A 720×480 ARGB8 software framebuffer in main XDR memory is rendered
+ *  each frame and copied into main memory mapped into IO space via
+ *  cellGcmMapMainMemory + cellGcmSetDisplayBuffer + cellGcmSetFlip.
  *
- *  All PSL1GHT / GCM functions are declared __attribute__((weak)) so the
- *  ELF links cleanly with zig cc musl.  Under RPCS3 HLE these resolve to
- *  the emulator's own implementations.  Every call is guarded with a NULL
- *  check so a missing HLE stub causes silent degradation, not a crash.
+ *  All cellGcmSys / cellPad / cellAudio calls go through SCE dynamic
+ *  import slots (SCE_SLOT below): the loader binds the firmware/HLE
+ *  functions at boot, and a failed binding degrades to TTY-only /
+ *  silent / auto-demo mode instead of crashing.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 #define FB_WIDTH     720
@@ -91,28 +92,113 @@ uint64_t platform_get_time_ms(void) {
 #define FB_SIZE     (FB_PITCH * FB_HEIGHT)
 #define NUM_BUFS    2
 
-/* Minimal GCM context type — enough for the function pointers we need */
-typedef struct { uint32_t opaque[4]; } gcmContextData;
+/* ── SCE dynamic import slots (cellGcmSys / cellAudio / cellPad) ─────────
+ * tools/sce_imports.py appends import tables + a 0x60000002 program header
+ * to the ELF.  On boot the loader resolves each NID against the firmware /
+ * HLE module and writes the 32-bit OPD address into the LOW half of the
+ * matching 64-bit slot below (big-endian: slot + 4).  Calls go through the
+ * slot value as an ELFv1 function pointer.  volatile is essential: zig cc
+ * links with full LTO + --gc-sections, which would otherwise internalize
+ * the slots, fold them to the constant 1 and delete every guarded call.
+ */
+#define SCE_SLOT(sym) \
+    volatile uint64_t sce_slot_##sym __attribute__((used, aligned(8))) = 1
+#define SCE_BOUND(sym) (sce_slot_##sym > 0x1000u)
 
-/* Weak declarations — resolve to NULL if PSL1GHT is absent */
-__attribute__((weak)) int  gcmInit(uint32_t cmdSize, uint32_t ioSize);
-__attribute__((weak)) int  gcmSetFlipMode(uint32_t mode);
-__attribute__((weak)) void gcmResetFlipStatus(void);
-__attribute__((weak)) int  gcmGetFlipStatus(void);
-__attribute__((weak)) int  gcmSetFlip(gcmContextData *ctx, uint32_t id);
-__attribute__((weak)) int  gcmFlush(gcmContextData *ctx);
-__attribute__((weak)) gcmContextData *gcmGetCurrentBuffer(void);
-__attribute__((weak)) int  gcmSetDisplayBuffer(uint32_t id, uint32_t offset,
-                                                uint32_t pitch, uint32_t w, uint32_t h);
-__attribute__((weak)) int  gcmMapMainMemory(void *addr, uint32_t size, uint32_t *offset);
-__attribute__((weak)) void *rsxMemalign(uint32_t align, uint32_t size);
-__attribute__((weak)) void  rsxFree(void *ptr);
+/* ELFv1 call trampoline (src/entry.s).  The slot holds the OPD address
+ * bound by the loader: [func_word, rtoc_word].  Calling through the raw
+ * func word (the old SCE_FN macro) enters firmware code with our own
+ * .TOC. in r2, which makes rtoc-relative loads resolve to garbage — the
+ * LLE cellGcmSys path died with "Access violation reading 0xa0".
+ * sce_opd_call6 instead loads r2 = rtoc_word and r12 = OPD before the
+ * target runs, and restores the caller's r2/LR afterwards.  Arguments
+ * travel as 64-bit registers; targets read the low 32 bits of u32
+ * parameters.  sce_opd_call6f is the same body for a trailing float
+ * (passed in f1, untouched by the trampoline). */
+extern uint64_t sce_opd_call6(uint64_t opd, uint64_t a0, uint64_t a1,
+                              uint64_t a2, uint64_t a3, uint64_t a4,
+                              uint64_t a5);
+extern uint64_t sce_opd_call6f(uint64_t opd, uint64_t a0, float a1);
 
-#define GCM_FLIP_VSYNC 1
+SCE_SLOT(_cellGcmInitBody);
+SCE_SLOT(cellGcmSetFlipMode);
+SCE_SLOT(cellGcmSetFlip);
+SCE_SLOT(cellGcmSetDisplayBuffer);
+SCE_SLOT(cellGcmMapMainMemory);
+SCE_SLOT(cellGcmGetFlipStatus);
+SCE_SLOT(cellGcmResetFlipStatus);
+SCE_SLOT(cellGcmSetFlipHandler);
+SCE_SLOT(cellGcmSetFlipImmediate);
+SCE_SLOT(cellGcmGetLastFlipTime);
 
-static gcmContextData *s_gcm        = NULL;
-static uint32_t        s_cur_buf    = 0;
-static int             s_gfx_ready  = 0;
+static inline int gcm_init_body(uint32_t *ctx, uint32_t cmd, uint32_t io,
+                                uint32_t ea) {
+    return (int)sce_opd_call6(sce_slot__cellGcmInitBody,
+                              (uint64_t)(uintptr_t)ctx, cmd, io, ea, 0, 0);
+}
+static inline int gcm_set_flip_mode(uint32_t mode) {
+    return (int)sce_opd_call6(sce_slot_cellGcmSetFlipMode,
+                              mode, 0, 0, 0, 0, 0);
+}
+static inline int gcm_set_flip(uint32_t ctx, uint32_t id) {
+    return (int)sce_opd_call6(sce_slot_cellGcmSetFlip,
+                              ctx, id, 0, 0, 0, 0);
+}
+static inline int gcm_set_flip_immediate(uint32_t ctx, uint32_t id) {
+    return (int)sce_opd_call6(sce_slot_cellGcmSetFlipImmediate,
+                              ctx, id, 0, 0, 0, 0);
+}
+static inline int gcm_set_display_buf(uint32_t id, uint32_t offset,
+                                      uint32_t r, uint32_t w, uint32_t h) {
+    return (int)sce_opd_call6(sce_slot_cellGcmSetDisplayBuffer,
+                              id, offset, r, w, h, 0);
+}
+static inline int gcm_map_main_memory(uint32_t offset, uint32_t size,
+                                      uint32_t *ea) {
+    return (int)sce_opd_call6(sce_slot_cellGcmMapMainMemory,
+                              offset, size, (uint64_t)(uintptr_t)ea, 0, 0, 0);
+}
+static inline int gcm_get_flip_status(void) {
+    return (int)sce_opd_call6(sce_slot_cellGcmGetFlipStatus,
+                              0, 0, 0, 0, 0, 0);
+}
+static inline int gcm_reset_flip_status(void) {
+    return (int)sce_opd_call6(sce_slot_cellGcmResetFlipStatus,
+                              0, 0, 0, 0, 0, 0);
+}
+
+/* cellGcmSetFlipHandler(fn) is REQUIRED on the LLE path.  Firmware's
+ * _gcm_intr_thread only updates flip status (driverInfo.head[].flipFlags
+ * bit 0) when it receives the flip event, and sys_rsx's send_event()
+ * filters that event by driverInfo.handlers -- which is only set when a
+ * user flip handler is registered.  Without it, cellGcmGetFlipStatus()
+ * stays at 1 forever (observed: every flip wait exhausted 200 ms).  The
+ * handler runs in the gcm interrupt thread; keep it trivial. */
+static volatile uint32_t s_flip_cb_count = 0;
+static void flip_handler_cb(uint32_t head) {
+    (void)head;
+    s_flip_cb_count++;
+}
+static inline uint64_t gcm_set_flip_handler(uint64_t fn_opd) {
+    return sce_opd_call6(sce_slot_cellGcmSetFlipHandler,
+                         fn_opd, 0, 0, 0, 0, 0);
+}
+/* u64 return: full r3 (driverInfo.head[head].lastFlipTime; nonzero once
+ * a flip has completed -- 0xFEC in sys_rsx writes it). */
+static inline uint64_t gcm_get_last_flip_time(void) {
+    return sce_opd_call6(sce_slot_cellGcmGetLastFlipTime,
+                         0, 0, 0, 0, 0, 0);
+}
+
+/* Official values: CELL_GCM_DISPLAY_HSYNC = 1, CELL_GCM_DISPLAY_VSYNC = 2.
+ * We previously passed 1, i.e. HSYNC (tearing on real HW). */
+#define GCM_FLIP_VSYNC 2
+#define GCM_FB_ALLOC_SIZE 0x200000u /* MapMainMemory requires 1MB granularity */
+
+static uint32_t s_ctx_addr = 0;   /* CellGcmContextData* from _cellGcmInitBody */
+static uint32_t s_io_ea    = 0;   /* command ring EA (1MB aligned) */
+static uint32_t s_cur_buf  = 0;
+static int      s_gfx_ready = 0;
 
 /* ARGB8 software framebuffer — written in main memory, copied to RSX */
 static uint32_t s_fb[FB_HEIGHT][FB_WIDTH];
@@ -281,24 +367,57 @@ static void trunc(char *dst, size_t dsz, const char *src, int maxch) {
 }
 
 /* ── RSX flip ───────────────────────────────────────────────────────────── */
+/* TEMP DIAG: count flip-wait exhaustion to find the frame-time sink. */
+static int s_flip_diag = 20;
+
+/* TEMP DIAG: guest-side probes into firmware + RPCS3 RSX state.
+ *   FW_RTOC - 32752  -> firmware state pointer; its +8 field is the "head"
+ *     argument the cellGcmSetFlipHandler thunk reads (helper 0x10061090).
+ *   driverInfo base = value returned by cellGcmSetFlipHandler (0x40200000);
+ *     +0x10C0/+0x1100 = head[0]/head[1] flipFlags, +0x10F8 lastFlipTime,
+ *     +0x12C0 = handlers bitmask (RPCS3 sys_rsx.h layout). */
+#define FW_RTOC 0x100788D0u
+static inline uint32_t rd32(uint32_t a) {
+    return *(volatile uint32_t *)(uintptr_t)a;
+}
+static uint32_t fw_flip_head(void) {
+    uint32_t sp = rd32(FW_RTOC - 32752u);
+    return sp ? rd32(sp + 8u) : 0xFFFFFFFFu;
+}
+static uint32_t s_di_base = 0;
+static inline uint32_t di_rd(uint32_t off) {
+    return s_di_base ? rd32(s_di_base + off) : 0u;
+}
+
 static void rsx_flip(void) {
     if (!s_gfx_ready) return;
 
-    /* Wait for previous flip */
-    if (gcmGetFlipStatus) {
-        int tries = 200;
-        while (tries-- > 0 && gcmGetFlipStatus() != 0)
-            ps3_sleep_ms(1);
+    /* Wait for the previous flip to complete (vsync) */
+    int waited = 0;
+    while (waited < 200 && gcm_get_flip_status() != 0) {
+        ps3_sleep_ms(1);
+        waited++;
     }
-    if (gcmResetFlipStatus) gcmResetFlipStatus();
+    if (s_flip_diag > 0) {
+        s_flip_diag--;
+        tty("[RSX] flip w=%d st=%d cb=%u head=%u lft=%u hnd=%08x f0=%08x f1=%08x lt=%08x%08x\n",
+            waited, (int)gcm_get_flip_status(), s_flip_cb_count, fw_flip_head(),
+            (uint32_t)gcm_get_last_flip_time(),
+            di_rd(0x12C0), di_rd(0x10C0), di_rd(0x1100),
+            di_rd(0x10F8), di_rd(0x10FC));
+    }
+    gcm_reset_flip_status();
 
-    /* Copy software FB to RSX memory */
+    /* Copy software FB to main memory mapped into IO */
     if (s_rsx[s_cur_buf].ptr)
         memcpy(s_rsx[s_cur_buf].ptr, s_fb, FB_SIZE);
 
-    /* Issue GCM flip */
-    if (gcmSetFlip && s_gcm) gcmSetFlip(s_gcm, s_cur_buf);
-    if (gcmFlush   && s_gcm) gcmFlush(s_gcm);
+    /* Issue the GCM flip.  cellGcmSetFlip only writes the flip semaphore
+     * (CPU-polling part); cellGcmSetFlipImmediate additionally triggers the
+     * actual flip on the RSX side (GCM_FLIP_HEAD -> request_emu_flip ->
+     * handle_emu_flip -> 0xFEC).  Without it, cellGcmGetFlipStatus() stays
+     * at WAITING forever. */
+    gcm_set_flip_immediate(s_ctx_addr, s_cur_buf);
 
     s_cur_buf ^= 1u;
 }
@@ -308,39 +427,83 @@ int platform_gfx_init(int width, int height, const char *title) {
     (void)width; (void)height; (void)title;
     tty("[RSX] Initialising %dx%d double-buffered framebuffer\n", FB_WIDTH, FB_HEIGHT);
 
-    if (!gcmInit) {
-        tty("[RSX] gcmInit not available (HLE?) — running TTY-only\n");
+    if (!SCE_BOUND(_cellGcmInitBody) || !SCE_BOUND(cellGcmSetFlip)) {
+        tty("[RSX] cellGcmSys imports not bound — running TTY-only\n");
         return 0;
     }
-    if (gcmInit(256*1024, 1024*1024) != 0) {
-        tty("[RSX] gcmInit failed — TTY-only mode\n");
+
+    /* Command ring: ioSize bytes, EA 1MB-aligned (GCM IO map granularity) */
+    s_io_ea = (uint32_t)(uintptr_t)memalign(0x100000, 0x100000);
+    if (!s_io_ea) { tty("[RSX] command buffer alloc failed\n"); return 0; }
+    memset((void *)(uintptr_t)s_io_ea, 0, 0x100000);
+
+    {
+        /* TEMP DIAG: dump the bound OPD before the first GCM call. */
+        volatile uint32_t *opd =
+            (volatile uint32_t *)(uintptr_t)(uint32_t)sce_slot__cellGcmInitBody;
+        tty("[RSX] dbg slot=%08x%08x opd@%08x fn=%08x rtoc=%08x\n",
+            (uint32_t)(sce_slot__cellGcmInitBody >> 32),
+            (uint32_t)sce_slot__cellGcmInitBody,
+            (uint32_t)(uintptr_t)opd, opd[0], opd[1]);
+    }
+
+    int r = gcm_init_body(&s_ctx_addr, 256 * 1024, 1024 * 1024, s_io_ea);
+    if (r != 0 || !s_ctx_addr) {
+        tty("[RSX] _cellGcmInitBody failed (%d) — TTY-only mode\n", r);
         return 0;
     }
-    if (gcmSetFlipMode) gcmSetFlipMode(GCM_FLIP_VSYNC);
+    gcm_set_flip_mode(GCM_FLIP_VSYNC);
+    tty("[RSX] di: head-after-init=%u\n", fw_flip_head());
+
+    /* Register the flip handler — REQUIRED for flip status to ever clear
+     * on the LLE path (see gcm_set_flip_handler comment above). */
+    if (SCE_BOUND(cellGcmSetFlipHandler)) {
+        uint64_t hret = gcm_set_flip_handler((uint64_t)(uintptr_t)&flip_handler_cb);
+        uint32_t hb = (uint32_t)hret;
+        if ((hb >> 24) == 0x40u) s_di_base = hb; /* driverInfo base */
+        tty("[RSX] SetFlipHandler -> %08x head=%u hnd=%08x\n",
+            hb, fw_flip_head(), di_rd(0x12C0));
+
+        /* TEMP DIAG EXPERIMENT: the firmware picked head 0 (handlers bit 3),
+         * but sys_rsx sends flip events as FLIP_BASE<<1 (bit 4) and
+         * send_event() filters by driverInfo.handlers -> event dropped ->
+         * intr thread never updates flip status.  Force the flip-head state
+         * to 1 and re-register to set bit 4 as well. */
+        uint32_t sp = rd32(FW_RTOC - 32752u);
+        if (sp && rd32(sp + 8u) == 0u) {
+            *(volatile uint32_t *)(uintptr_t)(sp + 8u) = 1u;
+            hret = gcm_set_flip_handler((uint64_t)(uintptr_t)&flip_handler_cb);
+            tty("[RSX] di2: poked head=1 ret=%08x head=%u hnd=%08x\n",
+                (uint32_t)hret, fw_flip_head(), di_rd(0x12C0));
+        }
+    }
 
     for (int i = 0; i < NUM_BUFS; i++) {
-        /* Prefer RSX local memory; fall back to main memory */
-        if (rsxMemalign)
-            s_rsx[i].ptr = (uint32_t *)rsxMemalign(64, FB_SIZE);
-        else
-            s_rsx[i].ptr = (uint32_t *)malloc(FB_SIZE);
-
+        /* Framebuffers live in main memory mapped into RSX IO space;
+         * cellGcmMapMainMemory enforces 1MB alignment/granularity. */
+        s_rsx[i].ptr = (uint32_t *)memalign(0x100000, GCM_FB_ALLOC_SIZE);
         if (!s_rsx[i].ptr) { tty("[RSX] buf%d alloc failed\n", i); return 0; }
-        memset(s_rsx[i].ptr, 0, FB_SIZE);
+        memset(s_rsx[i].ptr, 0, GCM_FB_ALLOC_SIZE);
 
-        if (gcmMapMainMemory)
-            gcmMapMainMemory(s_rsx[i].ptr, FB_SIZE, &s_rsx[i].offset);
-        else
-            s_rsx[i].offset = (uint32_t)((uintptr_t)s_rsx[i].ptr & 0xFFFFFFFFu);
+        r = gcm_map_main_memory((uint32_t)(uintptr_t)s_rsx[i].ptr,
+                                GCM_FB_ALLOC_SIZE, &s_rsx[i].offset);
+        if (r != 0) {
+            tty("[RSX] cellGcmMapMainMemory buf%d failed (%d) — TTY-only\n", i, r);
+            return 0;
+        }
 
-        if (gcmSetDisplayBuffer)
-            gcmSetDisplayBuffer((uint32_t)i, s_rsx[i].offset, FB_PITCH, FB_WIDTH, FB_HEIGHT);
+        r = gcm_set_display_buf((uint32_t)i, s_rsx[i].offset,
+                                FB_PITCH, FB_WIDTH, FB_HEIGHT);
+        if (r != 0) {
+            tty("[RSX] cellGcmSetDisplayBuffer buf%d failed (%d) — TTY-only\n", i, r);
+            return 0;
+        }
     }
 
-    s_gcm       = gcmGetCurrentBuffer ? gcmGetCurrentBuffer() : NULL;
     s_cur_buf   = 0;
     s_gfx_ready = 1;
-    tty("[RSX] Framebuffer ready (%d KB per buffer)\n", (int)(FB_SIZE/1024));
+    tty("[RSX] Framebuffer ready (%d KB per buffer, ctx=0x%08x)\n",
+        (int)(GCM_FB_ALLOC_SIZE / 1024), s_ctx_addr);
     return 0;
 }
 
@@ -348,10 +511,11 @@ void platform_gfx_shutdown(void) {
     s_gfx_ready = 0;
     for (int i = 0; i < NUM_BUFS; i++) {
         if (s_rsx[i].ptr) {
-            if (rsxFree) rsxFree(s_rsx[i].ptr); else free(s_rsx[i].ptr);
+            free(s_rsx[i].ptr);
             s_rsx[i].ptr = NULL;
         }
     }
+    if (s_io_ea) { free((void *)(uintptr_t)s_io_ea); s_io_ea = 0; }
     tty("[RSX] Framebuffer released.\n");
 }
 
@@ -488,92 +652,130 @@ void platform_set_cursor(int r, int c) { (void)r; (void)c; }
 int  platform_get_mouse_track_selection(void) { return -1; }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  SECTION 3 — AUDIO OUTPUT  (audioPortOpen / audioPortStart / audioPortWrite)
+ *  SECTION 3 — AUDIO OUTPUT  (cellAudioInit / cellAudioPortOpen / cellAudioPortStart)
  *
- *  RPCS3 HLE provides these functions. We declare them weak and guard every
- *  call, so silence is the fallback when they are absent.
+ *  Bound at load time through the SCE dynamic import tables written by
+ *  tools/sce_imports.py.  Silence is the fallback if binding failed.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-/* Minimal GameOS audio structures */
+/* cellAudio SDK structures (big-endian, native to the PPU) */
 typedef struct {
-    uint32_t type;      /* 0 = AUDIO_PORT_OUT */
-    uint32_t channel;   /* 2 or 8 */
-    uint32_t latency;   /* number of DMA blocks */
-    uint32_t attr;      /* 0x10 = AUDIO_PORT_PERSONAL */
-    uint32_t level;
-} AudioPortParam;
+    uint64_t nChannel;   /* 2 or 8 */
+    uint64_t nBlock;     /* 2, 4, 8, 16 or 32 */
+    uint64_t attr;       /* CELL_AUDIO_PORTATTR_INITLEVEL applies 'level' */
+    float    level;
+} CellAudioPortParam;
 
 typedef struct {
-    uint32_t portNum;
-    uint64_t portSize;
-    uint32_t portType;
-    uint32_t channelCount;
-    uint64_t startTime;
-    uint64_t flags;
-    volatile uint64_t *readIndexAddr;
-    float    *audioDataStart;
-} AudioPortConfig;
+    uint32_t readIndexAddr;  /* EA of a u64 consumed-block counter */
+    uint32_t status;
+    uint64_t nChannel;
+    uint64_t nBlock;
+    uint32_t portSize;
+    uint32_t portAddr;       /* EA of the port ring buffer */
+} CellAudioPortConfig;
 
-__attribute__((weak)) int audioInit(void);
-__attribute__((weak)) int audioPortOpen(const AudioPortParam *p, uint32_t *num);
-__attribute__((weak)) int audioPortStart(uint32_t num);
-__attribute__((weak)) int audioPortStop(uint32_t num);
-__attribute__((weak)) int audioPortClose(uint32_t num);
-__attribute__((weak)) int audioGetPortConfig(uint32_t num, AudioPortConfig *cfg);
-__attribute__((weak)) int audioPortSetVolume(uint32_t num, float vol);
+#define CELL_AUDIO_PORTATTR_INITLEVEL 0x1000ULL
+
+SCE_SLOT(cellAudioInit);
+SCE_SLOT(cellAudioPortOpen);
+SCE_SLOT(cellAudioGetPortConfig);
+SCE_SLOT(cellAudioPortStart);
+SCE_SLOT(cellAudioPortStop);
+SCE_SLOT(cellAudioPortClose);
+SCE_SLOT(cellAudioSetPortLevel);
+
+static inline int aud_init(void) {
+    return (int)sce_opd_call6(sce_slot_cellAudioInit, 0, 0, 0, 0, 0, 0);
+}
+static inline int aud_port_open(const CellAudioPortParam *p, uint32_t *id) {
+    return (int)sce_opd_call6(sce_slot_cellAudioPortOpen,
+                              (uint64_t)(uintptr_t)p,
+                              (uint64_t)(uintptr_t)id, 0, 0, 0, 0);
+}
+static inline int aud_get_cfg(uint32_t id, CellAudioPortConfig *cfg) {
+    return (int)sce_opd_call6(sce_slot_cellAudioGetPortConfig,
+                              id, (uint64_t)(uintptr_t)cfg, 0, 0, 0, 0);
+}
+static inline int aud_port_start(uint32_t id) {
+    return (int)sce_opd_call6(sce_slot_cellAudioPortStart,
+                              id, 0, 0, 0, 0, 0);
+}
+static inline int aud_port_stop(uint32_t id) {
+    return (int)sce_opd_call6(sce_slot_cellAudioPortStop,
+                              id, 0, 0, 0, 0, 0);
+}
+static inline int aud_port_close(uint32_t id) {
+    return (int)sce_opd_call6(sce_slot_cellAudioPortClose,
+                              id, 0, 0, 0, 0, 0);
+}
+static inline int aud_set_level(uint32_t id, float lvl) {
+    return (int)sce_opd_call6f(sce_slot_cellAudioSetPortLevel, id, lvl);
+}
 
 #define AUDIO_BLOCK_SAMPLES 256u
-#define AUDIO_PORT_NBLOCKS   8u
 
 static uint32_t   s_aport  = 0;
 static int        s_aready = 0;
 static float     *s_adma   = NULL;
 static volatile uint64_t *s_aridx = NULL;
 static uint64_t   s_awrite = 0;
-static uint32_t   s_anblk  = AUDIO_PORT_NBLOCKS;
+static uint32_t   s_anblk  = 8;
+static uint32_t   s_astride = AUDIO_BLOCK_SAMPLES * 2; /* floats per block */
 static uint32_t   s_ach    = 2;
 
 int platform_audio_init(uint32_t sample_rate, uint8_t channels) {
     (void)sample_rate;
-    s_ach = (channels >= 2) ? 2u : 2u;
-    tty("[PS3] sys_audio_out initialising: 48000 Hz, %u ch\n", s_ach);
+    s_ach = 2u;
+    tty("[PS3] cellAudio initialising: 48000 Hz, %u ch\n", s_ach);
 
-    if (!audioInit || audioInit() != 0) {
-        tty("[PS3] audioInit unavailable — silent mode\n");
+    if (!SCE_BOUND(cellAudioInit) || !SCE_BOUND(cellAudioPortOpen)) {
+        tty("[PS3] cellAudio imports not bound — silent mode\n");
         return 0;
     }
-    AudioPortParam p = {0, s_ach, s_anblk, 0x10,
-                        AUDIO_BLOCK_SAMPLES * s_ach * 4u};
+    if (aud_init() != 0) {
+        tty("[PS3] cellAudioInit failed — silent mode\n");
+        return 0;
+    }
+
+    CellAudioPortParam p;
+    memset(&p, 0, sizeof(p));
+    p.nChannel = s_ach;
+    p.nBlock   = 8;
+    p.attr     = CELL_AUDIO_PORTATTR_INITLEVEL;
+    p.level    = 1.0f;
+
     uint32_t port = 0;
-    if (!audioPortOpen || audioPortOpen(&p, &port) != 0) {
-        tty("[PS3] audioPortOpen failed\n");
+    if (aud_port_open(&p, &port) != 0) {
+        tty("[PS3] cellAudioPortOpen failed\n");
         return 0;
     }
     s_aport = port;
 
-    if (audioGetPortConfig) {
-        AudioPortConfig cfg = {0};
-        if (audioGetPortConfig(s_aport, &cfg) == 0) {
-            s_adma  = cfg.audioDataStart;
-            s_aridx = cfg.readIndexAddr;
-            if (cfg.portSize > 0)
-                s_anblk = (uint32_t)(cfg.portSize /
-                           (AUDIO_BLOCK_SAMPLES * s_ach * sizeof(float)));
-        }
+    CellAudioPortConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    if (SCE_BOUND(cellAudioGetPortConfig) && aud_get_cfg(s_aport, &cfg) == 0) {
+        s_adma  = (float *)(uintptr_t)cfg.portAddr;
+        s_aridx = (volatile uint64_t *)(uintptr_t)cfg.readIndexAddr;
+        if (cfg.nBlock) s_anblk = (uint32_t)cfg.nBlock;
+        if (cfg.portSize && s_anblk)
+            s_astride = (uint32_t)(cfg.portSize / s_anblk / sizeof(float));
     }
-    if (audioPortStart) audioPortStart(s_aport);
+    if (SCE_BOUND(cellAudioPortStart)) aud_port_start(s_aport);
     s_aready = 1;
-    tty("[PS3] audioPortStart OK — port %u, %u blocks\n", s_aport, s_anblk);
+    platform_audio_set_volume(1.0f); /* also keeps this call path alive under LTO */
+    tty("[PS3] cellAudioPortStart OK — port %u, %u blocks, stride %u floats\n",
+        s_aport, s_anblk, s_astride);
     return 0;
 }
 
 void platform_audio_shutdown(void) {
     if (s_aready) {
-        if (audioPortStop)  audioPortStop(s_aport);
-        if (audioPortClose) audioPortClose(s_aport);
+        if (SCE_BOUND(cellAudioPortStop))  aud_port_stop(s_aport);
+        if (SCE_BOUND(cellAudioPortClose)) aud_port_close(s_aport);
         s_aready = 0;
     }
-    tty("[PS3] sys_audio_out released.\n");
+    tty("[PS3] cellAudio released.\n");
 }
 
 void platform_audio_write(const int16_t *samples, size_t frames) {
@@ -581,7 +783,7 @@ void platform_audio_write(const int16_t *samples, size_t frames) {
 
     size_t done = 0;
     while (done < frames) {
-        /* Wait if ring buffer is full */
+        /* Wait while every free block would still be overwritten */
         uint64_t ridx = s_aridx ? *s_aridx : s_awrite;
         int spin = 100;
         while (spin-- > 0 && (s_awrite - ridx) >= (uint64_t)s_anblk) {
@@ -590,7 +792,7 @@ void platform_audio_write(const int16_t *samples, size_t frames) {
         }
 
         uint32_t bpos = (uint32_t)(s_awrite % s_anblk);
-        float   *dst  = s_adma + bpos * AUDIO_BLOCK_SAMPLES * s_ach;
+        float   *dst  = s_adma + (size_t)bpos * s_astride;
 
         size_t chunk = AUDIO_BLOCK_SAMPLES;
         if (chunk > frames - done) chunk = frames - done;
@@ -606,39 +808,47 @@ void platform_audio_write(const int16_t *samples, size_t frames) {
     }
 }
 
+/* kept alive via 'used': volume control will be wired to the UI later,
+ * and LTO would otherwise drop this (and its import slot) unused. */
+__attribute__((used))
 void platform_audio_set_volume(float vol) {
-    if (s_aready && audioPortSetVolume) audioPortSetVolume(s_aport, vol);
+    if (s_aready && SCE_BOUND(cellAudioSetPortLevel)) aud_set_level(s_aport, vol);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  SECTION 4 — INPUT  (DualShock 3 via ioPadGetData)
+ *  SECTION 4 — INPUT  (DualShock 3 via cellPadGetData)
  *
- *  button[2] bits:  0x08=Up  0x04=Right  0x02=Down  0x01=Left  0x10=Start
- *  button[3] bits:  0x08=Triangle  0x04=Circle  0x02=Cross  0x01=Square
+ *  CellPadData.button[] u16 slots:
+ *    [2] digital1: 0x10=Up  0x20=Right  0x40=Down  0x80=Left  0x08=Start
+ *    [3] digital2: 0x10=Triangle  0x20=Circle  0x40=Cross  0x80=Square
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 typedef struct {
-    uint16_t len;
-    uint16_t button[8];
-    uint8_t  analog_rx, analog_ry, analog_lx, analog_ly;
-    uint8_t  button_pressure[12];
-    uint8_t  pad[4];
-} ioPadData;
+    int32_t  len;
+    uint16_t button[64];
+} CellPadData;
 
-__attribute__((weak)) int ioPadInit(uint32_t max_connect);
-__attribute__((weak)) int ioPadEnd(void);
-__attribute__((weak)) int ioPadGetData(uint32_t port, ioPadData *data);
+SCE_SLOT(cellPadInit);
+SCE_SLOT(cellPadGetData);
 
-static int     s_pad_ready = 0;
+static inline int pad_init(uint32_t ver) {
+    return (int)sce_opd_call6(sce_slot_cellPadInit, ver, 0, 0, 0, 0, 0);
+}
+static inline int pad_get_data(uint32_t id, CellPadData *d) {
+    return (int)sce_opd_call6(sce_slot_cellPadGetData,
+                              id, (uint64_t)(uintptr_t)d, 0, 0, 0, 0);
+}
+
+static int      s_pad_ready = 0;
 static uint16_t s_prev2 = 0, s_prev3 = 0;
 
 InputAction platform_poll_input(void) {
     /* Lazy init */
-    if (!s_pad_ready && ioPadInit) {
-        if (ioPadInit(7) == 0) { s_pad_ready = 1; tty("[PS3] ioPadInit OK\n"); }
+    if (!s_pad_ready && SCE_BOUND(cellPadInit)) {
+        if (pad_init(7) == 0) { s_pad_ready = 1; tty("[PS3] cellPadInit OK\n"); }
     }
 
-    if (!s_pad_ready || !ioPadGetData) {
+    if (!s_pad_ready || !SCE_BOUND(cellPadGetData)) {
         /* Fallback auto-demo for headless test */
         static uint32_t tk = 0;
         tk++;
@@ -650,22 +860,22 @@ InputAction platform_poll_input(void) {
         return INPUT_NONE;
     }
 
-    ioPadData pd; memset(&pd, 0, sizeof(pd));
-    if (ioPadGetData(0, &pd) != 0 || pd.len == 0) return INPUT_NONE;
+    CellPadData pd; memset(&pd, 0, sizeof(pd));
+    if (pad_get_data(0, &pd) != 0) return INPUT_NONE;
 
     uint16_t b2 = pd.button[2], b3 = pd.button[3];
-    uint16_t n2 = b2 & ~s_prev2,  n3 = b3 & ~s_prev3;
+    uint16_t n2 = (uint16_t)(b2 & ~s_prev2), n3 = (uint16_t)(b3 & ~s_prev3);
     s_prev2 = b2; s_prev3 = b3;
 
-    if (n2 & 0x08) return INPUT_UP;
-    if (n2 & 0x02) return INPUT_DOWN;
-    if (n2 & 0x01) return INPUT_LEFT;
-    if (n2 & 0x04) return INPUT_RIGHT;
-    if (n3 & 0x02) return INPUT_SELECT;       /* Cross     */
-    if (n3 & 0x04) return INPUT_CANCEL;       /* Circle    */
-    if (n3 & 0x01) return INPUT_ACTION_SEARCH;/* Square    */
-    if (n3 & 0x08) return INPUT_PLAY_PAUSE;   /* Triangle  */
-    if (n2 & 0x10) return INPUT_QUIT;         /* Start     */
+    if (n2 & 0x10) return INPUT_UP;
+    if (n2 & 0x40) return INPUT_DOWN;
+    if (n2 & 0x80) return INPUT_LEFT;
+    if (n2 & 0x20) return INPUT_RIGHT;
+    if (n3 & 0x40) return INPUT_SELECT;        /* Cross     */
+    if (n3 & 0x20) return INPUT_CANCEL;        /* Circle    */
+    if (n3 & 0x80) return INPUT_ACTION_SEARCH; /* Square    */
+    if (n3 & 0x10) return INPUT_PLAY_PAUSE;    /* Triangle  */
+    if (n2 & 0x08) return INPUT_QUIT;          /* Start     */
     return INPUT_NONE;
 }
 
