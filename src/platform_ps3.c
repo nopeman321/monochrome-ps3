@@ -192,13 +192,22 @@ static inline uint64_t gcm_get_last_flip_time(void) {
 
 /* Official values: CELL_GCM_DISPLAY_HSYNC = 1, CELL_GCM_DISPLAY_VSYNC = 2.
  * We previously passed 1, i.e. HSYNC (tearing on real HW). */
+#ifndef GCM_FLIP_VSYNC
 #define GCM_FLIP_VSYNC 2
+#endif
 #define GCM_FB_ALLOC_SIZE 0x200000u /* MapMainMemory requires 1MB granularity */
 
-static uint32_t s_ctx_addr = 0;   /* CellGcmContextData* from _cellGcmInitBody */
-static uint32_t s_io_ea    = 0;   /* command ring EA (1MB aligned) */
-static uint32_t s_cur_buf  = 0;
-static int      s_gfx_ready = 0;
+extern void *memalign(size_t boundary, size_t size);
+
+/* Minimal GCM context type — enough for the function pointers we need */
+typedef struct { uint32_t opaque[4]; } gcmContextData;
+
+static gcmContextData *s_gcm        = NULL;
+static uint32_t        s_ctx_addr   = 0;   /* CellGcmContextData* from _cellGcmInitBody */
+static uint32_t        s_io_ea      = 0;   /* command ring EA (1MB aligned) */
+static uint32_t        curr_fb      = 0;
+#define s_cur_buf curr_fb
+static int             s_gfx_ready  = 0;
 
 /* ARGB8 software framebuffer — written in main memory, copied to RSX */
 static uint32_t s_fb[FB_HEIGHT][FB_WIDTH];
@@ -366,60 +375,100 @@ static void trunc(char *dst, size_t dsz, const char *src, int maxch) {
     dst[k]='.'; dst[k+1]='.'; dst[k+2]='.'; dst[k+3]='\0';
 }
 
-/* ── RSX flip ───────────────────────────────────────────────────────────── */
-/* TEMP DIAG: count flip-wait exhaustion to find the frame-time sink. */
-static int s_flip_diag = 20;
+/* ── RSX / GCM Abstraction ──────────────────────────────────────────────── */
+__attribute__((weak)) int gcmGetFlipStatus(void) {
+    if (SCE_BOUND(cellGcmGetFlipStatus))
+        return gcm_get_flip_status();
+    return 0;
+}
 
-/* TEMP DIAG: guest-side probes into firmware + RPCS3 RSX state.
- *   FW_RTOC - 32752  -> firmware state pointer; its +8 field is the "head"
- *     argument the cellGcmSetFlipHandler thunk reads (helper 0x10061090).
- *   driverInfo base = value returned by cellGcmSetFlipHandler (0x40200000);
- *     +0x10C0/+0x1100 = head[0]/head[1] flipFlags, +0x10F8 lastFlipTime,
- *     +0x12C0 = handlers bitmask (RPCS3 sys_rsx.h layout). */
-#define FW_RTOC 0x100788D0u
-static inline uint32_t rd32(uint32_t a) {
-    return *(volatile uint32_t *)(uintptr_t)a;
+__attribute__((weak)) void gcmResetFlipStatus(void) {
+    if (SCE_BOUND(cellGcmResetFlipStatus))
+        gcm_reset_flip_status();
 }
-static uint32_t fw_flip_head(void) {
-    uint32_t sp = rd32(FW_RTOC - 32752u);
-    return sp ? rd32(sp + 8u) : 0xFFFFFFFFu;
+
+__attribute__((weak)) int gcmSetFlip(gcmContextData *ctx, uint32_t id) {
+    if (SCE_BOUND(cellGcmSetFlipImmediate))
+        return gcm_set_flip_immediate((uint32_t)(uintptr_t)ctx, id);
+    if (SCE_BOUND(cellGcmSetFlip))
+        return gcm_set_flip((uint32_t)(uintptr_t)ctx, id);
+    return 0;
 }
-static uint32_t s_di_base = 0;
-static inline uint32_t di_rd(uint32_t off) {
-    return s_di_base ? rd32(s_di_base + off) : 0u;
+
+__attribute__((weak)) void rsxFlushBuffer(gcmContextData *ctx) {
+    (void)ctx;
+}
+
+__attribute__((weak)) void gcmSetWaitFlip(gcmContextData *ctx) {
+    (void)ctx;
+}
+
+__attribute__((weak)) void sysUtilCheckCallback(void) {
+}
+
+__attribute__((weak)) int gcmSetDisplayBuffer(uint32_t id, uint32_t offset,
+                                              uint32_t pitch, uint32_t w, uint32_t h) {
+    if (SCE_BOUND(cellGcmSetDisplayBuffer))
+        return gcm_set_display_buf(id, offset, pitch, w, h);
+    return 0;
+}
+
+__attribute__((weak)) int gcmSetFlipMode(uint32_t mode) {
+    if (SCE_BOUND(cellGcmSetFlipMode)) {
+        uint32_t m = (mode == 1) ? 2 : mode;
+        return gcm_set_flip_mode(m);
+    }
+    return 0;
+}
+
+__attribute__((weak)) void *rsxMemalign(uint32_t align, uint32_t size) {
+    uint32_t a = (align < 0x100000u) ? 0x100000u : align;
+    uint32_t s = (size < GCM_FB_ALLOC_SIZE) ? GCM_FB_ALLOC_SIZE : size;
+    return memalign(a, s);
+}
+
+__attribute__((weak)) void rsxFree(void *ptr) {
+    if (ptr) free(ptr);
+}
+
+__attribute__((weak)) int32_t rsxAddressToOffset(void *ptr, uint32_t *offset) {
+    if (offset) {
+        if (SCE_BOUND(cellGcmMapMainMemory)) {
+            return gcm_map_main_memory((uint32_t)(uintptr_t)ptr, GCM_FB_ALLOC_SIZE, offset);
+        }
+        *offset = (uint32_t)((uintptr_t)ptr & 0xFFFFFFFFu);
+    }
+    return 0;
+}
+
+/* ── RSX synchronization & presentation ──────────────────────────────────── */
+static void rsx_wait_flip(void) {
+    if (gcmGetFlipStatus) {
+        while (gcmGetFlipStatus() != 0) {
+            usleep(200);
+        }
+    }
+    if (gcmResetFlipStatus) gcmResetFlipStatus();
 }
 
 static void rsx_flip(void) {
     if (!s_gfx_ready) return;
 
-    /* Wait for the previous flip to complete (vsync) */
-    int waited = 0;
-    while (waited < 200 && gcm_get_flip_status() != 0) {
-        ps3_sleep_ms(1);
-        waited++;
-    }
-    if (s_flip_diag > 0) {
-        s_flip_diag--;
-        tty("[RSX] flip w=%d st=%d cb=%u head=%u lft=%u hnd=%08x f0=%08x f1=%08x lt=%08x%08x\n",
-            waited, (int)gcm_get_flip_status(), s_flip_cb_count, fw_flip_head(),
-            (uint32_t)gcm_get_last_flip_time(),
-            di_rd(0x12C0), di_rd(0x10C0), di_rd(0x1100),
-            di_rd(0x10F8), di_rd(0x10FC));
-    }
-    gcm_reset_flip_status();
+    /* Copy software FB to RSX memory backbuffer */
+    if (s_rsx[curr_fb].ptr)
+        memcpy(s_rsx[curr_fb].ptr, s_fb, FB_SIZE);
 
-    /* Copy software FB to main memory mapped into IO */
-    if (s_rsx[s_cur_buf].ptr)
-        memcpy(s_rsx[s_cur_buf].ptr, s_fb, FB_SIZE);
+    /* Frame presentation sequence */
+    rsx_wait_flip();
+    if (gcmSetFlip && s_gcm) gcmSetFlip(s_gcm, curr_fb);
+    if (rsxFlushBuffer && s_gcm) rsxFlushBuffer(s_gcm);
+    if (gcmSetWaitFlip && s_gcm) gcmSetWaitFlip(s_gcm);
+    curr_fb ^= 1;
+    if (sysUtilCheckCallback) sysUtilCheckCallback();
+}
 
-    /* Issue the GCM flip.  cellGcmSetFlip only writes the flip semaphore
-     * (CPU-polling part); cellGcmSetFlipImmediate additionally triggers the
-     * actual flip on the RSX side (GCM_FLIP_HEAD -> request_emu_flip ->
-     * handle_emu_flip -> 0xFEC).  Without it, cellGcmGetFlipStatus() stays
-     * at WAITING forever. */
-    gcm_set_flip_immediate(s_ctx_addr, s_cur_buf);
-
-    s_cur_buf ^= 1u;
+void platform_present_frame(void) {
+    rsx_flip();
 }
 
 /* ── GFX init ────────────────────────────────────────────────────────────  */
@@ -437,70 +486,61 @@ int platform_gfx_init(int width, int height, const char *title) {
     if (!s_io_ea) { tty("[RSX] command buffer alloc failed\n"); return 0; }
     memset((void *)(uintptr_t)s_io_ea, 0, 0x100000);
 
-    {
-        /* TEMP DIAG: dump the bound OPD before the first GCM call. */
-        volatile uint32_t *opd =
-            (volatile uint32_t *)(uintptr_t)(uint32_t)sce_slot__cellGcmInitBody;
-        tty("[RSX] dbg slot=%08x%08x opd@%08x fn=%08x rtoc=%08x\n",
-            (uint32_t)(sce_slot__cellGcmInitBody >> 32),
-            (uint32_t)sce_slot__cellGcmInitBody,
-            (uint32_t)(uintptr_t)opd, opd[0], opd[1]);
-    }
-
     int r = gcm_init_body(&s_ctx_addr, 256 * 1024, 1024 * 1024, s_io_ea);
     if (r != 0 || !s_ctx_addr) {
         tty("[RSX] _cellGcmInitBody failed (%d) — TTY-only mode\n", r);
         return 0;
     }
-    gcm_set_flip_mode(GCM_FLIP_VSYNC);
-    tty("[RSX] di: head-after-init=%u\n", fw_flip_head());
+    s_gcm = (gcmContextData *)(uintptr_t)s_ctx_addr;
 
     /* Register the flip handler — REQUIRED for flip status to ever clear
      * on the LLE path (see gcm_set_flip_handler comment above). */
     if (SCE_BOUND(cellGcmSetFlipHandler)) {
-        uint64_t hret = gcm_set_flip_handler((uint64_t)(uintptr_t)&flip_handler_cb);
-        uint32_t hb = (uint32_t)hret;
-        if ((hb >> 24) == 0x40u) s_di_base = hb; /* driverInfo base */
-        tty("[RSX] SetFlipHandler -> %08x head=%u hnd=%08x\n",
-            hb, fw_flip_head(), di_rd(0x12C0));
-
-        /* TEMP DIAG EXPERIMENT: the firmware picked head 0 (handlers bit 3),
-         * but sys_rsx sends flip events as FLIP_BASE<<1 (bit 4) and
-         * send_event() filters by driverInfo.handlers -> event dropped ->
-         * intr thread never updates flip status.  Force the flip-head state
-         * to 1 and re-register to set bit 4 as well. */
-        uint32_t sp = rd32(FW_RTOC - 32752u);
-        if (sp && rd32(sp + 8u) == 0u) {
-            *(volatile uint32_t *)(uintptr_t)(sp + 8u) = 1u;
-            hret = gcm_set_flip_handler((uint64_t)(uintptr_t)&flip_handler_cb);
-            tty("[RSX] di2: poked head=1 ret=%08x head=%u hnd=%08x\n",
-                (uint32_t)hret, fw_flip_head(), di_rd(0x12C0));
-        }
+        gcm_set_flip_handler((uint64_t)(uintptr_t)&flip_handler_cb);
     }
+    (void)gcm_get_last_flip_time(); /* keep slot alive under LTO */
 
+    uint32_t fb_width = (uint32_t)FB_WIDTH;
+    uint32_t fb_height = (uint32_t)FB_HEIGHT;
+    uint32_t color_pitch = (uint32_t)FB_PITCH;
+    uint32_t color_offset[NUM_BUFS] = {0, 0};
+
+    /* Reserva de 2 framebuffers alineados a 64 bytes en memoria local RSX */
     for (int i = 0; i < NUM_BUFS; i++) {
-        /* Framebuffers live in main memory mapped into RSX IO space;
-         * cellGcmMapMainMemory enforces 1MB alignment/granularity. */
-        s_rsx[i].ptr = (uint32_t *)memalign(0x100000, GCM_FB_ALLOC_SIZE);
-        if (!s_rsx[i].ptr) { tty("[RSX] buf%d alloc failed\n", i); return 0; }
-        memset(s_rsx[i].ptr, 0, GCM_FB_ALLOC_SIZE);
-
-        r = gcm_map_main_memory((uint32_t)(uintptr_t)s_rsx[i].ptr,
-                                GCM_FB_ALLOC_SIZE, &s_rsx[i].offset);
-        if (r != 0) {
-            tty("[RSX] cellGcmMapMainMemory buf%d failed (%d) — TTY-only\n", i, r);
-            return 0;
+        uint32_t buf_size = color_pitch * fb_height;
+        if (rsxMemalign) {
+            s_rsx[i].ptr = (uint32_t *)rsxMemalign(64, buf_size);
+        } else {
+            s_rsx[i].ptr = (uint32_t *)malloc(buf_size);
         }
 
-        r = gcm_set_display_buf((uint32_t)i, s_rsx[i].offset,
-                                FB_PITCH, FB_WIDTH, FB_HEIGHT);
-        if (r != 0) {
-            tty("[RSX] cellGcmSetDisplayBuffer buf%d failed (%d) — TTY-only\n", i, r);
+        if (!s_rsx[i].ptr) {
+            tty("[RSX] buf%d alloc failed\n", i);
             return 0;
         }
+        memset(s_rsx[i].ptr, 0, buf_size);
+
+        color_offset[i] = 0;
+        if (rsxAddressToOffset) {
+            rsxAddressToOffset((void *)s_rsx[i].ptr, &color_offset[i]);
+        } else {
+            color_offset[i] = (uint32_t)((uintptr_t)s_rsx[i].ptr & 0xFFFFFFFFu);
+        }
+        s_rsx[i].offset = color_offset[i];
     }
 
-    s_cur_buf   = 0;
+    /* Registro de los buffers mediante gcmSetDisplayBuffer */
+    if (gcmSetDisplayBuffer) {
+        gcmSetDisplayBuffer(0, color_offset[0], color_pitch, fb_width, fb_height);
+        gcmSetDisplayBuffer(1, color_offset[1], color_pitch, fb_width, fb_height);
+    }
+
+    /* Configurar gcmSetFlipMode(GCM_FLIP_VSYNC) */
+    if (gcmSetFlipMode) {
+        gcmSetFlipMode(GCM_FLIP_VSYNC);
+    }
+
+    curr_fb     = 0;
     s_gfx_ready = 1;
     tty("[RSX] Framebuffer ready (%d KB per buffer, ctx=0x%08x)\n",
         (int)(GCM_FB_ALLOC_SIZE / 1024), s_ctx_addr);
@@ -511,7 +551,7 @@ void platform_gfx_shutdown(void) {
     s_gfx_ready = 0;
     for (int i = 0; i < NUM_BUFS; i++) {
         if (s_rsx[i].ptr) {
-            free(s_rsx[i].ptr);
+            if (rsxFree) rsxFree((void *)s_rsx[i].ptr); else free(s_rsx[i].ptr);
             s_rsx[i].ptr = NULL;
         }
     }
