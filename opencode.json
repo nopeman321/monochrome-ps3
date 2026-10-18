@@ -1,0 +1,5 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "name": "monochrome-ps3",
+  "description": "Monochrome Lossless Music Player (Tidal Hi-Res) - Windows PC Native Client, Web Client, and PlayStation 3 (Cell B.E. / GameOS / RPCS3) Homebrew Port"
+}

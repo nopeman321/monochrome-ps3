@@ -46,22 +46,23 @@ static int FindPythonPath(char *outPath, size_t maxLen) {
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
 
-    /* Detect repository directory */
-    char projectDir[MAX_PATH] = "C:\\Users\\Juanjo\\.gemini\\antigravity\\scratch\\ps3-monochrome";
+    /* Detect repository directory from executable location first */
+    char projectDir[MAX_PATH];
+    GetModuleFileNameA(NULL, projectDir, MAX_PATH);
+    char *s = strrchr(projectDir, '\\');
+    if (s) *s = '\0';
+    /* If inside bin\, go one level up to project root */
+    char *sub = strrchr(projectDir, '\\');
+    if (sub && _stricmp(sub + 1, "bin") == 0) {
+        *sub = '\0';
+    }
 
-    /* Check local repo path */
+    /* Verify web/index.html exists in detected directory */
     char testPath[MAX_PATH];
     snprintf(testPath, sizeof(testPath), "%s\\web\\index.html", projectDir);
     if (GetFileAttributesA(testPath) == INVALID_FILE_ATTRIBUTES) {
-        /* Fallback to exe location parent directory */
-        GetModuleFileNameA(NULL, projectDir, MAX_PATH);
-        char *s = strrchr(projectDir, '\\');
-        if (s) *s = '\0';
-        /* If inside bin\, go one level up */
-        char *sub = strrchr(projectDir, '\\');
-        if (sub && _stricmp(sub + 1, "bin") == 0) {
-            *sub = '\0';
-        }
+        /* Fallback well-known path */
+        strncpy(projectDir, "C:\\Users\\Juanjo\\.gemini\\antigravity\\scratch\\ps3-monochrome", sizeof(projectDir));
     }
 
     /* Find python executable */
