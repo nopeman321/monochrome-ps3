@@ -3,7 +3,8 @@
  * Integrates directly with https://tracks.monochrome.st (Tidal Lossless Proxy)
  */
 
-const API_BASE = 'https://tracks.monochrome.st';
+const IS_LOCAL_HOST = window.location.protocol.startsWith('http') && (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost');
+const API_BASE = IS_LOCAL_HOST ? `${window.location.origin}/api` : 'https://tracks.monochrome.st';
 
 /* ── Application State ───────────────────────────────────────────── */
 const state = {
@@ -108,11 +109,15 @@ const FALLBACK_TRACKS = [
 /* ── Fetch Tracks & Releases from Upstream API ───────────────────── */
 async function searchTracks(query) {
     dom.trackCountBadge.textContent = 'Searching...';
-    const cleanQ = query.trim() || 'trending';
+    const cleanQ = query.trim() || 'Daft Punk';
     state.currentQuery = cleanQ;
 
     try {
-        const resp = await fetch(`${API_BASE}/search?q=${encodeURIComponent(cleanQ)}`);
+        let resp = await fetch(`${API_BASE}/search?q=${encodeURIComponent(cleanQ)}`);
+        if (!resp.ok && IS_LOCAL_HOST) {
+            // Fallback to direct upstream if proxy fails
+            resp = await fetch(`https://tracks.monochrome.st/search?q=${encodeURIComponent(cleanQ)}`);
+        }
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         
         const data = await resp.json();
@@ -128,7 +133,9 @@ async function searchTracks(query) {
             
             // Resolve cover artwork
             let art = t.artwork || t.cover || '';
-            if (!art && t.releaseId) {
+            if (art && IS_LOCAL_HOST && art.startsWith('https://tracks.monochrome.st/proxy/mi/')) {
+                art = art.replace('https://tracks.monochrome.st/proxy/mi/', `${API_BASE}/proxy/mi/`);
+            } else if (!art && t.releaseId) {
                 art = `${API_BASE}/proxy/mi/${t.releaseId}-1A01.jpg`;
             }
 
@@ -470,5 +477,5 @@ window.addEventListener('keydown', (e) => {
 
 /* ── Startup: Initialize Catalogue ───────────────────────────────── */
 window.addEventListener('DOMContentLoaded', () => {
-    searchTracks('trending');
+    searchTracks('Daft Punk');
 });

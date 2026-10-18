@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-MONOCHROME — Desktop Native Web Client Launcher
-Serves the web/ directory locally and opens it in dedicated standalone app mode.
+MONOCHROME — Desktop Native Web Client Launcher & API Proxy
+Serves the web/ directory locally, proxies Tidal/Monochrome API requests,
+and opens the dedicated standalone desktop app window.
 """
 
 import os
@@ -25,6 +26,8 @@ PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 WEB_DIR = os.path.join(PROJECT_DIR, "web")
 PORT = 7890
 
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
 class ReusableThreadingServer(ThreadingHTTPServer):
     allow_reuse_address = True
     daemon_threads = True
@@ -34,7 +37,7 @@ class MonochromeHTTPHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=WEB_DIR, **kwargs)
 
     def do_GET(self):
-        # Handle favicon without 404
+        # 1. Handle Favicon
         if self.path == '/favicon.ico':
             icon_path = os.path.join(PROJECT_DIR, "pkg_build", "ICON0.PNG")
             if os.path.exists(icon_path):
@@ -49,13 +52,78 @@ class MonochromeHTTPHandler(SimpleHTTPRequestHandler):
                 self.send_response(204)
                 self.end_headers()
                 return
+
+        # 2. Local Proxy for Search
+        if self.path.startswith('/api/search'):
+            query_str = self.path[len('/api/search'):]
+            target_url = f"https://tracks.monochrome.st/search{query_str}"
+            self.proxy_remote(target_url, default_content_type="application/json")
+            return
+
+        # 3. Local Proxy for Track Audio Streams
+        if self.path.startswith('/api/track/'):
+            track_id = self.path[len('/api/track/'):].split('?')[0]
+            target_url = f"https://tracks.monochrome.st/track/{track_id}"
+            self.proxy_remote(target_url, default_content_type="audio/flac")
+            return
+
+        # 4. Local Proxy for Cover Artwork
+        if self.path.startswith('/api/proxy/mi/'):
+            img_id = self.path[len('/api/proxy/mi/'):].split('?')[0]
+            target_url = f"https://tracks.monochrome.st/proxy/mi/{img_id}"
+            self.proxy_remote(target_url, default_content_type="image/jpeg")
+            return
+
+        # Standard static file serving
         super().do_GET()
+
+    def proxy_remote(self, url, default_content_type="application/octet-stream"):
+        try:
+            req = urllib.request.Request(url)
+            req.add_header('User-Agent', USER_AGENT)
+            if 'Range' in self.headers:
+                req.add_header('Range', self.headers['Range'])
+
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                code = resp.getcode()
+                content_len = resp.getheader('Content-Length')
+
+                if default_content_type in ("application/json", "image/jpeg") or not content_len:
+                    data = resp.read()
+                    self.send_response(code)
+                    self.send_header('Content-Type', default_content_type)
+                    self.send_header('Content-Length', str(len(data)))
+                    self.send_header('Cache-Control', 'public, max-age=3600')
+                    self.end_headers()
+                    self.wfile.write(data)
+                else:
+                    self.send_response(code)
+                    for header, val in resp.getheaders():
+                        hl = header.lower()
+                        if hl in ('content-length', 'content-range', 'accept-ranges', 'cache-control', 'etag', 'last-modified'):
+                            self.send_header(header, val)
+                    self.send_header('Content-Type', default_content_type)
+                    self.end_headers()
+
+                    # Stream large audio data in chunks
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+        except Exception as e:
+            try:
+                self.send_response(502)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f"Proxy error: {e}".encode('utf-8'))
+            except Exception:
+                pass
 
     def end_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
-        self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
     def do_OPTIONS(self):
@@ -123,7 +191,6 @@ def main():
     # 2. Launch Dedicated Desktop Window
     browser_exe = find_browser_app_mode()
     app_url = f"http://127.0.0.1:{PORT}"
-    user_data_dir = os.path.join(PROJECT_DIR, "bin", "browser_user_data")
 
     if browser_exe:
         try:
@@ -142,10 +209,8 @@ def main():
         cmd = [
             browser_exe,
             f"--app={app_url}",
-            f"--user-data-dir={user_data_dir}",
             f"--window-size={win_size}",
             "--disable-features=TranslateUI",
-            "--enable-features=WebAssembly",
             "--autoplay-policy=no-user-gesture-required"
         ]
         proc = subprocess.Popen(cmd)
