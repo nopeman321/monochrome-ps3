@@ -1,0 +1,9 @@
+{
+  "name": "ps3-cell-engineer",
+  "displayName": "PS3 Cell B.E. Architect",
+  "description": "PlayStation 3 Cell Broadband Engine, PSL1GHT SDK, PowerPC64, Free NPDRM SELF, and GameOS specialist",
+  "model": "deepseek/deepseek-v4-pro",
+  "role": "PlayStation 3 Architecture Specialist",
+  "skills": ["ps3-builder", "rpcs3-debugger"],
+  "rules": ["ps3_cell_architecture.md"]
+}

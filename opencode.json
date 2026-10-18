@@ -1,5 +1,34 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "name": "monochrome-ps3",
-  "description": "Monochrome Lossless Music Player (Tidal Hi-Res) - Windows PC Native Client, Web Client, and PlayStation 3 (Cell B.E. / GameOS / RPCS3) Homebrew Port"
+  "description": "Monochrome Lossless Music Player (Tidal Hi-Res) - Windows PC Native Client, Web Client, and PlayStation 3 (Cell B.E. / GameOS / RPCS3) Homebrew Port",
+  "agents": {
+    "deepseek-harness": {
+      "name": "DeepSeek Harness",
+      "description": "Autonomous test harness, unit/benchmark runner and code verification specialist",
+      "model": "deepseek/deepseek-v4-pro"
+    },
+    "ps3-cell-engineer": {
+      "name": "PS3 Cell B.E. Architect",
+      "description": "PlayStation 3 Cell Broadband Engine, PSL1GHT SDK, PowerPC64, Free NPDRM SELF, and GameOS specialist",
+      "model": "deepseek/deepseek-v4-pro"
+    },
+    "audio-streaming-engineer": {
+      "name": "Audio Streaming Engineer",
+      "description": "Lossless FLAC decoder, 48kHz LPCM resampler, byte-range streaming, and Tidal Hi-Res API specialist",
+      "model": "deepseek/deepseek-v4-pro"
+    },
+    "opencode-orchestrator": {
+      "name": "OpenCode Orchestrator",
+      "description": "Multi-agent coordinator, build automation pipeline manager, and OpenCode workspace synchronizer",
+      "model": "deepseek/deepseek-v4-pro"
+    }
+  },
+  "skills": [
+    "ps3-builder",
+    "audio-flac-pipeline",
+    "rpcs3-debugger",
+    "desktop-launcher",
+    "deepseek-harness"
+  ]
 }

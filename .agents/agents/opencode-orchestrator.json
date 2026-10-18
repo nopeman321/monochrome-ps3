@@ -1,0 +1,8 @@
+{
+  "name": "opencode-orchestrator",
+  "displayName": "OpenCode Orchestrator",
+  "description": "Multi-agent coordinator, build automation pipeline manager, and OpenCode workspace synchronizer",
+  "model": "deepseek/deepseek-v4-pro",
+  "role": "Project Lead & Coordinator",
+  "skills": ["ps3-builder", "rpcs3-debugger", "desktop-launcher", "deepseek-harness"]
+}

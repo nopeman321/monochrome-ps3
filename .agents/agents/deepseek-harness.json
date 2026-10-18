@@ -1,0 +1,8 @@
+{
+  "name": "deepseek-harness",
+  "displayName": "DeepSeek Harness",
+  "description": "Autonomous test harness, unit/benchmark runner and code verification specialist for Monochrome",
+  "model": "deepseek/deepseek-v4-pro",
+  "role": "QA & Automated Testing Engineer",
+  "skills": ["deepseek-harness", "rpcs3-debugger"]
+}
