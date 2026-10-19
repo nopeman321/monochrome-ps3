@@ -202,6 +202,9 @@ int net_search(const char *query, TrackMetadata *out, int max) {
 
     /* Fallback to embedded catalogue if offline or network error */
     if (found <= 0) {
+        /* Rotate to next live mirror host for subsequent requests */
+        g_current_host = (g_current_host + 1) % NUM_API_HOSTS;
+
         static const char fallback_mock[] =
             "{\"tracks\":["
             "{\"trackId\":\"155102881689636864\",\"title\":\"Harder, Better, Faster, Stronger\","
@@ -223,11 +226,8 @@ int net_search(const char *query, TrackMetadata *out, int max) {
             "]}";
 
         found = parse_search(fallback_mock, out, max);
-        if (found < 0) {
-            g_current_host = (g_current_host + 1) % NUM_API_HOSTS;
-            return 0;
-        }
-        printf("[NET] Live fetch unavailable, using offline cached catalogue (%d tracks)\n", found);
+        printf("[NET] Live fetch unavailable, rotated to mirror %s, using offline cached catalogue (%d tracks)\n",
+               g_api_hosts[g_current_host], found);
     } else {
         printf("[NET] Live search succeeded: %d tracks found\n", found);
     }

@@ -147,10 +147,17 @@ void ui_get_osk_state(int *row, int *col, const char **query) {
 void ui_osk_input_char(char ch) {
     if (ch == '\b' || ch == 127) {
         if (g_search_query_len > 0) {
-            g_search_query[--g_search_query_len] = '\0';
+            /* Pop UTF-8 continuation bytes if any */
+            while (g_search_query_len > 0 &&
+                   ((unsigned char)g_search_query[g_search_query_len - 1] & 0xC0) == 0x80) {
+                g_search_query[--g_search_query_len] = '\0';
+            }
+            if (g_search_query_len > 0) {
+                g_search_query[--g_search_query_len] = '\0';
+            }
             net_search_async_query(g_search_query);
         }
-    } else if (ch >= 32 && ch < 127) {
+    } else if ((unsigned char)ch >= 32 && (unsigned char)ch != 127) {
         if (g_search_query_len < (int)sizeof(g_search_query) - 1) {
             g_search_query[g_search_query_len++] = ch;
             g_search_query[g_search_query_len] = '\0';

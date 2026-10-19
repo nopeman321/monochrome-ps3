@@ -557,21 +557,113 @@ static void fb_glyph(int x, int y, unsigned char ch, uint32_t fg, int sc) {
 
 static int fb_str(int x, int y, const char *s, uint32_t fg, int sc) {
     int cx = x;
-    while (*s) { fb_glyph(cx, y, (unsigned char)*s++, fg, sc); cx += 8*sc; }
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        unsigned char ch = *p++;
+        if (ch < 0x80) {
+            fb_glyph(cx, y, ch, fg, sc);
+            cx += 8 * sc;
+        } else if ((ch & 0xE0) == 0xC0) {
+            unsigned char b2 = *p;
+            if (b2) {
+                p++;
+                unsigned char mapped = '?';
+                if (ch == 0xC3) {
+                    if (b2 >= 0x80 && b2 <= 0x85) mapped = 'A';
+                    else if (b2 == 0x87) mapped = 'C';
+                    else if (b2 >= 0x88 && b2 <= 0x8B) mapped = 'E';
+                    else if (b2 >= 0x8C && b2 <= 0x8F) mapped = 'I';
+                    else if (b2 == 0x91) mapped = 'N';
+                    else if (b2 >= 0x92 && b2 <= 0x96) mapped = 'O';
+                    else if (b2 >= 0x99 && b2 <= 0x9C) mapped = 'U';
+                    else if (b2 >= 0xA0 && b2 <= 0xA5) mapped = 'a';
+                    else if (b2 == 0xA7) mapped = 'c';
+                    else if (b2 >= 0xA8 && b2 <= 0xAB) mapped = 'e';
+                    else if (b2 >= 0xAC && b2 <= 0xAF) mapped = 'i';
+                    else if (b2 == 0xB1) mapped = 'n';
+                    else if (b2 >= 0xB2 && b2 <= 0xB6) mapped = 'o';
+                    else if (b2 >= 0xB9 && b2 <= 0xBC) mapped = 'u';
+                    else if (b2 == 0x97) mapped = 'x'; /* multiplication × */
+                } else if (ch == 0xC2) {
+                    if (b2 == 0xBF) mapped = '?';      /* ¿ */
+                    else if (b2 == 0xA1) mapped = '!'; /* ¡ */
+                    else if (b2 == 0xB7) mapped = '.'; /* · */
+                }
+                fb_glyph(cx, y, mapped, fg, sc);
+                cx += 8 * sc;
+            }
+        } else if ((ch & 0xF0) == 0xE0) {
+            unsigned char b2 = *p ? *p++ : 0;
+            unsigned char b3 = *p ? *p++ : 0;
+            unsigned char mapped = '*';
+            if (ch == 0xE2) {
+                if (b2 == 0x96 && b3 == 0xB6) mapped = '>';      /* ▶ */
+                else if (b2 == 0x8F && b3 == 0xB8) mapped = '|'; /* ⏸ */
+                else if (b2 == 0x8F && b3 == 0xAE) mapped = '<'; /* ⏮ */
+                else if (b2 == 0x8F && b3 == 0xAD) mapped = '>'; /* ⏭ */
+                else if (b2 == 0x97 && b3 == 0x88) mapped = '#'; /* ◈ */
+                else if (b2 == 0x97 && b3 == 0x8F) mapped = '*'; /* ● */
+                else if (b2 == 0x80 && b3 == 0xA2) mapped = '*'; /* • */
+                else if (b2 == 0x99 && b3 == 0xAB) mapped = '~'; /* ♫ */
+                else if (b2 == 0x96 && b3 == 0xB2) mapped = '^'; /* ▲ */
+                else if (b2 == 0x96 && b3 == 0xBC) mapped = 'v'; /* ▼ */
+            }
+            fb_glyph(cx, y, mapped, fg, sc);
+            cx += 8 * sc;
+        } else if ((ch & 0xF8) == 0xF0) {
+            if (*p) p++;
+            if (*p) p++;
+            if (*p) p++;
+            fb_glyph(cx, y, '*', fg, sc);
+            cx += 8 * sc;
+        }
+    }
     return cx - x;
 }
 
 static void fb_str_r(int rx, int y, const char *s, uint32_t fg, int sc) {
-    int len = (int)strlen(s) * 8 * sc;
+    int chars = 0;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        unsigned char ch = *p++;
+        if (ch < 0x80) { chars++; }
+        else if ((ch & 0xE0) == 0xC0) { if (*p) p++; chars++; }
+        else if ((ch & 0xF0) == 0xE0) { if (*p) p++; if (*p) p++; chars++; }
+        else if ((ch & 0xF8) == 0xF0) { if (*p) p++; if (*p) p++; if (*p) p++; chars++; }
+    }
+    int len = chars * 8 * sc;
     fb_str(rx - len, y, s, fg, sc);
 }
 
 static void trunc(char *dst, size_t dsz, const char *src, int maxch) {
-    int n = (int)strlen(src);
-    if (n <= maxch) { strncpy(dst, src, dsz-1); dst[dsz-1]='\0'; return; }
-    int k = maxch - 3; if (k < 0) k = 0;
-    strncpy(dst, src, (size_t)k);
-    dst[k]='.'; dst[k+1]='.'; dst[k+2]='.'; dst[k+3]='\0';
+    if (!dst || dsz == 0) return;
+    if (!src) { dst[0] = '\0'; return; }
+
+    size_t char_count = 0;
+    size_t byte_idx = 0;
+    while (src[byte_idx] && char_count < (size_t)maxch && byte_idx + 1 < dsz) {
+        unsigned char c = (unsigned char)src[byte_idx];
+        size_t seq_len = 1;
+        if ((c & 0xE0) == 0xC0) seq_len = 2;
+        else if ((c & 0xF0) == 0xE0) seq_len = 3;
+        else if ((c & 0xF8) == 0xF0) seq_len = 4;
+
+        if (char_count + 1 > (size_t)maxch || byte_idx + seq_len >= dsz) break;
+        for (size_t k = 0; k < seq_len && src[byte_idx]; k++) {
+            dst[byte_idx] = src[byte_idx];
+            byte_idx++;
+        }
+        char_count++;
+    }
+
+    if (src[byte_idx] != '\0' && char_count >= 3 && byte_idx + 4 < dsz) {
+        dst[byte_idx - 3] = '.';
+        dst[byte_idx - 2] = '.';
+        dst[byte_idx - 1] = '.';
+        dst[byte_idx] = '\0';
+    } else {
+        dst[byte_idx] = '\0';
+    }
 }
 
 static void fb_blit_cover(int dst_x, int dst_y, int dst_w, int dst_h,

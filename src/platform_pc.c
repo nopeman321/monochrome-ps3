@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 #include <stdbool.h>
 
 #include "monochrome.h"
@@ -89,6 +90,25 @@ static bool         s_dragging_scrubber     = false;
 static bool         s_dragging_volume       = false;
 static float        s_total_duration_cached = 0.0f;
 static int          s_cached_track_count    = 0;
+
+/* ── Unicode GDI Drawing Helpers (Zero mojibake / Clean UTF-8) ──── */
+static void gdi_draw_text_utf8(HDC hdc, const char *utf8_str, RECT *rc, UINT format) {
+    if (!hdc || !utf8_str || !rc) return;
+    wchar_t wbuf[512];
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8_str, -1, wbuf, (int)(sizeof(wbuf)/sizeof(wbuf[0])));
+    if (wlen > 0) {
+        DrawTextW(hdc, wbuf, -1, rc, format);
+    }
+}
+
+static void gdi_text_out_utf8(HDC hdc, int x, int y, const char *utf8_str) {
+    if (!hdc || !utf8_str) return;
+    wchar_t wbuf[512];
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8_str, -1, wbuf, (int)(sizeof(wbuf)/sizeof(wbuf[0])));
+    if (wlen > 1) {
+        TextOutW(hdc, x, y, wbuf, wlen - 1);
+    }
+}
 
 /* ── Window Procedure ────────────────────────────────────────────── */
 static LRESULT CALLBACK PlatformWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -265,8 +285,13 @@ static LRESULT CALLBACK PlatformWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
                     ui_osk_input_char('\b');
                 } else if (wParam == 13 || wParam == 27) {
                     s_search_focused = false;
-                } else if (wParam >= 32 && wParam < 127) {
-                    ui_osk_input_char((char)wParam);
+                } else if (wParam >= 32) {
+                    wchar_t wch = (wchar_t)wParam;
+                    char u8[8] = {0};
+                    int u8_len = WideCharToMultiByte(CP_UTF8, 0, &wch, 1, u8, sizeof(u8) - 1, NULL, NULL);
+                    for (int k = 0; k < u8_len; k++) {
+                        ui_osk_input_char(u8[k]);
+                    }
                 }
                 return 0;
             } else {
@@ -338,9 +363,9 @@ static LRESULT CALLBACK PlatformWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
         }
 
         default:
-            return DefWindowProc(hwnd, uMsg, wParam, lParam);
+            return DefWindowProcW(hwnd, uMsg, wParam, lParam);
     }
-    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+    return DefWindowProcW(hwnd, uMsg, wParam, lParam);
 }
 
 /* ── Lifecycle & Timers ──────────────────────────────────────────── */
@@ -709,12 +734,19 @@ void platform_audio_write(const int16_t *samples, size_t frames) {
 
     WAVEHDR *hdr = &s_wave_headers[s_buf_index];
 
-    /* Wait if buffer is still playing */
+    /* Wait if buffer is still playing (bounded spin with Sleep(1) only if needed) */
     if (hdr->dwFlags & WHDR_PREPARED) {
-        while (!(hdr->dwFlags & WHDR_DONE)) {
-            Sleep(2);
+        int spin = 0;
+        while (!(hdr->dwFlags & WHDR_DONE) && spin < 10) {
+            Sleep(1);
+            spin++;
         }
-        waveOutUnprepareHeader(s_wave_out, hdr, sizeof(WAVEHDR));
+        if (hdr->dwFlags & WHDR_DONE) {
+            waveOutUnprepareHeader(s_wave_out, hdr, sizeof(WAVEHDR));
+        } else {
+            /* Still busy; skip writing this tick to prevent UI stutter */
+            return;
+        }
     }
 
     size_t copy_frames = (frames > AUDIO_BUF_FRAMES) ? AUDIO_BUF_FRAMES : frames;
@@ -756,17 +788,17 @@ int platform_gfx_init(int width, int height, const char *title) {
 
     HINSTANCE hInstance = GetModuleHandle(NULL);
 
-    WNDCLASSEXA wc;
+    WNDCLASSEXW wc;
     memset(&wc, 0, sizeof(wc));
-    wc.cbSize        = sizeof(WNDCLASSEXA);
+    wc.cbSize        = sizeof(WNDCLASSEXW);
     wc.style         = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc   = PlatformWndProc;
     wc.hInstance     = hInstance;
     wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-    wc.lpszClassName = "MonochromeWinClass";
+    wc.lpszClassName = L"MonochromeWinClass";
 
-    RegisterClassExA(&wc);
+    RegisterClassExW(&wc);
 
     RECT rc = { 0, 0, width, height };
     AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX), FALSE);
@@ -778,10 +810,13 @@ int platform_gfx_init(int width, int height, const char *title) {
     int pos_x = (screen_w - real_w) / 2;
     int pos_y = (screen_h - real_h) / 2;
 
-    s_hwnd = CreateWindowExA(
+    wchar_t wTitle[128] = {0};
+    MultiByteToWideChar(CP_UTF8, 0, title ? title : "Monochrome Music Player", -1, wTitle, 128);
+
+    s_hwnd = CreateWindowExW(
         0,
-        "MonochromeWinClass",
-        title ? title : "Monochrome Music Player",
+        L"MonochromeWinClass",
+        wTitle,
         WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX),
         pos_x, pos_y, real_w, real_h,
         NULL, NULL, hInstance, NULL
@@ -798,13 +833,13 @@ int platform_gfx_init(int width, int height, const char *title) {
     s_old_bmp = (HBITMAP)SelectObject(s_mem_dc, s_mem_bmp);
     ReleaseDC(s_hwnd, hdc);
 
-    /* Create Typography Fonts */
-    s_font_title   = CreateFontA(24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-    s_font_sub     = CreateFontA(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-    s_font_heading = CreateFontA(16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-    s_font_track   = CreateFontA(16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-    s_font_meta    = CreateFontA(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-    s_font_mono    = CreateFontA(13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH, "Consolas");
+    /* Create Typography Fonts (Unicode / ClearType) */
+    s_font_title   = CreateFontW(24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    s_font_sub     = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    s_font_heading = CreateFontW(16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    s_font_track   = CreateFontW(16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    s_font_meta    = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    s_font_mono    = CreateFontW(13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
 
     /* Create UI Brushes */
     s_br_bg        = CreateSolidBrush(RGB(10, 10, 12));
@@ -914,11 +949,11 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     /* Logo & App Name */
     SelectObject(s_mem_dc, s_font_title);
     SetTextColor(s_mem_dc, RGB(245, 245, 247));
-    TextOutA(s_mem_dc, 24, 20, "◈ MONOCHROME", 14);
+    TextOutW(s_mem_dc, 24, 20, L"◈ MONOCHROME", 12);
 
     SelectObject(s_mem_dc, s_font_sub);
     SetTextColor(s_mem_dc, RGB(110, 115, 133));
-    TextOutA(s_mem_dc, 26, 48, "LOSSLESS AUDIO ENGINE", 21);
+    TextOutW(s_mem_dc, 26, 48, L"LOSSLESS AUDIO ENGINE", 21);
 
     MoveToEx(s_mem_dc, 20, 75, NULL);
     LineTo(s_mem_dc, 210, 75);
@@ -926,13 +961,13 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     /* Navigation Menu */
     SelectObject(s_mem_dc, s_font_meta);
     SetTextColor(s_mem_dc, RGB(110, 115, 133));
-    TextOutA(s_mem_dc, 25, 90, "EXPLORAR", 8);
+    TextOutW(s_mem_dc, 25, 90, L"EXPLORAR", 8);
 
-    static const char *s_nav_items[] = {
-        "◈  Inicio",
-        "🔍  Búsqueda",
-        "☰  Cola de Reproducción",
-        "♡  Biblioteca"
+    static const wchar_t *s_nav_items[] = {
+        L"◈  Inicio",
+        L"🔍  Búsqueda",
+        L"☰  Cola de Reproducción",
+        L"♡  Biblioteca"
     };
     for (int i = 0; i < 4; i++) {
         int ny = 115 + i * 36;
@@ -945,24 +980,24 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
         SelectObject(s_mem_dc, s_font_sub);
         SetTextColor(s_mem_dc, is_active ? RGB(255, 255, 255) : RGB(160, 165, 181));
         RECT r_txt = { 25, ny, 210, ny + 32 };
-        DrawTextA(s_mem_dc, s_nav_items[i], -1, &r_txt, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(s_mem_dc, s_nav_items[i], -1, &r_txt, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
     /* Quick Preset Genres */
     SelectObject(s_mem_dc, s_font_meta);
     SetTextColor(s_mem_dc, RGB(110, 115, 133));
-    TextOutA(s_mem_dc, 25, 265, "GÉNEROS RÁPIDOS", 15);
+    TextOutW(s_mem_dc, 25, 265, L"GÉNEROS RÁPIDOS", 15);
 
-    static const char *s_tags[] = {
-        "• Trending", "• Daft Punk", "• The Weeknd",
-        "• Synthwave", "• Lossless", "• Electronic"
+    static const wchar_t *s_tags[] = {
+        L"• Trending", L"• Daft Punk", L"• The Weeknd",
+        L"• Synthwave", L"• Lossless", L"• Electronic"
     };
     for (int i = 0; i < 6; i++) {
         int ty = 290 + i * 28;
         RECT r_tag = { 20, ty, 215, ty + 26 };
         SelectObject(s_mem_dc, s_font_sub);
         SetTextColor(s_mem_dc, RGB(160, 165, 181));
-        DrawTextA(s_mem_dc, s_tags[i], -1, &r_tag, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(s_mem_dc, s_tags[i], -1, &r_tag, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
     /* Diagnostics Card */
@@ -972,10 +1007,10 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
 
     SelectObject(s_mem_dc, s_font_mono);
     SetTextColor(s_mem_dc, RGB(16, 185, 129));
-    TextOutA(s_mem_dc, 25, 532, "● TIDAL CDN ONLINE", 18);
+    TextOutW(s_mem_dc, 25, 532, L"● TIDAL CDN ONLINE", 18);
     SetTextColor(s_mem_dc, RGB(160, 165, 181));
-    TextOutA(s_mem_dc, 25, 555, "DAC: 48k LPCM Stereo", 20);
-    TextOutA(s_mem_dc, 25, 578, "BUF: 8.0 MB XDR Ring", 20);
+    TextOutW(s_mem_dc, 25, 555, L"DAC: 48k LPCM Stereo", 20);
+    TextOutW(s_mem_dc, 25, 578, L"BUF: 8.0 MB XDR Ring", 20);
 
     /* 3. Top Header Bar (x: 230 -> 1280, y: 0 -> 75) */
     RECT r_head = { 230, 0, s_win_width, 75 };
@@ -995,8 +1030,8 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
 
     SelectObject(s_mem_dc, s_font_heading);
     SetTextColor(s_mem_dc, RGB(160, 165, 181));
-    DrawTextA(s_mem_dc, "<", -1, &r_prev_btn, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    DrawTextA(s_mem_dc, ">", -1, &r_next_btn, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(s_mem_dc, L"<", -1, &r_prev_btn, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(s_mem_dc, L">", -1, &r_next_btn, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     /* Search Input Box (x: 335 -> 780, y: 18 -> 56) */
     RECT r_search = { 335, 18, 780, 56 };
@@ -1005,28 +1040,30 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
 
     const char *current_q = ui_get_search_query();
     if (current_q && current_q[0] != '\0') {
-        char display_q[128];
+        wchar_t wq[128];
+        MultiByteToWideChar(CP_UTF8, 0, current_q, -1, wq, 128);
+        wchar_t display_q[160];
         if (s_search_focused && ((GetTickCount64() / 500) % 2 == 0)) {
-            snprintf(display_q, sizeof(display_q), "🔍 %s|", current_q);
+            _snwprintf(display_q, 160, L"🔍 %ls|", wq);
         } else {
-            snprintf(display_q, sizeof(display_q), "🔍 %s", current_q);
+            _snwprintf(display_q, 160, L"🔍 %ls", wq);
         }
         SelectObject(s_mem_dc, s_font_track);
         SetTextColor(s_mem_dc, RGB(245, 245, 247));
         RECT r_qtext = { 348, 18, 745, 56 };
-        DrawTextA(s_mem_dc, display_q, -1, &r_qtext, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(s_mem_dc, display_q, -1, &r_qtext, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         /* Clear button [×] */
         SelectObject(s_mem_dc, s_font_heading);
         SetTextColor(s_mem_dc, (s_hover_btn == 7) ? RGB(255, 255, 255) : RGB(160, 165, 181));
         RECT r_clear = { 752, 18, 778, 56 };
-        DrawTextA(s_mem_dc, "×", -1, &r_clear, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(s_mem_dc, L"×", -1, &r_clear, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     } else {
         SelectObject(s_mem_dc, s_font_sub);
         SetTextColor(s_mem_dc, RGB(110, 115, 133));
         RECT r_qtext = { 348, 18, 745, 56 };
-        const char *ph = s_search_focused ? "🔍 |" : "🔍 Buscar canciones, artistas o álbumes... (Presiona '/' para escribir)";
-        DrawTextA(s_mem_dc, ph, -1, &r_qtext, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        const wchar_t *ph = s_search_focused ? L"🔍 |" : L"🔍 Buscar canciones, artistas o álbumes... (Presiona '/' para escribir)";
+        DrawTextW(s_mem_dc, ph, -1, &r_qtext, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
     /* Badges on right header */
@@ -1035,13 +1072,13 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     FillRect(s_mem_dc, &r_badge1, s_br_card);
     FrameRect(s_mem_dc, &r_badge1, s_br_bar_bg);
     SetTextColor(s_mem_dc, RGB(255, 209, 102));
-    DrawTextA(s_mem_dc, "24-BIT / 96k · HI-RES", -1, &r_badge1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(s_mem_dc, L"24-BIT / 96k · HI-RES", -1, &r_badge1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     RECT r_badge2 = { 1060, 22, 1245, 52 };
     FillRect(s_mem_dc, &r_badge2, s_br_card);
     FrameRect(s_mem_dc, &r_badge2, s_br_bar_bg);
     SetTextColor(s_mem_dc, RGB(16, 185, 129));
-    DrawTextA(s_mem_dc, "● TIDAL LOSSLESS", -1, &r_badge2, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(s_mem_dc, L"● TIDAL LOSSLESS", -1, &r_badge2, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     /* 4. Catalog Area (x: 230 -> 1280, y: 75 -> 625) */
     char cat_str[128];
@@ -1049,17 +1086,17 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
              (current_q && current_q[0] != '\0') ? current_q : "Tendencias", track_count);
     SelectObject(s_mem_dc, s_font_heading);
     SetTextColor(s_mem_dc, RGB(245, 245, 247));
-    TextOutA(s_mem_dc, 250, 94, cat_str, (int)strlen(cat_str));
+    gdi_text_out_utf8(s_mem_dc, 250, 94, cat_str);
 
     /* Column Headers at y: 125 */
     SelectObject(s_mem_dc, s_font_mono);
     SetTextColor(s_mem_dc, RGB(110, 115, 133));
-    TextOutA(s_mem_dc, 255,  126, "#", 1);
-    TextOutA(s_mem_dc, 310,  126, "TÍTULO", 6);
-    TextOutA(s_mem_dc, 680,  126, "ARTISTA", 7);
-    TextOutA(s_mem_dc, 910,  126, "ÁLBUM", 5);
-    TextOutA(s_mem_dc, 1080, 126, "CALIDAD", 7);
-    TextOutA(s_mem_dc, 1200, 126, "TIEMPO", 6);
+    TextOutW(s_mem_dc, 255,  126, L"#", 1);
+    TextOutW(s_mem_dc, 310,  126, L"TÍTULO", 6);
+    TextOutW(s_mem_dc, 680,  126, L"ARTISTA", 7);
+    TextOutW(s_mem_dc, 910,  126, L"ÁLBUM", 5);
+    TextOutW(s_mem_dc, 1080, 126, L"CALIDAD", 7);
+    TextOutW(s_mem_dc, 1200, 126, L"TIEMPO", 6);
 
     SelectObject(s_mem_dc, s_pen_dim);
     MoveToEx(s_mem_dc, 245, 144, NULL);
@@ -1093,27 +1130,27 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
         /* Number / Play indicator */
         SelectObject(s_mem_dc, s_font_mono);
         SetTextColor(s_mem_dc, is_sel ? RGB(255, 255, 255) : RGB(160, 165, 181));
-        char num_buf[16];
-        if (is_sel) snprintf(num_buf, sizeof(num_buf), "▶%2d", t_idx + 1);
-        else        snprintf(num_buf, sizeof(num_buf), " %2d", t_idx + 1);
-        TextOutA(s_mem_dc, 255, row_y + 11, num_buf, (int)strlen(num_buf));
+        wchar_t num_buf[16];
+        if (is_sel) _snwprintf(num_buf, 16, L"▶%2d", t_idx + 1);
+        else        _snwprintf(num_buf, 16, L" %2d", t_idx + 1);
+        TextOutW(s_mem_dc, 255, row_y + 11, num_buf, (int)wcslen(num_buf));
 
         /* Title */
         SelectObject(s_mem_dc, s_font_track);
         SetTextColor(s_mem_dc, is_sel ? RGB(255, 255, 255) : RGB(245, 245, 247));
         RECT r_title = { 310, row_y, 670, row_y + 40 };
-        DrawTextA(s_mem_dc, tracks[t_idx].title, -1, &r_title, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        gdi_draw_text_utf8(s_mem_dc, tracks[t_idx].title, &r_title, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
         /* Artist */
         SelectObject(s_mem_dc, s_font_meta);
         SetTextColor(s_mem_dc, is_sel ? RGB(220, 225, 240) : RGB(160, 165, 181));
         RECT r_artist = { 680, row_y, 900, row_y + 40 };
-        DrawTextA(s_mem_dc, tracks[t_idx].artist, -1, &r_artist, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        gdi_draw_text_utf8(s_mem_dc, tracks[t_idx].artist, &r_artist, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
         /* Album */
         SetTextColor(s_mem_dc, is_sel ? RGB(180, 185, 200) : RGB(110, 115, 133));
         RECT r_album = { 910, row_y, 1070, row_y + 40 };
-        DrawTextA(s_mem_dc, tracks[t_idx].album, -1, &r_album, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        gdi_draw_text_utf8(s_mem_dc, tracks[t_idx].album, &r_album, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
         /* Quality Badge */
         SelectObject(s_mem_dc, s_font_mono);
@@ -1121,14 +1158,14 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
         FillRect(s_mem_dc, &r_qbadge, s_br_card);
         FrameRect(s_mem_dc, &r_qbadge, s_br_bar_bg);
         SetTextColor(s_mem_dc, tracks[t_idx].is_hi_res ? RGB(255, 209, 102) : RGB(100, 200, 255));
-        DrawTextA(s_mem_dc, tracks[t_idx].is_hi_res ? "HI-RES" : "FLAC", -1, &r_qbadge, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(s_mem_dc, tracks[t_idx].is_hi_res ? L"HI-RES" : L"FLAC", -1, &r_qbadge, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
         /* Duration */
         char time_buf[16];
         uint32_t dur = tracks[t_idx].duration_sec;
         snprintf(time_buf, sizeof(time_buf), "%02u:%02u", dur / 60, dur % 60);
         SetTextColor(s_mem_dc, is_sel ? RGB(255, 255, 255) : RGB(160, 165, 181));
-        TextOutA(s_mem_dc, 1200, row_y + 11, time_buf, (int)strlen(time_buf));
+        gdi_text_out_utf8(s_mem_dc, 1200, row_y + 11, time_buf);
     }
 
     /* Scroll Status */
@@ -1141,7 +1178,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
                  track_count);
         SelectObject(s_mem_dc, s_font_sub);
         SetTextColor(s_mem_dc, RGB(110, 115, 133));
-        TextOutA(s_mem_dc, 250, 595, scroll_info, (int)strlen(scroll_info));
+        gdi_text_out_utf8(s_mem_dc, 250, 595, scroll_info);
     }
 
     /* 5. Now Playing Elevated Dock (x: 0 -> 1280, y: 625 -> 720) */
@@ -1180,7 +1217,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
         FrameRect(s_mem_dc, &r_art, s_br_bar_bg);
         SelectObject(s_mem_dc, s_font_heading);
         SetTextColor(s_mem_dc, RGB(255, 255, 255));
-        DrawTextA(s_mem_dc, "♫", -1, &r_art, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(s_mem_dc, L"♫", -1, &r_art, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 
     /* Now Playing Info */
@@ -1190,28 +1227,28 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     SelectObject(s_mem_dc, s_font_track);
     SetTextColor(s_mem_dc, RGB(245, 245, 247));
     RECT r_now_t = { 108, 637, 400, 661 };
-    DrawTextA(s_mem_dc, now_t, -1, &r_now_t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    gdi_draw_text_utf8(s_mem_dc, now_t, &r_now_t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     SelectObject(s_mem_dc, s_font_meta);
     SetTextColor(s_mem_dc, RGB(160, 165, 181));
     RECT r_now_a = { 108, 663, 400, 685 };
-    DrawTextA(s_mem_dc, now_a, -1, &r_now_a, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    gdi_draw_text_utf8(s_mem_dc, now_a, &r_now_a, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     SelectObject(s_mem_dc, s_font_sub);
     SetTextColor(s_mem_dc, RGB(110, 115, 133));
     RECT r_now_q = { 108, 687, 400, 707 };
-    DrawTextA(s_mem_dc, (track && track->is_hi_res) ? "Hi-Res FLAC 24-Bit / 96 kHz" : "Lossless FLAC 16-Bit / 44.1 kHz", -1, &r_now_q, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(s_mem_dc, (track && track->is_hi_res) ? L"Hi-Res FLAC 24-Bit / 96 kHz" : L"Lossless FLAC 16-Bit / 44.1 kHz", -1, &r_now_q, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     /* Center Transport Controls (y: 634) */
     bool is_shuf = ui_get_shuffle_mode();
     SelectObject(s_mem_dc, s_font_sub);
     SetTextColor(s_mem_dc, is_shuf ? RGB(16, 185, 129) : ((s_hover_btn == 1) ? RGB(255, 255, 255) : RGB(160, 165, 181)));
     RECT r_shuf = { 515, 634, 545, 662 };
-    DrawTextA(s_mem_dc, "🔀", -1, &r_shuf, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(s_mem_dc, L"🔀", -1, &r_shuf, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     SetTextColor(s_mem_dc, (s_hover_btn == 2) ? RGB(255, 255, 255) : RGB(160, 165, 181));
     RECT r_prev = { 560, 634, 590, 662 };
-    DrawTextA(s_mem_dc, "⏮", -1, &r_prev, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(s_mem_dc, L"⏮", -1, &r_prev, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     /* Circular Play/Pause button */
     RECT r_pp = { 610, 628, 650, 668 };
@@ -1220,33 +1257,33 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     Ellipse(s_mem_dc, 610, 628, 650, 668);
     SelectObject(s_mem_dc, s_font_heading);
     SetTextColor(s_mem_dc, RGB(255, 255, 255));
-    const char *pp_icon = (pstate == PLAYBACK_PLAYING) ? "⏸" : "▶";
-    DrawTextA(s_mem_dc, pp_icon, -1, &r_pp, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    const wchar_t *pp_icon = (pstate == PLAYBACK_PLAYING) ? L"⏸" : L"▶";
+    DrawTextW(s_mem_dc, pp_icon, -1, &r_pp, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     SelectObject(s_mem_dc, s_font_sub);
     SetTextColor(s_mem_dc, (s_hover_btn == 4) ? RGB(255, 255, 255) : RGB(160, 165, 181));
     RECT r_next = { 660, 634, 690, 662 };
-    DrawTextA(s_mem_dc, "⏭", -1, &r_next, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(s_mem_dc, L"⏭", -1, &r_next, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     int rep_mode = ui_get_repeat_mode();
     SetTextColor(s_mem_dc, (rep_mode != 0) ? RGB(100, 200, 255) : ((s_hover_btn == 5) ? RGB(255, 255, 255) : RGB(160, 165, 181)));
     RECT r_rep = { 705, 634, 735, 662 };
-    DrawTextA(s_mem_dc, (rep_mode == 2) ? "🔂" : "🔁", -1, &r_rep, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(s_mem_dc, (rep_mode == 2) ? L"🔂" : L"🔁", -1, &r_rep, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     /* Playback Status above progress bar */
     SelectObject(s_mem_dc, s_font_mono);
     if (pstate == PLAYBACK_PLAYING) {
         SetTextColor(s_mem_dc, RGB(16, 185, 129));
-        TextOutA(s_mem_dc, 420, 663, "▶ EN REPRODUCCIÓN (48,000 Hz LPCM DAC)", 38);
+        TextOutW(s_mem_dc, 420, 663, L"▶ EN REPRODUCCIÓN (48,000 Hz LPCM DAC)", 38);
     } else if (pstate == PLAYBACK_BUFFERING) {
         SetTextColor(s_mem_dc, RGB(100, 200, 255));
-        TextOutA(s_mem_dc, 420, 663, "◌ BUFFERING & STREAMING FLAC...", 31);
+        TextOutW(s_mem_dc, 420, 663, L"◌ BUFFERING & STREAMING FLAC...", 31);
     } else if (pstate == PLAYBACK_PAUSED) {
         SetTextColor(s_mem_dc, RGB(245, 158, 11));
-        TextOutA(s_mem_dc, 420, 663, "⏸ EN PAUSA", 11);
+        TextOutW(s_mem_dc, 420, 663, L"⏸ EN PAUSA", 10);
     } else {
         SetTextColor(s_mem_dc, RGB(110, 115, 133));
-        TextOutA(s_mem_dc, 420, 663, "⏹ LISTO", 8);
+        TextOutW(s_mem_dc, 420, 663, L"⏹ LISTO", 7);
     }
 
     /* Scrubber & Progress Bar */
@@ -1255,7 +1292,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     char cur_time_str[16];
     snprintf(cur_time_str, sizeof(cur_time_str), "%02u:%02u", cur_sec / 60, cur_sec % 60);
     SetTextColor(s_mem_dc, RGB(160, 165, 181));
-    TextOutA(s_mem_dc, 365, 678, cur_time_str, (int)strlen(cur_time_str));
+    gdi_text_out_utf8(s_mem_dc, 365, 678, cur_time_str);
 
     RECT r_prog_bg = { 420, 683, 840, 688 };
     FillRect(s_mem_dc, &r_prog_bg, s_br_bar_bg);
@@ -1274,7 +1311,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
 
     char total_time_str[16];
     snprintf(total_time_str, sizeof(total_time_str), "%02u:%02u", total_sec / 60, total_sec % 60);
-    TextOutA(s_mem_dc, 850, 678, total_time_str, (int)strlen(total_time_str));
+    gdi_text_out_utf8(s_mem_dc, 850, 678, total_time_str);
 
     /* 16-Band Real-Time Audio Visualizer (x: 930 -> 1060, y: 642 -> 692) */
     float vis_bands[VIS_BANDS];
@@ -1296,7 +1333,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     SelectObject(s_mem_dc, s_font_sub);
     SetTextColor(s_mem_dc, RGB(160, 165, 181));
     RECT r_spk = { 1075, 660, 1100, 686 };
-    DrawTextA(s_mem_dc, (s_volume > 0.01f) ? "🔊" : "🔇", -1, &r_spk, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(s_mem_dc, (s_volume > 0.01f) ? L"🔊" : L"🔇", -1, &r_spk, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     RECT r_vol_bg = { 1105, 671, 1195, 675 };
     FillRect(s_mem_dc, &r_vol_bg, s_br_bar_bg);
@@ -1312,7 +1349,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     snprintf(vol_str, sizeof(vol_str), "%d%%", (int)(s_volume * 100.0f));
     SelectObject(s_mem_dc, s_font_mono);
     SetTextColor(s_mem_dc, RGB(160, 165, 181));
-    TextOutA(s_mem_dc, 1205, 664, vol_str, (int)strlen(vol_str));
+    gdi_text_out_utf8(s_mem_dc, 1205, 664, vol_str);
 
     /* 6. Blit from memory DC to Window DC */
     HDC hdc = GetDC(s_hwnd);
