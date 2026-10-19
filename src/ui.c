@@ -115,6 +115,55 @@ void gfx_shutdown(void) {
     printf("[RSX] Context released.\n");
 }
 
+static char g_search_query[64] = "Daft Punk";
+static int  g_search_query_len = 9;
+static int  g_osk_row = 1;
+static int  g_osk_col = 0;
+
+static const char *s_osk_grid[4][10] = {
+    { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" },
+    { "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P" },
+    { "A", "S", "D", "F", "G", "H", "J", "K", "L", "-" },
+    { "Z", "X", "C", "V", "B", "N", "M", "SPC", "DEL", "GO" }
+};
+
+void ui_set_search_query(const char *query) {
+    if (!query) return;
+    snprintf(g_search_query, sizeof(g_search_query), "%s", query);
+    g_search_query_len = (int)strlen(g_search_query);
+    net_search_async_query(g_search_query);
+}
+
+const char *ui_get_search_query(void) {
+    return g_search_query;
+}
+
+void ui_get_osk_state(int *row, int *col, const char **query) {
+    if (row)   *row   = g_osk_row;
+    if (col)   *col   = g_osk_col;
+    if (query) *query = g_search_query;
+}
+
+void ui_osk_input_char(char ch) {
+    if (ch == '\b' || ch == 127) {
+        if (g_search_query_len > 0) {
+            g_search_query[--g_search_query_len] = '\0';
+            net_search_async_query(g_search_query);
+        }
+    } else if (ch >= 32 && ch < 127) {
+        if (g_search_query_len < (int)sizeof(g_search_query) - 1) {
+            g_search_query[g_search_query_len++] = ch;
+            g_search_query[g_search_query_len] = '\0';
+            net_search_async_query(g_search_query);
+        }
+    }
+}
+
+void ui_osk_set_cursor(int row, int col) {
+    if (row >= 0 && row < 4)  g_osk_row = row;
+    if (col >= 0 && col < 10) g_osk_col = col;
+}
+
 /* ── Render one frame ────────────────────────────────────────────── */
 void gfx_render(AppState state, const TrackMetadata *track,
                 PlaybackState pstate, float progress) {
@@ -124,17 +173,16 @@ void gfx_render(AppState state, const TrackMetadata *track,
         g_initial_load = true;
     }
 
-    /*
-     * Real RSX pipeline:
-     *   1. gcmSetClearColor(0x00000000)      — pure black
-     *   2. gcmSetClearSurface(COLOR|DEPTH)
-     *   3. Draw header bar:  "MONOCHROME" in white sans-serif
-     *   4. Draw track list:  white text, highlighted row has #FFFFFF border
-     *   5. Draw now-playing bar at bottom:
-     *        ▶ Title — Artist — Album       [HI-RES 24/96]
-     *        ████████████░░░░░░░░░░░░░░░░  2:15 / 3:50
-     *   6. gcmSetFlip(buffer_id)             — VSync
-     */
+    /* Poll background async search worker */
+    bool is_searching = false;
+    int async_count = net_search_async_poll(g_tracks, MAX_SEARCH_RESULTS, &is_searching);
+    if (async_count >= 0) {
+        g_track_count = async_count;
+        if (g_cursor >= g_track_count) g_cursor = 0;
+        if (g_track_count > 0) {
+            cover_art_request(g_tracks[g_cursor].id, g_tracks[g_cursor].cover_url);
+        }
+    }
 
     static uint32_t frame_count = 0;
     frame_count++;
@@ -159,43 +207,7 @@ void gfx_render(AppState state, const TrackMetadata *track,
     /* Hardware Abstraction Layer Visual Renderer (Win32 GDI / PS3 RSX) */
     platform_gfx_render((int)state, track, (int)pstate, progress,
                         g_tracks, g_track_count, g_cursor,
-                        s_search_presets[s_preset_idx]);
-}
-
-static char g_search_query[64] = "Daft Punk";
-static int  g_search_query_len = 9;
-static int  g_osk_row = 1;
-static int  g_osk_col = 0;
-
-static const char *s_osk_grid[4][10] = {
-    { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" },
-    { "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P" },
-    { "A", "S", "D", "F", "G", "H", "J", "K", "L", "-" },
-    { "Z", "X", "C", "V", "B", "N", "M", "SPC", "DEL", "GO" }
-};
-
-void ui_get_osk_state(int *row, int *col, const char **query) {
-    if (row)   *row   = g_osk_row;
-    if (col)   *col   = g_osk_col;
-    if (query) *query = g_search_query;
-}
-
-void ui_osk_input_char(char ch) {
-    if (ch == '\b' || ch == 127) {
-        if (g_search_query_len > 0) {
-            g_search_query[--g_search_query_len] = '\0';
-        }
-    } else if (ch >= 32 && ch < 127) {
-        if (g_search_query_len < (int)sizeof(g_search_query) - 1) {
-            g_search_query[g_search_query_len++] = ch;
-            g_search_query[g_search_query_len] = '\0';
-        }
-    }
-}
-
-void ui_osk_set_cursor(int row, int col) {
-    if (row >= 0 && row < 4)  g_osk_row = row;
-    if (col >= 0 && col < 10) g_osk_col = col;
+                        g_search_query);
 }
 
 /* ── Input polling → state transitions ───────────────────────────── */
@@ -222,24 +234,27 @@ AppState pad_update(AppState current) {
                 const char *key = s_osk_grid[g_osk_row][g_osk_col];
                 if (strcmp(key, "GO") == 0) {
                     if (g_search_query_len > 0) {
-                        printf("[UI] Searching Tidal live API for: '%s'...\n", g_search_query);
-                        g_track_count = net_search(g_search_query, g_tracks, MAX_SEARCH_RESULTS);
+                        printf("[UI] Triggering async search for: '%s'...\n", g_search_query);
+                        net_search_async_query(g_search_query);
                         g_cursor = 0;
                     }
                     current = STATE_HOME;
                 } else if (strcmp(key, "DEL") == 0) {
                     if (g_search_query_len > 0) {
                         g_search_query[--g_search_query_len] = '\0';
+                        net_search_async_query(g_search_query);
                     }
                 } else if (strcmp(key, "SPC") == 0) {
                     if (g_search_query_len < (int)sizeof(g_search_query) - 1) {
                         g_search_query[g_search_query_len++] = ' ';
                         g_search_query[g_search_query_len] = '\0';
+                        net_search_async_query(g_search_query);
                     }
                 } else {
                     if (g_search_query_len < (int)sizeof(g_search_query) - 1) {
                         g_search_query[g_search_query_len++] = key[0];
                         g_search_query[g_search_query_len] = '\0';
+                        net_search_async_query(g_search_query);
                     }
                 }
                 break;
@@ -248,6 +263,7 @@ AppState pad_update(AppState current) {
             case INPUT_PLAY_PAUSE: /* Triangle / Space shortcut for Delete in OSK */
                 if (g_search_query_len > 0) {
                     g_search_query[--g_search_query_len] = '\0';
+                    net_search_async_query(g_search_query);
                 }
                 break;
 
@@ -256,6 +272,7 @@ AppState pad_update(AppState current) {
                 snprintf(g_search_query, sizeof(g_search_query), "%s", s_search_presets[s_preset_idx]);
                 g_search_query_len = (int)strlen(g_search_query);
                 printf("[UI] Quick preset: '%s'\n", g_search_query);
+                net_search_async_query(g_search_query);
                 break;
 
             case INPUT_CANCEL:

@@ -127,71 +127,79 @@ void audio_tick(void) {
         return;
     }
 
-    size_t avail = ring_available(g_rb);
-    if (avail < AUDIO_BLOCK_BYTES) {
-        for (int b = 0; b < VIS_BANDS; b++) {
-            s_vis_bands[b] *= 0.82f;
+    int blocks_pumped = 0;
+    while (blocks_pumped < 4) {
+        size_t avail = ring_available(g_rb);
+        if (avail < AUDIO_BLOCK_BYTES) {
+            if (blocks_pumped == 0) {
+                for (int b = 0; b < VIS_BANDS; b++) {
+                    s_vis_bands[b] *= 0.82f;
+                }
+                if (g_rb->stream_eof) {
+                    audio_set_state(PLAYBACK_STOPPED);
+                    return;
+                }
+                /* Buffer underrun / buffering: output silence to keep hardware DAC active without clicks */
+                memset(g_pcm_block, 0, sizeof(g_pcm_block));
+                platform_audio_write(g_pcm_block, AUDIO_BLOCK_FRAMES);
+            }
+            break;
         }
-        if (g_rb->stream_eof) {
-            audio_set_state(PLAYBACK_STOPPED);
-            return;
-        }
-        /* Buffer underrun / buffering: output silence to keep hardware DAC active without clicks */
-        memset(g_pcm_block, 0, sizeof(g_pcm_block));
-        platform_audio_write(g_pcm_block, AUDIO_BLOCK_FRAMES);
-        return;
-    }
 
-    /* Fast contiguous read with wraparound handling */
-    size_t r = g_rb->read_pos;
-    size_t chunk1 = g_rb->capacity - r;
-    if (chunk1 >= AUDIO_BLOCK_BYTES) {
-        memcpy(g_pcm_block, &g_rb->buffer[r], AUDIO_BLOCK_BYTES);
-        r += AUDIO_BLOCK_BYTES;
-        if (r >= g_rb->capacity) r = 0;
-    } else {
-        memcpy(g_pcm_block, &g_rb->buffer[r], chunk1);
-        size_t chunk2 = AUDIO_BLOCK_BYTES - chunk1;
-        memcpy(((uint8_t *)g_pcm_block) + chunk1, &g_rb->buffer[0], chunk2);
-        r = chunk2;
-    }
-    CELL_LWSYNC();
-    g_rb->read_pos = r;
-
-    /* Compute 16-band frequency spectrum for UI visualizer via differential filterbank */
-    for (int b = 0; b < VIS_BANDS; b++) {
-        int stride = 1 + (b * b * (AUDIO_BLOCK_FRAMES / 2)) / (VIS_BANDS * VIS_BANDS);
-        if (stride < 1) stride = 1;
-        if (stride > AUDIO_BLOCK_FRAMES - 1) stride = AUDIO_BLOCK_FRAMES - 1;
-
-        float sum = 0.0f;
-        int count = 0;
-        for (int s = 0; s < AUDIO_BLOCK_FRAMES - stride; s += 2) {
-            float l0 = (float)g_pcm_block[s * 2] / 32768.0f;
-            float l1 = (float)g_pcm_block[(s + stride) * 2] / 32768.0f;
-            float diff = (b < 4) ? (l0 + l1) * 0.5f : (l0 - l1);
-            sum += diff * diff;
-            count++;
-        }
-        float rms = (count > 0) ? sqrtf(sum / (float)count) * (3.0f + (float)b * 0.2f) : 0.0f;
-        if (rms > 1.0f) rms = 1.0f;
-        if (rms >= s_vis_bands[b]) {
-            s_vis_bands[b] = rms;
+        /* Fast contiguous read with wraparound handling */
+        size_t r = g_rb->read_pos;
+        size_t chunk1 = g_rb->capacity - r;
+        if (chunk1 >= AUDIO_BLOCK_BYTES) {
+            memcpy(g_pcm_block, &g_rb->buffer[r], AUDIO_BLOCK_BYTES);
+            r += AUDIO_BLOCK_BYTES;
+            if (r >= g_rb->capacity) r = 0;
         } else {
-            s_vis_bands[b] = s_vis_bands[b] * 0.78f + rms * 0.22f;
+            memcpy(g_pcm_block, &g_rb->buffer[r], chunk1);
+            size_t chunk2 = AUDIO_BLOCK_BYTES - chunk1;
+            memcpy(((uint8_t *)g_pcm_block) + chunk1, &g_rb->buffer[0], chunk2);
+            r = chunk2;
         }
+        CELL_LWSYNC();
+        g_rb->read_pos = r;
+
+        /* Compute 16-band frequency spectrum for UI visualizer via differential filterbank */
+        if (blocks_pumped == 0) {
+            for (int b = 0; b < VIS_BANDS; b++) {
+                int stride = 1 + (b * b * (AUDIO_BLOCK_FRAMES / 2)) / (VIS_BANDS * VIS_BANDS);
+                if (stride < 1) stride = 1;
+                if (stride > AUDIO_BLOCK_FRAMES - 1) stride = AUDIO_BLOCK_FRAMES - 1;
+
+                float sum = 0.0f;
+                int count = 0;
+                for (int s = 0; s < AUDIO_BLOCK_FRAMES - stride; s += 2) {
+                    float l0 = (float)g_pcm_block[s * 2] / 32768.0f;
+                    float l1 = (float)g_pcm_block[(s + stride) * 2] / 32768.0f;
+                    float diff = (b < 4) ? (l0 + l1) * 0.5f : (l0 - l1);
+                    sum += diff * diff;
+                    count++;
+                }
+                float rms = (count > 0) ? sqrtf(sum / (float)count) * (3.0f + (float)b * 0.2f) : 0.0f;
+                if (rms > 1.0f) rms = 1.0f;
+                if (rms >= s_vis_bands[b]) {
+                    s_vis_bands[b] = rms;
+                } else {
+                    s_vis_bands[b] = s_vis_bands[b] * 0.78f + rms * 0.22f;
+                }
+            }
+        }
+
+        /* Output audio block to hardware (waveOut on PC / sys_audio_out on PS3) */
+        platform_audio_write(g_pcm_block, AUDIO_BLOCK_FRAMES);
+
+        g_total_frames_played += AUDIO_BLOCK_FRAMES;
+        blocks_pumped++;
     }
 
-    /* Output audio block to hardware (waveOut on PC / sys_audio_out on PS3) */
-    platform_audio_write(g_pcm_block, AUDIO_BLOCK_FRAMES);
-
-    g_total_frames_played += AUDIO_BLOCK_FRAMES;
-
-    static uint32_t s_audio_blocks = 0;
-    s_audio_blocks++;
-    if (s_audio_blocks % 60 == 0) {
-        printf("[AUDIO] LPCM DAC 48 kHz stereo active | Blocks: %u | Buffer: %zu KB\n",
-               s_audio_blocks, avail / 1024);
+    static uint32_t s_audio_ticks = 0;
+    s_audio_ticks++;
+    if (s_audio_ticks % 60 == 0) {
+        printf("[AUDIO] LPCM DAC 48 kHz stereo active | Pumped: %d blks/tick | Buffer: %zu KB\n",
+               blocks_pumped, ring_available(g_rb) / 1024);
     }
 }
 
@@ -209,6 +217,12 @@ float audio_get_progress(uint32_t total_duration_sec) {
     float p = (float)audio_get_elapsed_sec() / (float)total_duration_sec;
     if (p > 1.0f) p = 1.0f;
     return p;
+}
+
+void audio_seek_progress(float progress, uint32_t total_duration_sec) {
+    if (progress < 0.0f) progress = 0.0f;
+    if (progress > 1.0f) progress = 1.0f;
+    g_total_frames_played = (uint64_t)(progress * (float)total_duration_sec * 48000.0f);
 }
 
 

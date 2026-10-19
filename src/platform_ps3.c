@@ -187,6 +187,9 @@ void platform_get_cache_cover_path(const char *track_id, char *out_path, size_t 
 
 #define MAX_PLATFORM_THREADS 8
 
+extern uint32_t ps3_thread_entry_stub_opd[2];
+extern uint32_t ps3_flip_handler_cb_opd[2];
+
 typedef struct {
     uint64_t thread_id;
     PlatformThreadFunc func;
@@ -196,7 +199,7 @@ typedef struct {
 
 static Ps3ThreadContext s_thread_pool[MAX_PLATFORM_THREADS];
 
-static void ps3_thread_entry_stub(uint64_t raw_arg) {
+void ps3_thread_entry_stub(uint64_t raw_arg) {
     Ps3ThreadContext *ctx = (Ps3ThreadContext *)(uintptr_t)raw_arg;
     if (ctx && ctx->func) {
         PlatformThreadFunc f = ctx->func;
@@ -229,14 +232,16 @@ PlatformThreadHandle platform_thread_create(PlatformThreadFunc func, void *arg) 
 
     /*
      * sys_ppu_thread_create:
-     * - entry: ps3_thread_entry_stub (OPD descriptor under PPC64 ELFv1)
+     * - entry: ps3_thread_entry_stub_opd (Official 32-bit OPD descriptor: [entry_func, .TOC.])
      * - arg: ctx pointer passed in r3
      * - prio: 1000 (standard priority)
      * - stack size: 64 KB (65536 bytes)
      * - flags: SYS_PPU_THREAD_CREATE_JOINABLE (1)
      */
     uint64_t tid = 0;
-    int ret = ps3_sys_ppu_thread_create(&tid, ps3_thread_entry_stub, (uint64_t)(uintptr_t)ctx,
+    int ret = ps3_sys_ppu_thread_create(&tid,
+                                        (void (*)(uint64_t))(uintptr_t)ps3_thread_entry_stub_opd,
+                                        (uint64_t)(uintptr_t)ctx,
                                         1000, 65536, 1, "monochrome_stream");
     if (ret != 0 || tid == 0) {
         tty("[THREAD] sys_ppu_thread_create failed (code %d)\n", ret);
@@ -245,8 +250,8 @@ PlatformThreadHandle platform_thread_create(PlatformThreadFunc func, void *arg) 
     }
 
     ctx->thread_id = tid;
-    tty("[THREAD] PPU Thread %llu created successfully (entry=%p, stack=64KB)\n",
-        (unsigned long long)tid, (void *)ps3_thread_entry_stub);
+    tty("[THREAD] PPU Thread %llu created successfully (entry_opd=%p, stack=64KB)\n",
+        (unsigned long long)tid, (void *)ps3_thread_entry_stub_opd);
     return (PlatformThreadHandle)ctx;
 }
 
@@ -333,13 +338,13 @@ static inline int gcm_set_flip_mode(uint32_t mode) {
     return (int)sce_opd_call6(sce_slot_cellGcmSetFlipMode,
                               mode, 0, 0, 0, 0, 0);
 }
-static inline int gcm_set_flip(uint32_t ctx, uint32_t id) {
+static inline int gcm_set_flip(uint32_t id) {
     return (int)sce_opd_call6(sce_slot_cellGcmSetFlip,
-                              ctx, id, 0, 0, 0, 0);
+                              id, 0, 0, 0, 0, 0);
 }
-static inline int gcm_set_flip_immediate(uint32_t ctx, uint32_t id) {
+static inline int gcm_set_flip_immediate(uint32_t id) {
     return (int)sce_opd_call6(sce_slot_cellGcmSetFlipImmediate,
-                              ctx, id, 0, 0, 0, 0);
+                              id, 0, 0, 0, 0, 0);
 }
 static inline int gcm_set_display_buf(uint32_t id, uint32_t offset,
                                       uint32_t r, uint32_t w, uint32_t h) {
@@ -368,13 +373,13 @@ static inline int gcm_reset_flip_status(void) {
  * stays at 1 forever (observed: every flip wait exhausted 200 ms).  The
  * handler runs in the gcm interrupt thread; keep it trivial. */
 static volatile uint32_t s_flip_cb_count = 0;
-static void flip_handler_cb(uint32_t head) {
+void ps3_flip_handler_cb(uint32_t head) {
     (void)head;
     s_flip_cb_count++;
 }
 static inline uint64_t gcm_set_flip_handler(uint64_t fn_opd) {
     return sce_opd_call6(sce_slot_cellGcmSetFlipHandler,
-                         fn_opd, 0, 0, 0, 0, 0);
+                          fn_opd, 0, 0, 0, 0, 0);
 }
 /* u64 return: full r3 (driverInfo.head[head].lastFlipTime; nonzero once
  * a flip has completed -- 0xFEC in sys_rsx writes it). */
@@ -594,10 +599,11 @@ __attribute__((weak)) void gcmResetFlipStatus(void) {
 }
 
 __attribute__((weak)) int gcmSetFlip(gcmContextData *ctx, uint32_t id) {
+    (void)ctx;
     if (SCE_BOUND(cellGcmSetFlipImmediate))
-        return gcm_set_flip_immediate((uint32_t)(uintptr_t)ctx, id);
+        return gcm_set_flip_immediate(id);
     if (SCE_BOUND(cellGcmSetFlip))
-        return gcm_set_flip((uint32_t)(uintptr_t)ctx, id);
+        return gcm_set_flip(id);
     return 0;
 }
 
@@ -650,8 +656,10 @@ __attribute__((weak)) int32_t rsxAddressToOffset(void *ptr, uint32_t *offset) {
 /* ── RSX synchronization & presentation ──────────────────────────────────── */
 static void rsx_wait_flip(void) {
     if (gcmGetFlipStatus) {
-        while (gcmGetFlipStatus() != 0) {
+        int timeout = 0;
+        while (gcmGetFlipStatus() != 0 && timeout < 250) {
             usleep(200);
+            timeout++;
         }
     }
     if (gcmResetFlipStatus) gcmResetFlipStatus();
@@ -702,7 +710,7 @@ int platform_gfx_init(int width, int height, const char *title) {
     /* Register the flip handler — REQUIRED for flip status to ever clear
      * on the LLE path (see gcm_set_flip_handler comment above). */
     if (SCE_BOUND(cellGcmSetFlipHandler)) {
-        gcm_set_flip_handler((uint64_t)(uintptr_t)&flip_handler_cb);
+        gcm_set_flip_handler((uint64_t)(uintptr_t)ps3_flip_handler_cb_opd);
     }
     (void)gcm_get_last_flip_time(); /* keep slot alive under LTO */
 

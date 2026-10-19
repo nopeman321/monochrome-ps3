@@ -11,6 +11,16 @@ ps3_entry_opd:
     .long _start_ps3
     .long .TOC.
 
+.globl ps3_thread_entry_stub_opd
+ps3_thread_entry_stub_opd:
+    .long ps3_thread_entry_stub
+    .long .TOC.
+
+.globl ps3_flip_handler_cb_opd
+ps3_flip_handler_cb_opd:
+    .long ps3_flip_handler_cb
+    .long .TOC.
+
 .section .text, "ax"
 .globl _start_ps3
 _start_ps3:

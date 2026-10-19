@@ -147,9 +147,13 @@ TrackMetadata   *app_get_current_track(void);
 int  net_init(void);
 void net_shutdown(void);
 int  net_search(const char *query, TrackMetadata *out, int max);
+void net_search_async_query(const char *query);
+int  net_search_async_poll(TrackMetadata *out, int max, bool *is_searching);
 int  net_resolve_stream(const char *track_id, char *url_out, size_t url_len);
 int  net_start_stream(const char *url, AudioRingBuffer *rb);
 void net_stop_stream(void);
+void ui_set_search_query(const char *query);
+const char *ui_get_search_query(void);
 
 /* ── Audio subsystem (SPU decode + sys_audio_out) ────────────────── */
 int  audio_init(AudioRingBuffer *rb);
@@ -161,6 +165,7 @@ float audio_get_progress(uint32_t total_duration_sec);
 #define VIS_BANDS 16
 void audio_get_visualization(float *out_bands, int count);
 void audio_reset_progress(void);
+void audio_seek_progress(float progress, uint32_t total_duration_sec);
 
 /* ── SPU DSP kernels ─────────────────────────────────────────────── */
 void spu_resample_44_to_48(const int16_t *src, size_t frames_in,

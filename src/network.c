@@ -52,10 +52,18 @@ int net_init(void) {
 
     g_net_ready = true;
     printf("[NET] Ready — primary host: %s\n", g_api_hosts[g_current_host]);
+
+    /* Start asynchronous search worker thread */
+    void net_search_async_init(void);
+    net_search_async_init();
+
     return 0;
 }
 
 void net_shutdown(void) {
+    void net_search_async_shutdown(void);
+    net_search_async_shutdown();
+
     g_net_ready = false;
     printf("[NET] Shut down.\n");
 }
@@ -262,7 +270,7 @@ typedef struct {
 static size_t flac_stream_read(void *pUserData, void *pBufferOut, size_t bytesToRead) {
     FlacStreamContext *ctx = (FlacStreamContext *)pUserData;
     while (ctx->cursor == ctx->received) {
-        if (ctx->eof || ctx->abort) return 0;
+        if (ctx->eof || ctx->abort || s_worker.abort_requested) return 0;
         platform_sleep_ms(5);
     }
     size_t avail = ctx->received - ctx->cursor;
@@ -286,7 +294,7 @@ static drflac_bool32 flac_stream_seek(void *pUserData, int offset, drflac_seek_o
     }
 
     while (new_pos > ctx->received) {
-        if (ctx->eof || ctx->abort) return DRFLAC_FALSE;
+        if (ctx->eof || ctx->abort || s_worker.abort_requested) return DRFLAC_FALSE;
         platform_sleep_ms(5);
     }
 
@@ -309,7 +317,7 @@ static drflac_bool32 flac_stream_tell(void *pUserData, drflac_int64 *pCursor) {
 
 static bool on_http_stream_chunk(const uint8_t *chunk, size_t chunk_len, void *userdata) {
     FlacStreamContext *ctx = (FlacStreamContext *)userdata;
-    if (!ctx || ctx->abort) return false;
+    if (!ctx || ctx->abort || s_worker.abort_requested) return false;
 
     if (ctx->received + chunk_len > ctx->capacity) {
         printf("[STREAM] Warning: Track exceeds stream buffer capacity (%zu MB)\n", ctx->capacity / (1024*1024));
@@ -578,5 +586,166 @@ void net_stop_stream(void) {
         s_worker.is_running = false;
         printf("[NET] Stream worker stopped.\n");
     }
+}
+
+/* ── Asynchronous Search Engine with Debouncing & L1 LRU Cache ───── */
+#define SEARCH_CACHE_MAX 16
+typedef struct {
+    char          query[128];
+    TrackMetadata tracks[MAX_SEARCH_RESULTS];
+    int           count;
+    uint64_t      last_used;
+} SearchCacheEntry;
+
+static SearchCacheEntry     s_search_cache[SEARCH_CACHE_MAX];
+static int                  s_search_cache_count = 0;
+
+static PlatformThreadHandle s_search_thread = NULL;
+static volatile bool        s_search_thread_running = false;
+static volatile bool        s_search_thread_abort = false;
+
+static char                 s_async_query[128] = {0};
+static volatile uint32_t    s_async_query_seq = 0;
+static volatile uint64_t    s_async_query_time = 0;
+static volatile bool        s_async_is_searching = false;
+
+static TrackMetadata        s_async_results[MAX_SEARCH_RESULTS];
+static volatile int         s_async_results_count = 0;
+static volatile uint32_t    s_async_results_seq = 0;
+
+static int ci_strcmp(const char *s1, const char *s2) {
+    while (*s1 && *s2) {
+        char c1 = (*s1 >= 'A' && *s1 <= 'Z') ? (*s1 + 32) : *s1;
+        char c2 = (*s2 >= 'A' && *s2 <= 'Z') ? (*s2 + 32) : *s2;
+        if (c1 != c2) return (int)(c1 - c2);
+        s1++; s2++;
+    }
+    return (int)(*s1 - *s2);
+}
+
+static void search_worker_func(void *arg) {
+    (void)arg;
+    s_search_thread_running = true;
+    uint32_t last_handled_seq = 0;
+
+    while (!s_search_thread_abort) {
+        if (!s_async_is_searching || s_async_query_seq == last_handled_seq) {
+            platform_sleep_ms(25);
+            continue;
+        }
+
+        uint64_t now = platform_get_time_ms();
+        if (now < s_async_query_time + 300) {
+            /* Debounce delay (300 ms) */
+            platform_sleep_ms(30);
+            continue;
+        }
+
+        uint32_t current_seq = s_async_query_seq;
+        char q[128];
+        snprintf(q, sizeof(q), "%s", s_async_query);
+
+        /* Check L1 Cache first */
+        bool found_cache = false;
+        for (int i = 0; i < s_search_cache_count; i++) {
+            if (ci_strcmp(s_search_cache[i].query, q) == 0) {
+                s_search_cache[i].last_used = platform_get_time_ms();
+                memcpy(s_async_results, s_search_cache[i].tracks, sizeof(s_async_results));
+                s_async_results_count = s_search_cache[i].count;
+                s_async_results_seq = current_seq;
+                s_async_is_searching = false;
+                last_handled_seq = current_seq;
+                found_cache = true;
+                printf("[SEARCH-ASYNC] L1 Cache HIT: '%s' (%d tracks)\n", q, s_async_results_count);
+                break;
+            }
+        }
+        if (found_cache) continue;
+
+        /* Execute live network search */
+        TrackMetadata temp[MAX_SEARCH_RESULTS];
+        int count = net_search(q, temp, MAX_SEARCH_RESULTS);
+
+        if (!s_search_thread_abort && s_async_query_seq == current_seq) {
+            memcpy(s_async_results, temp, sizeof(s_async_results));
+            s_async_results_count = (count > 0) ? count : 0;
+            s_async_results_seq = current_seq;
+            s_async_is_searching = false;
+            last_handled_seq = current_seq;
+
+            /* Add to L1 LRU cache */
+            int slot = s_search_cache_count;
+            if (slot >= SEARCH_CACHE_MAX) {
+                slot = 0;
+                uint64_t oldest = s_search_cache[0].last_used;
+                for (int i = 1; i < SEARCH_CACHE_MAX; i++) {
+                    if (s_search_cache[i].last_used < oldest) {
+                        oldest = s_search_cache[i].last_used;
+                        slot = i;
+                    }
+                }
+            } else {
+                s_search_cache_count++;
+            }
+            snprintf(s_search_cache[slot].query, sizeof(s_search_cache[slot].query), "%s", q);
+            memcpy(s_search_cache[slot].tracks, temp, sizeof(temp));
+            s_search_cache[slot].count = s_async_results_count;
+            s_search_cache[slot].last_used = platform_get_time_ms();
+
+            printf("[SEARCH-ASYNC] Live search complete: '%s' (%d tracks, seq=%u)\n",
+                   q, s_async_results_count, current_seq);
+        }
+    }
+    s_search_thread_running = false;
+}
+
+void net_search_async_init(void) {
+    if (!s_search_thread) {
+        s_search_thread_abort = false;
+        s_search_thread = platform_thread_create(search_worker_func, NULL);
+    }
+}
+
+void net_search_async_shutdown(void) {
+    if (s_search_thread) {
+        s_search_thread_abort = true;
+        platform_thread_join(s_search_thread);
+        s_search_thread = NULL;
+    }
+}
+
+void net_search_async_query(const char *query) {
+    if (!query || query[0] == '\0') {
+        s_async_query[0] = '\0';
+        s_async_is_searching = false;
+        return;
+    }
+    /* Trim and copy */
+    size_t i = 0, j = 0;
+    while (query[i] == ' ') i++;
+    while (query[i] && j < sizeof(s_async_query) - 1) {
+        s_async_query[j++] = query[i++];
+    }
+    s_async_query[j] = '\0';
+
+    s_async_query_time = platform_get_time_ms();
+    s_async_query_seq++;
+    s_async_is_searching = true;
+}
+
+static uint32_t             s_last_polled_seq = 0;
+
+int net_search_async_poll(TrackMetadata *out, int max, bool *is_searching) {
+    if (is_searching) *is_searching = s_async_is_searching;
+    if (s_async_results_seq != s_last_polled_seq) {
+        s_last_polled_seq = s_async_results_seq;
+        if (out && max > 0) {
+            int n = (s_async_results_count < max) ? s_async_results_count : max;
+            memcpy(out, s_async_results, n * sizeof(TrackMetadata));
+            return n;
+        }
+        return s_async_results_count;
+    }
+    return -1;
 }
 

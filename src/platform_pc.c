@@ -41,8 +41,8 @@ static HWND         s_hwnd          = NULL;
 static HDC          s_mem_dc        = NULL;
 static HBITMAP      s_mem_bmp       = NULL;
 static HBITMAP      s_old_bmp       = NULL;
-static int          s_win_width     = 800;
-static int          s_win_height    = 480;
+static int          s_win_width     = 1280;
+static int          s_win_height    = 720;
 static bool         s_window_open   = false;
 
 /* Cached GDI Fonts */
@@ -55,8 +55,10 @@ static HFONT        s_font_mono     = NULL;
 
 /* Cached GDI Brushes */
 static HBRUSH       s_br_bg         = NULL;
+static HBRUSH       s_br_sidebar    = NULL;
 static HBRUSH       s_br_row_even   = NULL;
 static HBRUSH       s_br_row_odd    = NULL;
+static HBRUSH       s_br_row_hover  = NULL;
 static HBRUSH       s_br_highlight  = NULL;
 static HBRUSH       s_br_accent     = NULL;
 static HBRUSH       s_br_dock       = NULL;
@@ -70,94 +72,245 @@ static HPEN         s_pen_highlight = NULL;
 static HPEN         s_pen_accent    = NULL;
 static HPEN         s_pen_dim       = NULL;
 
-/* Input Queues */
+/* Cached Cursors */
+static HCURSOR      s_cur_arrow     = NULL;
+static HCURSOR      s_cur_hand      = NULL;
+static HCURSOR      s_cur_ibeam     = NULL;
+
+/* Input & Interaction State */
 static InputAction  s_queued_action = INPUT_NONE;
-static int          s_mouse_clicked_track = -1;
-static int          s_current_state = 0;
+static int          s_mouse_clicked_track   = -1;
+static int          s_current_state         = 0;
+static int          s_scroll_offset         = 0;
+static bool         s_search_focused        = false;
+static int          s_hover_track           = -1;
+static int          s_hover_btn             = 0; /* 1=shuf, 2=prev, 3=pp, 4=next, 5=rep, 7=clear */
+static bool         s_dragging_scrubber     = false;
+static bool         s_dragging_volume       = false;
+static float        s_total_duration_cached = 0.0f;
+static int          s_cached_track_count    = 0;
 
 /* ── Window Procedure ────────────────────────────────────────────── */
 static LRESULT CALLBACK PlatformWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
-        case WM_KEYDOWN: {
-            if (s_current_state == (int)STATE_SEARCH) {
-                switch (wParam) {
-                    case VK_UP:     s_queued_action = INPUT_UP; break;
-                    case VK_DOWN:   s_queued_action = INPUT_DOWN; break;
-                    case VK_LEFT:   s_queued_action = INPUT_LEFT; break;
-                    case VK_RIGHT:  s_queued_action = INPUT_RIGHT; break;
-                    case VK_RETURN:
-                        ui_osk_set_cursor(3, 9); /* Move to GO key */
-                        s_queued_action = INPUT_SELECT;
-                        break;
-                    case VK_BACK:   ui_osk_input_char('\b'); break;
-                    case VK_ESCAPE: s_queued_action = INPUT_CANCEL; break;
-                    default: break;
-                }
-            } else {
-                switch (wParam) {
-                    case VK_UP:     s_queued_action = INPUT_UP; break;
-                    case VK_DOWN:   s_queued_action = INPUT_DOWN; break;
-                    case VK_LEFT:   s_queued_action = INPUT_LEFT; break;
-                    case VK_RIGHT:  s_queued_action = INPUT_RIGHT; break;
-                    case VK_RETURN: s_queued_action = INPUT_SELECT; break;
-                    case VK_SPACE:  s_queued_action = INPUT_PLAY_PAUSE; break;
-                    case 'S':       s_queued_action = INPUT_ACTION_SEARCH; break;
-                    case 'N':       s_queued_action = INPUT_NEXT_TRACK; break;
-                    case 'P':       s_queued_action = INPUT_PREV_TRACK; break;
-                    case 'H':       s_queued_action = INPUT_SHUFFLE; break;
-                    case 'R':       s_queued_action = INPUT_REPEAT; break;
-                    case VK_ESCAPE:
-                    case 'Q':       s_queued_action = INPUT_QUIT; break;
-                    default: break;
-                }
+        case WM_SETCURSOR: {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+
+            /* Search input box */
+            if (pt.x >= 335 && pt.x <= 780 && pt.y >= 18 && pt.y <= 56) {
+                if (s_cur_ibeam) SetCursor(s_cur_ibeam);
+                return TRUE;
             }
-            return 0;
+            /* Clickable areas: Sidebar, Track Rows, Dock buttons, Progress, Volume */
+            if (pt.x <= 230 ||
+                (pt.x >= 245 && pt.x <= 1250 && pt.y >= 150 && pt.y <= 590) ||
+                (pt.y >= 625 && pt.y <= 720)) {
+                if (s_cur_hand) SetCursor(s_cur_hand);
+                return TRUE;
+            }
+            if (s_cur_arrow) SetCursor(s_cur_arrow);
+            return TRUE;
         }
 
-        case WM_CHAR: {
-            if (s_current_state == (int)STATE_SEARCH) {
-                if (wParam >= 32 && wParam < 127) {
-                    ui_osk_input_char((char)wParam);
-                }
-                return 0;
+        case WM_MOUSEMOVE: {
+            int mx = LOWORD(lParam);
+            int my = HIWORD(lParam);
+
+            /* Scrubber drag */
+            if (s_dragging_scrubber && (wParam & MK_LBUTTON)) {
+                float p = (float)(mx - 420) / 420.0f;
+                if (p < 0.0f) p = 0.0f;
+                if (p > 1.0f) p = 1.0f;
+                audio_seek_progress(p, (uint32_t)s_total_duration_cached);
             }
-            break;
+            /* Volume drag */
+            if (s_dragging_volume && (wParam & MK_LBUTTON)) {
+                float v = (float)(mx - 1105) / 90.0f;
+                if (v < 0.0f) v = 0.0f;
+                if (v > 1.0f) v = 1.0f;
+                platform_audio_set_volume(v);
+            }
+
+            /* Hover track detection */
+            if (mx >= 245 && mx <= 1250 && my >= 150 && my < 150 + 10 * 44) {
+                s_hover_track = s_scroll_offset + (my - 150) / 44;
+            } else {
+                s_hover_track = -1;
+            }
+
+            /* Hover buttons */
+            s_hover_btn = 0;
+            if (my >= 628 && my <= 668) {
+                if (mx >= 515 && mx <= 545) s_hover_btn = 1;      /* Shuffle */
+                else if (mx >= 560 && mx <= 590) s_hover_btn = 2; /* Prev */
+                else if (mx >= 605 && mx <= 655) s_hover_btn = 3; /* Play/Pause */
+                else if (mx >= 660 && mx <= 690) s_hover_btn = 4; /* Next */
+                else if (mx >= 705 && mx <= 735) s_hover_btn = 5; /* Repeat */
+            } else if (mx >= 750 && mx <= 778 && my >= 18 && my <= 56) {
+                s_hover_btn = 7; /* Clear search */
+            }
+            return 0;
         }
 
         case WM_LBUTTONDOWN: {
             int mx = LOWORD(lParam);
             int my = HIWORD(lParam);
 
-            if (s_current_state == (int)STATE_SEARCH) {
-                /* OSK Key Clicks (x: 220-1060, y: 245-485) */
-                if (mx >= 220 && mx < 220 + 10 * 84 && my >= 245 && my < 245 + 4 * 60) {
-                    int c = (mx - 220) / 84;
-                    int r = (my - 245) / 60;
-                    if (c >= 0 && c < 10 && r >= 0 && r < 4) {
-                        int cur_r = 0, cur_c = 0;
-                        ui_get_osk_state(&cur_r, &cur_c, NULL);
-                        while (cur_r < r) { s_queued_action = INPUT_DOWN; cur_r++; }
-                        while (cur_r > r) { s_queued_action = INPUT_UP; cur_r--; }
-                        while (cur_c < c) { s_queued_action = INPUT_RIGHT; cur_c++; }
-                        while (cur_c > c) { s_queued_action = INPUT_LEFT; cur_c--; }
-                        s_queued_action = INPUT_SELECT;
+            /* 1. Search Box Click */
+            if (mx >= 335 && mx <= 780 && my >= 18 && my <= 56) {
+                if (mx >= 750 && mx <= 778) {
+                    /* Clear button */
+                    ui_set_search_query("");
+                    s_search_focused = true;
+                } else {
+                    s_search_focused = true;
+                }
+                return 0;
+            } else {
+                s_search_focused = false;
+            }
+
+            /* 2. Sidebar Navigation & Presets */
+            if (mx <= 230) {
+                if (my >= 115 && my <= 145) {
+                    /* Inicio */
+                    ui_set_search_query("trending");
+                } else if (my >= 150 && my <= 180) {
+                    /* Búsqueda */
+                    s_search_focused = true;
+                } else if (my >= 290 && my <= 470) {
+                    /* Quick genre tags */
+                    static const char *s_tags[] = {
+                        "trending", "Daft Punk", "The Weeknd",
+                        "Synthwave", "Lossless", "Electronic"
+                    };
+                    int tag_idx = (my - 290) / 30;
+                    if (tag_idx >= 0 && tag_idx < 6) {
+                        ui_set_search_query(s_tags[tag_idx]);
                     }
                 }
                 return 0;
             }
 
-            /* Track rows clicked */
-            if (my >= 155 && my < 155 + 10 * 43) {
-                int row = (my - 155) / 43;
-                s_mouse_clicked_track = row;
+            /* 3. Catalog Track Selection */
+            if (mx >= 245 && mx <= 1250 && my >= 150 && my < 150 + 10 * 44) {
+                int clicked_row = s_scroll_offset + (my - 150) / 44;
+                s_mouse_clicked_track = clicked_row;
+                return 0;
             }
-            /* Dock play/pause area clicked */
-            else if (my >= 600 && my <= 710 && mx >= 350 && mx <= 920) {
-                s_queued_action = INPUT_PLAY_PAUSE;
+
+            /* 4. Now Playing Elevated Dock */
+            if (my >= 625 && my <= 720) {
+                /* Transport Buttons */
+                if (mx >= 515 && mx <= 545) {
+                    s_queued_action = INPUT_SHUFFLE;
+                } else if (mx >= 560 && mx <= 590) {
+                    s_queued_action = INPUT_PREV_TRACK;
+                } else if (mx >= 605 && mx <= 655) {
+                    s_queued_action = INPUT_PLAY_PAUSE;
+                } else if (mx >= 660 && mx <= 690) {
+                    s_queued_action = INPUT_NEXT_TRACK;
+                } else if (mx >= 705 && mx <= 735) {
+                    s_queued_action = INPUT_REPEAT;
+                }
+                /* Progress Bar Scrubber */
+                else if (mx >= 420 && mx <= 840 && my >= 675 && my <= 695) {
+                    s_dragging_scrubber = true;
+                    float p = (float)(mx - 420) / 420.0f;
+                    if (p < 0.0f) p = 0.0f;
+                    if (p > 1.0f) p = 1.0f;
+                    audio_seek_progress(p, (uint32_t)s_total_duration_cached);
+                }
+                /* Volume speaker (mute toggle) */
+                else if (mx >= 1075 && mx <= 1100 && my >= 660 && my <= 686) {
+                    platform_audio_set_volume((s_volume > 0.01f) ? 0.0f : 1.0f);
+                }
+                /* Volume track */
+                else if (mx >= 1105 && mx <= 1195 && my >= 660 && my <= 686) {
+                    s_dragging_volume = true;
+                    float v = (float)(mx - 1105) / 90.0f;
+                    if (v < 0.0f) v = 0.0f;
+                    if (v > 1.0f) v = 1.0f;
+                    platform_audio_set_volume(v);
+                }
+                return 0;
             }
-            /* Search banner clicked */
-            else if (my >= 85 && my <= 125 && mx >= 30 && mx <= 400) {
-                s_queued_action = INPUT_ACTION_SEARCH;
+            return 0;
+        }
+
+        case WM_LBUTTONUP: {
+            s_dragging_scrubber = false;
+            s_dragging_volume = false;
+            return 0;
+        }
+
+        case WM_MOUSEWHEEL: {
+            short delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            if (delta > 0) {
+                s_scroll_offset -= 2;
+                if (s_scroll_offset < 0) s_scroll_offset = 0;
+            } else {
+                s_scroll_offset += 2;
+                int max_scroll = (s_cached_track_count > 10) ? (s_cached_track_count - 10) : 0;
+                if (s_scroll_offset > max_scroll) s_scroll_offset = max_scroll;
+            }
+            return 0;
+        }
+
+        case WM_CHAR: {
+            if (s_search_focused) {
+                if (wParam == '\b') {
+                    ui_osk_input_char('\b');
+                } else if (wParam == 13 || wParam == 27) {
+                    s_search_focused = false;
+                } else if (wParam >= 32 && wParam < 127) {
+                    ui_osk_input_char((char)wParam);
+                }
+                return 0;
+            } else {
+                if (wParam == '/') {
+                    s_search_focused = true;
+                    return 0;
+                }
+            }
+            break;
+        }
+
+        case WM_KEYDOWN: {
+            if (s_search_focused) {
+                if (wParam == VK_ESCAPE || wParam == VK_RETURN) {
+                    s_search_focused = false;
+                    return 0;
+                }
+                if (wParam == VK_DOWN) {
+                    s_search_focused = false;
+                    s_queued_action = INPUT_DOWN;
+                    return 0;
+                }
+                return 0;
+            }
+
+            switch (wParam) {
+                case VK_UP:     s_queued_action = INPUT_UP; break;
+                case VK_DOWN:   s_queued_action = INPUT_DOWN; break;
+                case VK_LEFT:   s_queued_action = INPUT_PREV_TRACK; break;
+                case VK_RIGHT:  s_queued_action = INPUT_NEXT_TRACK; break;
+                case VK_RETURN: s_queued_action = INPUT_SELECT; break;
+                case VK_SPACE:  s_queued_action = INPUT_PLAY_PAUSE; break;
+                case 'S':
+                case VK_OEM_2: /* '/' */
+                    s_search_focused = true;
+                    break;
+                case 'N':       s_queued_action = INPUT_NEXT_TRACK; break;
+                case 'P':       s_queued_action = INPUT_PREV_TRACK; break;
+                case 'H':       s_queued_action = INPUT_SHUFFLE; break;
+                case 'R':       s_queued_action = INPUT_REPEAT; break;
+                case 'M':       platform_audio_set_volume((s_volume > 0.01f) ? 0.0f : 1.0f); break;
+                case VK_ESCAPE:
+                case 'Q':       s_queued_action = INPUT_QUIT; break;
+                default: break;
             }
             return 0;
         }
@@ -646,29 +799,36 @@ int platform_gfx_init(int width, int height, const char *title) {
     ReleaseDC(s_hwnd, hdc);
 
     /* Create Typography Fonts */
-    s_font_title   = CreateFontA(28, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
+    s_font_title   = CreateFontA(24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
     s_font_sub     = CreateFontA(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
     s_font_heading = CreateFontA(16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-    s_font_track   = CreateFontA(18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-    s_font_meta    = CreateFontA(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
+    s_font_track   = CreateFontA(16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
+    s_font_meta    = CreateFontA(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
     s_font_mono    = CreateFontA(13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH, "Consolas");
 
     /* Create UI Brushes */
-    s_br_bg        = CreateSolidBrush(RGB(14, 15, 18));
-    s_br_row_even  = CreateSolidBrush(RGB(17, 18, 22));
-    s_br_row_odd   = CreateSolidBrush(RGB(22, 23, 29));
-    s_br_highlight = CreateSolidBrush(RGB(38, 42, 54));
+    s_br_bg        = CreateSolidBrush(RGB(10, 10, 12));
+    s_br_sidebar   = CreateSolidBrush(RGB(17, 18, 22));
+    s_br_row_even  = CreateSolidBrush(RGB(20, 22, 28));
+    s_br_row_odd   = CreateSolidBrush(RGB(24, 26, 34));
+    s_br_row_hover = CreateSolidBrush(RGB(34, 37, 48));
+    s_br_highlight = CreateSolidBrush(RGB(42, 46, 61));
     s_br_accent    = CreateSolidBrush(RGB(255, 255, 255));
-    s_br_dock      = CreateSolidBrush(RGB(22, 24, 30));
-    s_br_bar_bg    = CreateSolidBrush(RGB(45, 48, 58));
+    s_br_dock      = CreateSolidBrush(RGB(17, 18, 22));
+    s_br_bar_bg    = CreateSolidBrush(RGB(37, 40, 52));
     s_br_bar_fill  = CreateSolidBrush(RGB(255, 255, 255));
-    s_br_card      = CreateSolidBrush(RGB(28, 30, 38));
+    s_br_card      = CreateSolidBrush(RGB(24, 26, 34));
 
     /* Create UI Pens */
-    s_pen_border    = CreatePen(PS_SOLID, 1, RGB(48, 52, 64));
-    s_pen_highlight = CreatePen(PS_SOLID, 1, RGB(100, 130, 200));
+    s_pen_border    = CreatePen(PS_SOLID, 1, RGB(37, 40, 52));
+    s_pen_highlight = CreatePen(PS_SOLID, 1, RGB(100, 200, 255));
     s_pen_accent    = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
     s_pen_dim       = CreatePen(PS_SOLID, 1, RGB(32, 34, 42));
+
+    /* Load Cursors */
+    s_cur_arrow     = LoadCursor(NULL, IDC_ARROW);
+    s_cur_hand      = LoadCursor(NULL, IDC_HAND);
+    s_cur_ibeam     = LoadCursor(NULL, IDC_IBEAM);
 
     ShowWindow(s_hwnd, SW_SHOW);
     UpdateWindow(s_hwnd);
@@ -695,8 +855,10 @@ void platform_gfx_shutdown(void) {
     if (s_font_mono)    DeleteObject(s_font_mono);
 
     if (s_br_bg)        DeleteObject(s_br_bg);
+    if (s_br_sidebar)   DeleteObject(s_br_sidebar);
     if (s_br_row_even)  DeleteObject(s_br_row_even);
     if (s_br_row_odd)   DeleteObject(s_br_row_odd);
+    if (s_br_row_hover) DeleteObject(s_br_row_hover);
     if (s_br_highlight) DeleteObject(s_br_highlight);
     if (s_br_accent)    DeleteObject(s_br_accent);
     if (s_br_dock)      DeleteObject(s_br_dock);
@@ -720,340 +882,442 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
                          const struct TrackMetadata *tracks, int track_count, int cursor,
                          const char *search_query) {
     s_current_state = state;
+    s_cached_track_count = track_count;
+    s_total_duration_cached = (track) ? (float)track->duration_sec : 0.0f;
+
     if (!s_mem_dc || !s_window_open) return;
+
+    /* Clamp scroll offset to keep selected cursor visible */
+    if (cursor < s_scroll_offset) {
+        s_scroll_offset = cursor;
+    } else if (cursor >= s_scroll_offset + 10) {
+        s_scroll_offset = cursor - 9;
+    }
+    int max_scroll = (track_count > 10) ? (track_count - 10) : 0;
+    if (s_scroll_offset > max_scroll) s_scroll_offset = max_scroll;
+    if (s_scroll_offset < 0) s_scroll_offset = 0;
 
     SetBkMode(s_mem_dc, TRANSPARENT);
 
-    /* 1. Clear background */
+    /* 1. Clear background canvas (#0A0A0C) */
     RECT r_all = { 0, 0, s_win_width, s_win_height };
     FillRect(s_mem_dc, &r_all, s_br_bg);
 
-    /* 2. Top Header Bar (y: 0 - 80) */
-    RECT r_head = { 0, 0, s_win_width, 80 };
-    FillRect(s_mem_dc, &r_head, s_br_dock);
+    /* 2. Left Sidebar (x: 0 -> 230, y: 0 -> 625) */
+    RECT r_sb = { 0, 0, 230, 625 };
+    FillRect(s_mem_dc, &r_sb, s_br_sidebar);
 
-    /* Title Logo */
-    SelectObject(s_mem_dc, s_font_title);
-    SetTextColor(s_mem_dc, RGB(255, 255, 255));
-    TextOutA(s_mem_dc, 35, 15, "M O N O C H R O M E", 19);
-
-    /* Subtitle */
-    SelectObject(s_mem_dc, s_font_sub);
-    SetTextColor(s_mem_dc, RGB(160, 164, 178));
-    TextOutA(s_mem_dc, 37, 48, "LOSSLESS FLAC STREAMER · TIDAL HI-RES · CROSS-PLATFORM PS3 & PC ENGINE", 70);
-
-    /* Top Badges (Right side) */
-    SelectObject(s_mem_dc, s_font_mono);
-    RECT r_badge1 = { 880, 24, 1050, 52 };
-    FillRect(s_mem_dc, &r_badge1, s_br_card);
-    FrameRect(s_mem_dc, &r_badge1, s_br_highlight);
-    SetTextColor(s_mem_dc, RGB(180, 210, 255));
-    DrawTextA(s_mem_dc, "24-BIT / 96 KHZ", -1, &r_badge1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-    RECT r_badge2 = { 1065, 24, 1245, 52 };
-    FillRect(s_mem_dc, &r_badge2, s_br_card);
-    FrameRect(s_mem_dc, &r_badge2, s_br_highlight);
-    SetTextColor(s_mem_dc, RGB(100, 240, 140));
-    DrawTextA(s_mem_dc, "● ONLINE: MONOCHROME.ST", -1, &r_badge2, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-    /* Header divider line */
     SelectObject(s_mem_dc, s_pen_border);
-    MoveToEx(s_mem_dc, 0, 80, NULL);
-    LineTo(s_mem_dc, s_win_width, 80);
+    MoveToEx(s_mem_dc, 230, 0, NULL);
+    LineTo(s_mem_dc, 230, 625);
 
-    /* 3. Section Title & Search Banner (y: 92 - 138) */
-    char cat_str[256];
-    snprintf(cat_str, sizeof(cat_str), "CATALOGUE: %s  (%d tracks loaded)",
-             search_query ? search_query : "Trending", track_count);
-    SelectObject(s_mem_dc, s_font_heading);
-    SetTextColor(s_mem_dc, RGB(255, 255, 255));
-    TextOutA(s_mem_dc, 35, 94, cat_str, (int)strlen(cat_str));
+    /* Logo & App Name */
+    SelectObject(s_mem_dc, s_font_title);
+    SetTextColor(s_mem_dc, RGB(245, 245, 247));
+    TextOutA(s_mem_dc, 24, 20, "◈ MONOCHROME", 14);
 
     SelectObject(s_mem_dc, s_font_sub);
-    SetTextColor(s_mem_dc, RGB(140, 145, 160));
-    TextOutA(s_mem_dc, 900, 96, "Press [S] or Click here to cycle genres", 39);
+    SetTextColor(s_mem_dc, RGB(110, 115, 133));
+    TextOutA(s_mem_dc, 26, 48, "LOSSLESS AUDIO ENGINE", 21);
 
-    /* Column Headers (y: 125) */
+    MoveToEx(s_mem_dc, 20, 75, NULL);
+    LineTo(s_mem_dc, 210, 75);
+
+    /* Navigation Menu */
+    SelectObject(s_mem_dc, s_font_meta);
+    SetTextColor(s_mem_dc, RGB(110, 115, 133));
+    TextOutA(s_mem_dc, 25, 90, "EXPLORAR", 8);
+
+    static const char *s_nav_items[] = {
+        "◈  Inicio",
+        "🔍  Búsqueda",
+        "☰  Cola de Reproducción",
+        "♡  Biblioteca"
+    };
+    for (int i = 0; i < 4; i++) {
+        int ny = 115 + i * 36;
+        RECT r_item = { 15, ny, 215, ny + 32 };
+        bool is_active = (i == 0 && !s_search_focused) || (i == 1 && s_search_focused);
+        if (is_active) {
+            FillRect(s_mem_dc, &r_item, s_br_highlight);
+            FrameRect(s_mem_dc, &r_item, s_br_bar_bg);
+        }
+        SelectObject(s_mem_dc, s_font_sub);
+        SetTextColor(s_mem_dc, is_active ? RGB(255, 255, 255) : RGB(160, 165, 181));
+        RECT r_txt = { 25, ny, 210, ny + 32 };
+        DrawTextA(s_mem_dc, s_nav_items[i], -1, &r_txt, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    /* Quick Preset Genres */
+    SelectObject(s_mem_dc, s_font_meta);
+    SetTextColor(s_mem_dc, RGB(110, 115, 133));
+    TextOutA(s_mem_dc, 25, 265, "GÉNEROS RÁPIDOS", 15);
+
+    static const char *s_tags[] = {
+        "• Trending", "• Daft Punk", "• The Weeknd",
+        "• Synthwave", "• Lossless", "• Electronic"
+    };
+    for (int i = 0; i < 6; i++) {
+        int ty = 290 + i * 28;
+        RECT r_tag = { 20, ty, 215, ty + 26 };
+        SelectObject(s_mem_dc, s_font_sub);
+        SetTextColor(s_mem_dc, RGB(160, 165, 181));
+        DrawTextA(s_mem_dc, s_tags[i], -1, &r_tag, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    /* Diagnostics Card */
+    RECT r_diag = { 15, 520, 215, 608 };
+    FillRect(s_mem_dc, &r_diag, s_br_card);
+    FrameRect(s_mem_dc, &r_diag, s_br_bar_bg);
+
     SelectObject(s_mem_dc, s_font_mono);
-    SetTextColor(s_mem_dc, RGB(120, 125, 140));
-    TextOutA(s_mem_dc, 45,   126, "#", 1);
-    TextOutA(s_mem_dc, 95,   126, "TITLE", 5);
-    TextOutA(s_mem_dc, 480,  126, "ARTIST", 6);
-    TextOutA(s_mem_dc, 760,  126, "ALBUM", 5);
-    TextOutA(s_mem_dc, 1040, 126, "QUALITY", 7);
-    TextOutA(s_mem_dc, 1180, 126, "TIME", 4);
+    SetTextColor(s_mem_dc, RGB(16, 185, 129));
+    TextOutA(s_mem_dc, 25, 532, "● TIDAL CDN ONLINE", 18);
+    SetTextColor(s_mem_dc, RGB(160, 165, 181));
+    TextOutA(s_mem_dc, 25, 555, "DAC: 48k LPCM Stereo", 20);
+    TextOutA(s_mem_dc, 25, 578, "BUF: 8.0 MB XDR Ring", 20);
+
+    /* 3. Top Header Bar (x: 230 -> 1280, y: 0 -> 75) */
+    RECT r_head = { 230, 0, s_win_width, 75 };
+    FillRect(s_mem_dc, &r_head, s_br_sidebar);
+
+    SelectObject(s_mem_dc, s_pen_border);
+    MoveToEx(s_mem_dc, 230, 75, NULL);
+    LineTo(s_mem_dc, s_win_width, 75);
+
+    /* Navigation history arrows */
+    RECT r_prev_btn = { 245, 20, 275, 54 };
+    RECT r_next_btn = { 285, 20, 315, 54 };
+    FillRect(s_mem_dc, &r_prev_btn, s_br_card);
+    FrameRect(s_mem_dc, &r_prev_btn, s_br_bar_bg);
+    FillRect(s_mem_dc, &r_next_btn, s_br_card);
+    FrameRect(s_mem_dc, &r_next_btn, s_br_bar_bg);
+
+    SelectObject(s_mem_dc, s_font_heading);
+    SetTextColor(s_mem_dc, RGB(160, 165, 181));
+    DrawTextA(s_mem_dc, "<", -1, &r_prev_btn, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextA(s_mem_dc, ">", -1, &r_next_btn, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    /* Search Input Box (x: 335 -> 780, y: 18 -> 56) */
+    RECT r_search = { 335, 18, 780, 56 };
+    FillRect(s_mem_dc, &r_search, s_br_card);
+    FrameRect(s_mem_dc, &r_search, s_search_focused ? s_br_accent : s_br_bar_bg);
+
+    const char *current_q = ui_get_search_query();
+    if (current_q && current_q[0] != '\0') {
+        char display_q[128];
+        if (s_search_focused && ((GetTickCount64() / 500) % 2 == 0)) {
+            snprintf(display_q, sizeof(display_q), "🔍 %s|", current_q);
+        } else {
+            snprintf(display_q, sizeof(display_q), "🔍 %s", current_q);
+        }
+        SelectObject(s_mem_dc, s_font_track);
+        SetTextColor(s_mem_dc, RGB(245, 245, 247));
+        RECT r_qtext = { 348, 18, 745, 56 };
+        DrawTextA(s_mem_dc, display_q, -1, &r_qtext, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        /* Clear button [×] */
+        SelectObject(s_mem_dc, s_font_heading);
+        SetTextColor(s_mem_dc, (s_hover_btn == 7) ? RGB(255, 255, 255) : RGB(160, 165, 181));
+        RECT r_clear = { 752, 18, 778, 56 };
+        DrawTextA(s_mem_dc, "×", -1, &r_clear, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    } else {
+        SelectObject(s_mem_dc, s_font_sub);
+        SetTextColor(s_mem_dc, RGB(110, 115, 133));
+        RECT r_qtext = { 348, 18, 745, 56 };
+        const char *ph = s_search_focused ? "🔍 |" : "🔍 Buscar canciones, artistas o álbumes... (Presiona '/' para escribir)";
+        DrawTextA(s_mem_dc, ph, -1, &r_qtext, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    /* Badges on right header */
+    SelectObject(s_mem_dc, s_font_mono);
+    RECT r_badge1 = { 870, 22, 1045, 52 };
+    FillRect(s_mem_dc, &r_badge1, s_br_card);
+    FrameRect(s_mem_dc, &r_badge1, s_br_bar_bg);
+    SetTextColor(s_mem_dc, RGB(255, 209, 102));
+    DrawTextA(s_mem_dc, "24-BIT / 96k · HI-RES", -1, &r_badge1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    RECT r_badge2 = { 1060, 22, 1245, 52 };
+    FillRect(s_mem_dc, &r_badge2, s_br_card);
+    FrameRect(s_mem_dc, &r_badge2, s_br_bar_bg);
+    SetTextColor(s_mem_dc, RGB(16, 185, 129));
+    DrawTextA(s_mem_dc, "● TIDAL LOSSLESS", -1, &r_badge2, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    /* 4. Catalog Area (x: 230 -> 1280, y: 75 -> 625) */
+    char cat_str[128];
+    snprintf(cat_str, sizeof(cat_str), "CATÁLOGO: %s (%d canciones disponibles)",
+             (current_q && current_q[0] != '\0') ? current_q : "Tendencias", track_count);
+    SelectObject(s_mem_dc, s_font_heading);
+    SetTextColor(s_mem_dc, RGB(245, 245, 247));
+    TextOutA(s_mem_dc, 250, 94, cat_str, (int)strlen(cat_str));
+
+    /* Column Headers at y: 125 */
+    SelectObject(s_mem_dc, s_font_mono);
+    SetTextColor(s_mem_dc, RGB(110, 115, 133));
+    TextOutA(s_mem_dc, 255,  126, "#", 1);
+    TextOutA(s_mem_dc, 310,  126, "TÍTULO", 6);
+    TextOutA(s_mem_dc, 680,  126, "ARTISTA", 7);
+    TextOutA(s_mem_dc, 910,  126, "ÁLBUM", 5);
+    TextOutA(s_mem_dc, 1080, 126, "CALIDAD", 7);
+    TextOutA(s_mem_dc, 1200, 126, "TIEMPO", 6);
 
     SelectObject(s_mem_dc, s_pen_dim);
-    MoveToEx(s_mem_dc, 35, 146, NULL);
-    LineTo(s_mem_dc, 1245, 146);
+    MoveToEx(s_mem_dc, 245, 144, NULL);
+    LineTo(s_mem_dc, 1250, 144);
 
-    /* 4. Track List Rows (y: 152 to 585) */
-    int max_rows = (track_count > 10) ? 10 : track_count;
-    for (int i = 0; i < max_rows; i++) {
-        int row_y = 152 + i * 43;
-        RECT r_row = { 35, row_y, 1245, row_y + 40 };
+    /* Track List Rows (10 rows max visible) */
+    int rows_to_draw = (track_count - s_scroll_offset > 10) ? 10 : (track_count - s_scroll_offset);
+    if (rows_to_draw < 0) rows_to_draw = 0;
 
-        bool is_sel = (i == cursor);
+    for (int i = 0; i < rows_to_draw; i++) {
+        int t_idx = s_scroll_offset + i;
+        int row_y = 150 + i * 44;
+        RECT r_row = { 245, row_y, 1250, row_y + 40 };
+
+        bool is_sel = (t_idx == cursor);
+        bool is_hover = (t_idx == s_hover_track);
 
         if (is_sel) {
             FillRect(s_mem_dc, &r_row, s_br_highlight);
             FrameRect(s_mem_dc, &r_row, s_br_accent);
 
-            /* Left Accent Indicator Strip */
-            RECT r_strip = { 35, row_y, 40, row_y + 40 };
+            /* Vertical accent indicator */
+            RECT r_strip = { 245, row_y, 249, row_y + 40 };
             FillRect(s_mem_dc, &r_strip, s_br_accent);
+        } else if (is_hover) {
+            FillRect(s_mem_dc, &r_row, s_br_row_hover);
         } else {
-            FillRect(s_mem_dc, &r_row, (i % 2 == 0) ? s_br_row_even : s_br_row_odd);
+            FillRect(s_mem_dc, &r_row, (t_idx % 2 == 0) ? s_br_row_even : s_br_row_odd);
         }
 
-        /* Track Number / Play icon */
+        /* Number / Play indicator */
         SelectObject(s_mem_dc, s_font_mono);
-        SetTextColor(s_mem_dc, is_sel ? RGB(255, 255, 255) : RGB(140, 145, 160));
+        SetTextColor(s_mem_dc, is_sel ? RGB(255, 255, 255) : RGB(160, 165, 181));
         char num_buf[16];
-        if (is_sel) snprintf(num_buf, sizeof(num_buf), "▶%2d", i + 1);
-        else        snprintf(num_buf, sizeof(num_buf), " %2d", i + 1);
-        TextOutA(s_mem_dc, 45, row_y + 11, num_buf, (int)strlen(num_buf));
+        if (is_sel) snprintf(num_buf, sizeof(num_buf), "▶%2d", t_idx + 1);
+        else        snprintf(num_buf, sizeof(num_buf), " %2d", t_idx + 1);
+        TextOutA(s_mem_dc, 255, row_y + 11, num_buf, (int)strlen(num_buf));
 
         /* Title */
         SelectObject(s_mem_dc, s_font_track);
-        SetTextColor(s_mem_dc, is_sel ? RGB(255, 255, 255) : RGB(225, 228, 235));
-        RECT r_title = { 95, row_y, 460, row_y + 40 };
-        DrawTextA(s_mem_dc, tracks[i].title, -1, &r_title, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        SetTextColor(s_mem_dc, is_sel ? RGB(255, 255, 255) : RGB(245, 245, 247));
+        RECT r_title = { 310, row_y, 670, row_y + 40 };
+        DrawTextA(s_mem_dc, tracks[t_idx].title, -1, &r_title, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
         /* Artist */
         SelectObject(s_mem_dc, s_font_meta);
-        SetTextColor(s_mem_dc, is_sel ? RGB(210, 215, 230) : RGB(160, 165, 178));
-        RECT r_artist = { 480, row_y, 740, row_y + 40 };
-        DrawTextA(s_mem_dc, tracks[i].artist, -1, &r_artist, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        SetTextColor(s_mem_dc, is_sel ? RGB(220, 225, 240) : RGB(160, 165, 181));
+        RECT r_artist = { 680, row_y, 900, row_y + 40 };
+        DrawTextA(s_mem_dc, tracks[t_idx].artist, -1, &r_artist, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
         /* Album */
-        SetTextColor(s_mem_dc, is_sel ? RGB(180, 185, 200) : RGB(130, 134, 146));
-        RECT r_album = { 760, row_y, 1020, row_y + 40 };
-        DrawTextA(s_mem_dc, tracks[i].album, -1, &r_album, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        SetTextColor(s_mem_dc, is_sel ? RGB(180, 185, 200) : RGB(110, 115, 133));
+        RECT r_album = { 910, row_y, 1070, row_y + 40 };
+        DrawTextA(s_mem_dc, tracks[t_idx].album, -1, &r_album, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
         /* Quality Badge */
         SelectObject(s_mem_dc, s_font_mono);
-        RECT r_qbadge = { 1040, row_y + 9, 1140, row_y + 31 };
+        RECT r_qbadge = { 1080, row_y + 9, 1170, row_y + 31 };
         FillRect(s_mem_dc, &r_qbadge, s_br_card);
-        FrameRect(s_mem_dc, &r_qbadge, s_br_highlight);
-        SetTextColor(s_mem_dc, tracks[i].is_hi_res ? RGB(255, 215, 100) : RGB(160, 220, 255));
-        DrawTextA(s_mem_dc, tracks[i].is_hi_res ? "HI-RES" : "FLAC", -1, &r_qbadge, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        FrameRect(s_mem_dc, &r_qbadge, s_br_bar_bg);
+        SetTextColor(s_mem_dc, tracks[t_idx].is_hi_res ? RGB(255, 209, 102) : RGB(100, 200, 255));
+        DrawTextA(s_mem_dc, tracks[t_idx].is_hi_res ? "HI-RES" : "FLAC", -1, &r_qbadge, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
         /* Duration */
         char time_buf[16];
-        uint32_t dur = tracks[i].duration_sec;
+        uint32_t dur = tracks[t_idx].duration_sec;
         snprintf(time_buf, sizeof(time_buf), "%02u:%02u", dur / 60, dur % 60);
-        SetTextColor(s_mem_dc, is_sel ? RGB(255, 255, 255) : RGB(150, 155, 168));
-        TextOutA(s_mem_dc, 1180, row_y + 11, time_buf, (int)strlen(time_buf));
+        SetTextColor(s_mem_dc, is_sel ? RGB(255, 255, 255) : RGB(160, 165, 181));
+        TextOutA(s_mem_dc, 1200, row_y + 11, time_buf, (int)strlen(time_buf));
     }
 
-    /* 5. Bottom Elevated Now-Playing Dock (y: 595 - 715) */
-    RECT r_dock = { 0, 595, s_win_width, s_win_height };
+    /* Scroll Status */
+    if (track_count > 10) {
+        char scroll_info[128];
+        snprintf(scroll_info, sizeof(scroll_info),
+                 "▲▼ Mostrando canciones %d-%d de %d  ·  Usa la rueda del ratón o flechas para desplazarte",
+                 s_scroll_offset + 1,
+                 (s_scroll_offset + 10 > track_count) ? track_count : (s_scroll_offset + 10),
+                 track_count);
+        SelectObject(s_mem_dc, s_font_sub);
+        SetTextColor(s_mem_dc, RGB(110, 115, 133));
+        TextOutA(s_mem_dc, 250, 595, scroll_info, (int)strlen(scroll_info));
+    }
+
+    /* 5. Now Playing Elevated Dock (x: 0 -> 1280, y: 625 -> 720) */
+    RECT r_dock = { 0, 625, s_win_width, s_win_height };
     FillRect(s_mem_dc, &r_dock, s_br_dock);
 
     SelectObject(s_mem_dc, s_pen_border);
-    MoveToEx(s_mem_dc, 0, 595, NULL);
-    LineTo(s_mem_dc, s_win_width, 595);
+    MoveToEx(s_mem_dc, 0, 625, NULL);
+    LineTo(s_mem_dc, s_win_width, 625);
 
-    /* Cover Art Square (80x80) */
-    RECT r_art = { 35, 610, 115, 690 };
+    /* Cover Art */
+    RECT r_art = { 20, 633, 94, 707 };
     const CoverArtImage *cover = cover_art_get_current();
     if (cover && cover->ready) {
         BITMAPINFO bmi;
         memset(&bmi, 0, sizeof(bmi));
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         bmi.bmiHeader.biWidth = (LONG)cover->width;
-        bmi.bmiHeader.biHeight = -(LONG)cover->height; /* top-down */
+        bmi.bmiHeader.biHeight = -(LONG)cover->height;
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
         bmi.bmiHeader.biCompression = BI_RGB;
 
         StretchDIBits(
             s_mem_dc,
-            35, 610, 80, 80,
+            20, 633, 74, 74,
             0, 0, cover->width, cover->height,
             cover->pixels,
             &bmi,
             DIB_RGB_COLORS,
             SRCCOPY
         );
-        FrameRect(s_mem_dc, &r_art, s_br_highlight);
+        FrameRect(s_mem_dc, &r_art, s_br_bar_bg);
     } else {
         FillRect(s_mem_dc, &r_art, s_br_card);
-        FrameRect(s_mem_dc, &r_art, s_br_highlight);
+        FrameRect(s_mem_dc, &r_art, s_br_bar_bg);
         SelectObject(s_mem_dc, s_font_heading);
         SetTextColor(s_mem_dc, RGB(255, 255, 255));
         DrawTextA(s_mem_dc, "♫", -1, &r_art, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 
-    /* Track metadata */
-    const char *now_t = (track && track->title[0] != '\0') ? track->title : "No Track Selected";
-    const char *now_a = (track && track->artist[0] != '\0') ? track->artist : "Select a track from above to begin lossless streaming";
+    /* Now Playing Info */
+    const char *now_t = (track && track->title[0] != '\0') ? track->title : "Sin pista seleccionada";
+    const char *now_a = (track && track->artist[0] != '\0') ? track->artist : "Selecciona una pista para reproducir en streaming lossless";
 
     SelectObject(s_mem_dc, s_font_track);
-    SetTextColor(s_mem_dc, RGB(255, 255, 255));
-    RECT r_now_t = { 130, 615, 420, 642 };
+    SetTextColor(s_mem_dc, RGB(245, 245, 247));
+    RECT r_now_t = { 108, 637, 400, 661 };
     DrawTextA(s_mem_dc, now_t, -1, &r_now_t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     SelectObject(s_mem_dc, s_font_meta);
-    SetTextColor(s_mem_dc, RGB(160, 165, 178));
-    RECT r_now_a = { 130, 644, 420, 668 };
+    SetTextColor(s_mem_dc, RGB(160, 165, 181));
+    RECT r_now_a = { 108, 663, 400, 685 };
     DrawTextA(s_mem_dc, now_a, -1, &r_now_a, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-    /* Center Controls & Progress Bar (x: 440 - 920) */
+    SelectObject(s_mem_dc, s_font_sub);
+    SetTextColor(s_mem_dc, RGB(110, 115, 133));
+    RECT r_now_q = { 108, 687, 400, 707 };
+    DrawTextA(s_mem_dc, (track && track->is_hi_res) ? "Hi-Res FLAC 24-Bit / 96 kHz" : "Lossless FLAC 16-Bit / 44.1 kHz", -1, &r_now_q, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    /* Center Transport Controls (y: 634) */
+    bool is_shuf = ui_get_shuffle_mode();
+    SelectObject(s_mem_dc, s_font_sub);
+    SetTextColor(s_mem_dc, is_shuf ? RGB(16, 185, 129) : ((s_hover_btn == 1) ? RGB(255, 255, 255) : RGB(160, 165, 181)));
+    RECT r_shuf = { 515, 634, 545, 662 };
+    DrawTextA(s_mem_dc, "🔀", -1, &r_shuf, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    SetTextColor(s_mem_dc, (s_hover_btn == 2) ? RGB(255, 255, 255) : RGB(160, 165, 181));
+    RECT r_prev = { 560, 634, 590, 662 };
+    DrawTextA(s_mem_dc, "⏮", -1, &r_prev, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    /* Circular Play/Pause button */
+    RECT r_pp = { 610, 628, 650, 668 };
+    SelectObject(s_mem_dc, s_pen_border);
+    SelectObject(s_mem_dc, (s_hover_btn == 3) ? s_br_highlight : s_br_card);
+    Ellipse(s_mem_dc, 610, 628, 650, 668);
+    SelectObject(s_mem_dc, s_font_heading);
+    SetTextColor(s_mem_dc, RGB(255, 255, 255));
+    const char *pp_icon = (pstate == PLAYBACK_PLAYING) ? "⏸" : "▶";
+    DrawTextA(s_mem_dc, pp_icon, -1, &r_pp, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    SelectObject(s_mem_dc, s_font_sub);
+    SetTextColor(s_mem_dc, (s_hover_btn == 4) ? RGB(255, 255, 255) : RGB(160, 165, 181));
+    RECT r_next = { 660, 634, 690, 662 };
+    DrawTextA(s_mem_dc, "⏭", -1, &r_next, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    int rep_mode = ui_get_repeat_mode();
+    SetTextColor(s_mem_dc, (rep_mode != 0) ? RGB(100, 200, 255) : ((s_hover_btn == 5) ? RGB(255, 255, 255) : RGB(160, 165, 181)));
+    RECT r_rep = { 705, 634, 735, 662 };
+    DrawTextA(s_mem_dc, (rep_mode == 2) ? "🔂" : "🔁", -1, &r_rep, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    /* Playback Status above progress bar */
     SelectObject(s_mem_dc, s_font_mono);
     if (pstate == PLAYBACK_PLAYING) {
-        SetTextColor(s_mem_dc, RGB(100, 240, 140));
-        TextOutA(s_mem_dc, 440, 616, "▶ PLAYING (48,000 Hz LPCM DAC)", 30);
+        SetTextColor(s_mem_dc, RGB(16, 185, 129));
+        TextOutA(s_mem_dc, 420, 663, "▶ EN REPRODUCCIÓN (48,000 Hz LPCM DAC)", 38);
     } else if (pstate == PLAYBACK_BUFFERING) {
         SetTextColor(s_mem_dc, RGB(100, 200, 255));
-        TextOutA(s_mem_dc, 440, 616, "◌ STREAMING & DECODING FLAC...", 30);
+        TextOutA(s_mem_dc, 420, 663, "◌ BUFFERING & STREAMING FLAC...", 31);
     } else if (pstate == PLAYBACK_PAUSED) {
-        SetTextColor(s_mem_dc, RGB(255, 200, 80));
-        TextOutA(s_mem_dc, 440, 616, "⏸ PAUSED", 8);
+        SetTextColor(s_mem_dc, RGB(245, 158, 11));
+        TextOutA(s_mem_dc, 420, 663, "⏸ EN PAUSA", 11);
     } else {
-        SetTextColor(s_mem_dc, RGB(140, 145, 160));
-        TextOutA(s_mem_dc, 440, 616, "⏹ READY", 7);
+        SetTextColor(s_mem_dc, RGB(110, 115, 133));
+        TextOutA(s_mem_dc, 420, 663, "⏹ LISTO", 8);
     }
 
-    /* Progress bar track */
-    RECT r_prog_bg = { 440, 648, 920, 656 };
+    /* Scrubber & Progress Bar */
+    uint32_t total_sec = (track) ? track->duration_sec : 0;
+    uint32_t cur_sec = (uint32_t)(progress * (float)total_sec);
+    char cur_time_str[16];
+    snprintf(cur_time_str, sizeof(cur_time_str), "%02u:%02u", cur_sec / 60, cur_sec % 60);
+    SetTextColor(s_mem_dc, RGB(160, 165, 181));
+    TextOutA(s_mem_dc, 365, 678, cur_time_str, (int)strlen(cur_time_str));
+
+    RECT r_prog_bg = { 420, 683, 840, 688 };
     FillRect(s_mem_dc, &r_prog_bg, s_br_bar_bg);
 
     if (progress < 0.0f) progress = 0.0f;
     if (progress > 1.0f) progress = 1.0f;
-    int fill_w = (int)(progress * (920 - 440));
-    RECT r_prog_fill = { 440, 648, 440 + fill_w, 656 };
+    int fill_w = (int)(progress * 420.0f);
+    RECT r_prog_fill = { 420, 683, 420 + fill_w, 688 };
     FillRect(s_mem_dc, &r_prog_fill, s_br_bar_fill);
 
-    /* Progress elapsed / total */
-    uint32_t total_sec = (track) ? track->duration_sec : 0;
-    uint32_t cur_sec = (uint32_t)(progress * (float)total_sec);
-    char cur_time_str[32];
-    snprintf(cur_time_str, sizeof(cur_time_str), "%02u:%02u / %02u:%02u",
-             cur_sec / 60, cur_sec % 60, total_sec / 60, total_sec % 60);
-    SetTextColor(s_mem_dc, RGB(180, 185, 200));
-    TextOutA(s_mem_dc, 440, 665, cur_time_str, (int)strlen(cur_time_str));
+    /* Scrubber Knob */
+    int knob_x = 420 + fill_w;
+    SelectObject(s_mem_dc, s_pen_border);
+    SelectObject(s_mem_dc, s_br_accent);
+    Ellipse(s_mem_dc, knob_x - 5, 685 - 5, knob_x + 5, 685 + 5);
 
-    /* Shuffle & Repeat Status Badges (x: 550 - 710, y: 665) */
-    int rep = ui_get_repeat_mode();
-    bool shuf = ui_get_shuffle_mode();
+    char total_time_str[16];
+    snprintf(total_time_str, sizeof(total_time_str), "%02u:%02u", total_sec / 60, total_sec % 60);
+    TextOutA(s_mem_dc, 850, 678, total_time_str, (int)strlen(total_time_str));
 
-    char shuf_badge[24];
-    snprintf(shuf_badge, sizeof(shuf_badge), "[SHUF: %s]", shuf ? "ON" : "OFF");
-    char rep_badge[24];
-    snprintf(rep_badge, sizeof(rep_badge), "[REP: %s]", (rep == 1) ? "ALL" : (rep == 2) ? "1" : "OFF");
-
-    SelectObject(s_mem_dc, s_font_mono);
-    SetTextColor(s_mem_dc, shuf ? RGB(100, 255, 180) : RGB(120, 125, 140));
-    TextOutA(s_mem_dc, 545, 665, shuf_badge, (int)strlen(shuf_badge));
-
-    SetTextColor(s_mem_dc, (rep != 0) ? RGB(120, 200, 255) : RGB(120, 125, 140));
-    TextOutA(s_mem_dc, 635, 665, rep_badge, (int)strlen(rep_badge));
-
-    /* 16-Band Real-Time Audio Spectrum Visualizer (x: 725 - 917, y: 606 - 640) */
+    /* 16-Band Real-Time Audio Visualizer (x: 930 -> 1060, y: 642 -> 692) */
     float vis_bands[VIS_BANDS];
     audio_get_visualization(vis_bands, VIS_BANDS);
     for (int b = 0; b < VIS_BANDS; b++) {
-        int bar_x = 725 + b * 12;
-        int bar_h = (int)(vis_bands[b] * 30.0f);
+        int bar_x = 930 + b * 8;
+        int bar_h = (int)(vis_bands[b] * 45.0f);
         if (bar_h < 2) bar_h = 2;
-        if (bar_h > 30) bar_h = 30;
-        int bar_y = 640 - bar_h;
-        RECT r_bar = { bar_x, bar_y, bar_x + 8, 640 };
+        if (bar_h > 45) bar_h = 45;
+        int bar_y = 690 - bar_h;
+        RECT r_bar = { bar_x, bar_y, bar_x + 6, 690 };
         FillRect(s_mem_dc, &r_bar, s_br_accent);
 
-        /* Peak dot */
-        RECT r_dot = { bar_x, bar_y - 2, bar_x + 8, bar_y };
+        RECT r_dot = { bar_x, bar_y - 2, bar_x + 6, bar_y };
         FillRect(s_mem_dc, &r_dot, s_br_highlight);
     }
 
-    /* Right Keybindings & Engine Specs (x: 950 - 1245) */
+    /* Volume Slider (x: 1075 -> 1250, y: 660 -> 686) */
+    SelectObject(s_mem_dc, s_font_sub);
+    SetTextColor(s_mem_dc, RGB(160, 165, 181));
+    RECT r_spk = { 1075, 660, 1100, 686 };
+    DrawTextA(s_mem_dc, (s_volume > 0.01f) ? "🔊" : "🔇", -1, &r_spk, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    RECT r_vol_bg = { 1105, 671, 1195, 675 };
+    FillRect(s_mem_dc, &r_vol_bg, s_br_bar_bg);
+    int vol_fill = (int)(s_volume * 90.0f);
+    RECT r_vol_fill = { 1105, 671, 1105 + vol_fill, 675 };
+    FillRect(s_mem_dc, &r_vol_fill, s_br_bar_fill);
+
+    int vol_knob_x = 1105 + vol_fill;
+    SelectObject(s_mem_dc, s_br_accent);
+    Ellipse(s_mem_dc, vol_knob_x - 4, 673 - 4, vol_knob_x + 4, 673 + 4);
+
+    char vol_str[16];
+    snprintf(vol_str, sizeof(vol_str), "%d%%", (int)(s_volume * 100.0f));
     SelectObject(s_mem_dc, s_font_mono);
-    SetTextColor(s_mem_dc, RGB(120, 180, 255));
-    TextOutA(s_mem_dc, 950, 615, "DAC: waveOut 48 kHz / 16-bit", 28);
-    TextOutA(s_mem_dc, 950, 633, "BUFFER: 8.0 MB XDR Ring Buffer", 30);
+    SetTextColor(s_mem_dc, RGB(160, 165, 181));
+    TextOutA(s_mem_dc, 1205, 664, vol_str, (int)strlen(vol_str));
 
-    SetTextColor(s_mem_dc, RGB(160, 165, 180));
-    TextOutA(s_mem_dc, 950, 653, "[▲/▼] Navigate | [ENTER] Play", 29);
-    TextOutA(s_mem_dc, 950, 669, "[SPACE] Pause  | [N/P] Next/Prev", 32);
-    TextOutA(s_mem_dc, 950, 685, "[H] Shuffle    | [R] Repeat Mode", 32);
-
-    /* 6. On-Screen Keyboard Modal Overlay (when state == STATE_SEARCH) */
-    if (state == (int)STATE_SEARCH) {
-        int osk_r = 0, osk_c = 0;
-        const char *osk_q = NULL;
-        ui_get_osk_state(&osk_r, &osk_c, &osk_q);
-
-        /* Dim card overlay */
-        RECT r_modal_bg = { 180, 100, 1100, 580 };
-        FillRect(s_mem_dc, &r_modal_bg, s_br_dock);
-        FrameRect(s_mem_dc, &r_modal_bg, s_br_accent);
-
-        /* OSK Header */
-        SelectObject(s_mem_dc, s_font_heading);
-        SetTextColor(s_mem_dc, RGB(255, 255, 255));
-        TextOutA(s_mem_dc, 220, 120, "TIDAL / MONOCHROME CATALOGUE SEARCH", 35);
-
-        SelectObject(s_mem_dc, s_font_sub);
-        SetTextColor(s_mem_dc, RGB(160, 165, 180));
-        TextOutA(s_mem_dc, 220, 150, "Type query with keyboard or navigate virtual keys with D-Pad", 61);
-
-        /* Query Input Box */
-        RECT r_qbox = { 220, 180, 1060, 225 };
-        FillRect(s_mem_dc, &r_qbox, s_br_card);
-        FrameRect(s_mem_dc, &r_qbox, s_br_highlight);
-
-        char display_query[128];
-        snprintf(display_query, sizeof(display_query), "🔍 %s|", osk_q ? osk_q : "");
-        SelectObject(s_mem_dc, s_font_track);
-        SetTextColor(s_mem_dc, RGB(255, 255, 255));
-        RECT r_qtext = { 235, 185, 1045, 220 };
-        DrawTextA(s_mem_dc, display_query, -1, &r_qtext, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-        /* Virtual Key Grid (4 rows x 10 cols) */
-        static const char *k_grid[4][10] = {
-            { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" },
-            { "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P" },
-            { "A", "S", "D", "F", "G", "H", "J", "K", "L", "-" },
-            { "Z", "X", "C", "V", "B", "N", "M", "SPC", "DEL", "GO" }
-        };
-
-        SelectObject(s_mem_dc, s_font_mono);
-        for (int row = 0; row < 4; row++) {
-            for (int col = 0; col < 10; col++) {
-                int kx = 220 + col * 84;
-                int ky = 245 + row * 60;
-                RECT r_key = { kx, ky, kx + 76, ky + 48 };
-
-                bool is_active = (row == osk_r && col == osk_c);
-                if (is_active) {
-                    FillRect(s_mem_dc, &r_key, s_br_highlight);
-                    FrameRect(s_mem_dc, &r_key, s_br_accent);
-                    SetTextColor(s_mem_dc, RGB(255, 255, 255));
-                } else {
-                    FillRect(s_mem_dc, &r_key, s_br_card);
-                    FrameRect(s_mem_dc, &r_key, s_br_dock);
-                    SetTextColor(s_mem_dc, RGB(200, 205, 220));
-                }
-
-                DrawTextA(s_mem_dc, k_grid[row][col], -1, &r_key, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            }
-        }
-
-        /* Footer guidance */
-        SelectObject(s_mem_dc, s_font_mono);
-        SetTextColor(s_mem_dc, RGB(140, 210, 255));
-        TextOutA(s_mem_dc, 220, 500, "[ARROWS] Navigate  |  [ENTER/SELECT] Choose  |  [SPACE] Delete  |  [ESC] Cancel", 77);
-        TextOutA(s_mem_dc, 220, 525, "[S / SQUARE] Quick Preset  |  Select [GO] to search live Tidal API", 67);
-    }
-
-    /* 7. Blit from memory DC to Window DC */
+    /* 6. Blit from memory DC to Window DC */
     HDC hdc = GetDC(s_hwnd);
     BitBlt(hdc, 0, 0, s_win_width, s_win_height, s_mem_dc, 0, 0, SRCCOPY);
     ReleaseDC(s_hwnd, hdc);
-
-    s_current_state = state;
 }
 
 
@@ -1091,12 +1355,13 @@ InputAction platform_poll_input(void) {
             char ch = 0;
             DWORD bytesRead = 0;
             if (ReadFile(hIn, &ch, 1, &bytesRead, NULL) && bytesRead > 0) {
-                if (s_current_state == (int)STATE_SEARCH) {
+                if (s_current_state == (int)STATE_SEARCH || s_search_focused) {
                     if (ch == '\r' || ch == '\n') {
                         ui_osk_set_cursor(3, 9); /* Move to GO key */
+                        s_search_focused = false;
                         return INPUT_SELECT;
                     }
-                    if (ch == 27) return INPUT_CANCEL;
+                    if (ch == 27) { s_search_focused = false; return INPUT_CANCEL; }
                     if (ch == 8) { ui_osk_input_char('\b'); return INPUT_NONE; }
                     if (ch >= 32 && ch < 127) {
                         ui_osk_input_char(ch);
@@ -1137,12 +1402,13 @@ InputAction platform_poll_input(void) {
                 }
             }
 
-            if (s_current_state == (int)STATE_SEARCH) {
+            if (s_current_state == (int)STATE_SEARCH || s_search_focused) {
                 switch (ch) {
                     case 13:
                         ui_osk_set_cursor(3, 9); /* Move to GO key */
+                        s_search_focused = false;
                         return INPUT_SELECT;
-                    case 27: return INPUT_CANCEL;        /* ESC */
+                    case 27: s_search_focused = false; return INPUT_CANCEL;        /* ESC */
                     case 8:  ui_osk_input_char('\b'); return INPUT_NONE;
                     default:
                         if (ch >= 32 && ch < 127) {
