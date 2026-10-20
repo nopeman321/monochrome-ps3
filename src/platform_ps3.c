@@ -1,8 +1,8 @@
 /**
- * Monochrome Music Player — PlayStation 3 Platform Implementation
+ * Monochrome Music Player - PlayStation 3 Platform Implementation
  * Target: Cell B.E. (PPU) / GameOS / RPCS3 emulator
  *
- * Strategy: Zero PSL1GHT dependency — all syscalls via inline LV2 syscall
+ * Strategy: Zero PSL1GHT dependency - all syscalls via inline LV2 syscall
  * wrappers defined in lv2.c.  RSX framebuffer is a software-render in main
  * memory that is DMA-copied to RSX local memory every frame via GCM.
  *
@@ -21,14 +21,16 @@
 #include "platform.h"
 #include "monochrome.h"   /* TrackMetadata, AppState, etc. */
 
-/* ─────────────────────────────────────────────────────────────────────────
+/* -
  * lv2.c exports (implemented in lv2.c; no separate header needed here)
- * ─────────────────────────────────────────────────────────────────────── */
+ * - */
 extern int  ps3_sys_tty_write(int ch, const void *buf, uint32_t len, uint32_t *pwdata);
 extern int  ps3_sys_timer_usleep(uint64_t usec);
 extern void ps3_sys_process_exit(int status);
-extern int  ps3_sys_ppu_thread_create(uint64_t *thread_id, void (*entry)(uint64_t), uint64_t arg, int32_t prio, uint64_t stack_size, uint64_t flags, const char *thread_name);
+extern int  ps3_sys_ppu_thread_create(uint64_t *thread_id, void (*entry)(uint64_t), uint64_t arg, int32_t prio, uint64_t stack_size, uint64_t flags, const char *thread_name, void *tls);
 extern int  ps3_sys_ppu_thread_join(uint64_t thread_id, uint64_t *val);
+extern int  ps3_sys_ppu_thread_start(uint64_t thread_id);
+extern int  ps3_sys_memory_allocate(uint32_t size, uint64_t flags, uint32_t *addr);
 extern void ps3_sys_ppu_thread_exit(uint64_t val);
 
 extern int  ps3_sys_fs_open(const char *path, int flags, int *fd, int mode, const void *arg, uint64_t size);
@@ -62,9 +64,9 @@ static uint64_t ps3_time_ms(void) {
     return tb / 79800ULL;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- *  SECTION 1 — LIFECYCLE & TIMERS
- * ═══════════════════════════════════════════════════════════════════════════ */
+/* -
+ *  SECTION 1 - LIFECYCLE & TIMERS
+ * - */
 
 int platform_init(void) {
     tty("[PS3] Hardware Abstraction Layer initialized for Cell B.E.\n");
@@ -83,7 +85,7 @@ uint64_t platform_get_time_ms(void) {
     return ps3_time_ms();
 }
 
-/* ── File I/O & Persistent Cache Abstraction (PS3 GameOS) ────────── */
+/* - File I/O & Persistent Cache Abstraction (PS3 GameOS) - */
 #define PS3_CACHE_DIR_BASE   "/dev_hdd0/game/MCRM00001/USRDIR/cache"
 #define PS3_CACHE_DIR_TRACKS "/dev_hdd0/game/MCRM00001/USRDIR/cache/tracks"
 #define PS3_CACHE_DIR_COVERS "/dev_hdd0/game/MCRM00001/USRDIR/cache/covers"
@@ -125,10 +127,16 @@ PlatformFileHandle platform_file_open_write(const char *path) {
     if (!path || !path[0]) return NULL;
     platform_ensure_cache_dirs();
     int fd = -1;
-    /* CELL_FS_O_WRONLY (1) | CELL_FS_O_CREAT (0x200) | CELL_FS_O_TRUNC (0x400) = 0x601 */
-    int ret = ps3_sys_fs_open(path, 0x601, &fd, 0666, NULL, 0);
-    if (ret != 0 || fd < 0) return NULL;
-    return (PlatformFileHandle)(uintptr_t)(fd + 1);
+    /* Flags de cellFs en OCTAL (sys_fs.h): O_WRONLY=000001, O_CREAT=000100, O_TRUNC=001000.
+       0x241 = CREAT|TRUNC|WRONLY. Sin CREAT el kernel devuelve CELL_ENOENT al crear. */
+    int flags_seq[3] = { 0x241, 0x201, 0x001 };
+    for (int i = 0; i < 3; i++) {
+        fd = -1;
+        int ret = ps3_sys_fs_open(path, flags_seq[i], &fd, 0666, NULL, 0);
+        if (ret == 0 && fd >= 0) return (PlatformFileHandle)(uintptr_t)(fd + 1);
+    }
+    tty("[FS] open_write fail %s\n", path);
+    return NULL;
 }
 
 size_t platform_file_read(PlatformFileHandle handle, void *buffer, size_t bytes) {
@@ -181,9 +189,9 @@ void platform_get_cache_cover_path(const char *track_id, char *out_path, size_t 
     snprintf(out_path, max_len, "%s/%s.bin", PS3_CACHE_DIR_COVERS, track_id);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- *  SECTION 1.5 — PPU THREADING (Cell B.E. / GameOS sys_ppu_thread)
- * ═══════════════════════════════════════════════════════════════════════════ */
+/* -
+ *  SECTION 1.5 - PPU THREADING (Cell B.E. / GameOS sys_ppu_thread)
+ * - */
 
 #define MAX_PLATFORM_THREADS 8
 
@@ -198,6 +206,17 @@ typedef struct {
 } __attribute__((aligned(16))) Ps3ThreadContext;
 
 static Ps3ThreadContext s_thread_pool[MAX_PLATFORM_THREADS];
+static unsigned char s_thread_tls[MAX_PLATFORM_THREADS][65536] __attribute__((aligned(64)));
+static uint64_t s_main_tp = 0;
+static inline uint64_t ps3_get_tp(void) { uint64_t t; __asm__ volatile("mr %0, 13" : "=r"(t)); return t; }
+
+static void *s_stream_xdr = NULL;
+void *platform_alloc_stream_buffer(size_t size) {
+    if (s_stream_xdr) return s_stream_xdr;
+    uint32_t addr = 0;
+    if (ps3_sys_memory_allocate((uint32_t)size, 0x200, &addr) == 0 && addr != 0) s_stream_xdr = (void *)(uintptr_t)addr;
+    return s_stream_xdr;
+}
 
 void ps3_thread_entry_stub(uint64_t raw_arg) {
     Ps3ThreadContext *ctx = (Ps3ThreadContext *)(uintptr_t)raw_arg;
@@ -238,11 +257,18 @@ PlatformThreadHandle platform_thread_create(PlatformThreadFunc func, void *arg) 
      * - stack size: 64 KB (65536 bytes)
      * - flags: SYS_PPU_THREAD_CREATE_JOINABLE (1)
      */
+    int slot = (int)(ctx - s_thread_pool);
+    if (s_main_tp == 0) s_main_tp = ps3_get_tp();
+    unsigned char *tls_base = s_thread_tls[slot];
+    if (s_main_tp > 0x7060) {
+        memcpy(tls_base, (const void *)(uintptr_t)(s_main_tp - 0x7060), sizeof(s_thread_tls[slot]));
+        *(uintptr_t *)tls_base = (uintptr_t)tls_base;
+    }
     uint64_t tid = 0;
     int ret = ps3_sys_ppu_thread_create(&tid,
                                         (void (*)(uint64_t))(uintptr_t)ps3_thread_entry_stub_opd,
                                         (uint64_t)(uintptr_t)ctx,
-                                        1000, 65536, 1, "monochrome_stream");
+                                        1000, 65536, 1, "monochrome_stream", (void *)(tls_base + 0x7060));
     if (ret != 0 || tid == 0) {
         tty("[THREAD] sys_ppu_thread_create failed (code %d)\n", ret);
         ctx->in_use = 0;
@@ -250,8 +276,9 @@ PlatformThreadHandle platform_thread_create(PlatformThreadFunc func, void *arg) 
     }
 
     ctx->thread_id = tid;
-    tty("[THREAD] PPU Thread %llu created successfully (entry_opd=%p, stack=64KB)\n",
-        (unsigned long long)tid, (void *)ps3_thread_entry_stub_opd);
+    int sret = ps3_sys_ppu_thread_start(tid);
+    tty("[THREAD] PPU Thread %llu started (ret=%d, entry_opd=%p, stack=64KB)\n",
+        (unsigned long long)tid, sret, (void *)ps3_thread_entry_stub_opd);
     return (PlatformThreadHandle)ctx;
 }
 
@@ -271,10 +298,10 @@ void platform_thread_join(PlatformThreadHandle thread) {
     ctx->in_use = 0;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- *  SECTION 2 — RSX FRAMEBUFFER GRAPHICS
+/* -
+ *  SECTION 2 - RSX FRAMEBUFFER GRAPHICS
  *
- *  A 720×480 ARGB8 software framebuffer in main XDR memory is rendered
+ *  A 720-480 ARGB8 software framebuffer in main XDR memory is rendered
  *  each frame and copied into main memory mapped into IO space via
  *  cellGcmMapMainMemory + cellGcmSetDisplayBuffer + cellGcmSetFlip.
  *
@@ -282,7 +309,7 @@ void platform_thread_join(PlatformThreadHandle thread) {
  *  import slots (SCE_SLOT below): the loader binds the firmware/HLE
  *  functions at boot, and a failed binding degrades to TTY-only /
  *  silent / auto-demo mode instead of crashing.
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * - */
 
 #define FB_WIDTH     720
 #define FB_HEIGHT    480
@@ -290,7 +317,7 @@ void platform_thread_join(PlatformThreadHandle thread) {
 #define FB_SIZE     (FB_PITCH * FB_HEIGHT)
 #define NUM_BUFS    2
 
-/* ── SCE dynamic import slots (cellGcmSys / cellAudio / cellPad) ─────────
+/* - SCE dynamic import slots (cellGcmSys / cellAudio / cellPad) -
  * tools/sce_imports.py appends import tables + a 0x60000002 program header
  * to the ELF.  On boot the loader resolves each NID against the firmware /
  * HLE module and writes the 32-bit OPD address into the LOW half of the
@@ -306,7 +333,7 @@ void platform_thread_join(PlatformThreadHandle thread) {
 /* ELFv1 call trampoline (src/entry.s).  The slot holds the OPD address
  * bound by the loader: [func_word, rtoc_word].  Calling through the raw
  * func word (the old SCE_FN macro) enters firmware code with our own
- * .TOC. in r2, which makes rtoc-relative loads resolve to garbage — the
+ * .TOC. in r2, which makes rtoc-relative loads resolve to garbage - the
  * LLE cellGcmSys path died with "Access violation reading 0xa0".
  * sce_opd_call6 instead loads r2 = rtoc_word and r12 = OPD before the
  * target runs, and restores the caller's r2/LR afterwards.  Arguments
@@ -328,6 +355,8 @@ SCE_SLOT(cellGcmResetFlipStatus);
 SCE_SLOT(cellGcmSetFlipHandler);
 SCE_SLOT(cellGcmSetFlipImmediate);
 SCE_SLOT(cellGcmGetLastFlipTime);
+SCE_SLOT(cellGcmSetWaitFlip);
+SCE_SLOT(cellGcmGetConfiguration);
 
 static inline int gcm_init_body(uint32_t *ctx, uint32_t cmd, uint32_t io,
                                 uint32_t ea) {
@@ -338,9 +367,9 @@ static inline int gcm_set_flip_mode(uint32_t mode) {
     return (int)sce_opd_call6(sce_slot_cellGcmSetFlipMode,
                               mode, 0, 0, 0, 0, 0);
 }
-static inline int gcm_set_flip(uint32_t id) {
+static inline int gcm_set_flip(uint32_t ctx, uint32_t id) {
     return (int)sce_opd_call6(sce_slot_cellGcmSetFlip,
-                              id, 0, 0, 0, 0, 0);
+                              ctx, id, 0, 0, 0, 0);
 }
 static inline int gcm_set_flip_immediate(uint32_t id) {
     return (int)sce_opd_call6(sce_slot_cellGcmSetFlipImmediate,
@@ -355,6 +384,12 @@ static inline int gcm_map_main_memory(uint32_t offset, uint32_t size,
                                       uint32_t *ea) {
     return (int)sce_opd_call6(sce_slot_cellGcmMapMainMemory,
                               offset, size, (uint64_t)(uintptr_t)ea, 0, 0, 0);
+}
+static inline void gcm_get_configuration(void *cfg) {
+    sce_opd_call6(sce_slot_cellGcmGetConfiguration, (uint64_t)(uintptr_t)cfg, 0, 0, 0, 0, 0);
+}
+static inline int gcm_set_wait_flip(uint32_t ctx) {
+    return (int)sce_opd_call6(sce_slot_cellGcmSetWaitFlip, ctx, 0, 0, 0, 0, 0);
 }
 static inline int gcm_get_flip_status(void) {
     return (int)sce_opd_call6(sce_slot_cellGcmGetFlipStatus,
@@ -374,8 +409,10 @@ static inline int gcm_reset_flip_status(void) {
  * handler runs in the gcm interrupt thread; keep it trivial. */
 static volatile uint32_t s_flip_cb_count = 0;
 void ps3_flip_handler_cb(uint32_t head) {
+    /* HLE - r2/TOC -
+     * - TOC -
+     * - */
     (void)head;
-    s_flip_cb_count++;
 }
 static inline uint64_t gcm_set_flip_handler(uint64_t fn_opd) {
     return sce_opd_call6(sce_slot_cellGcmSetFlipHandler,
@@ -397,7 +434,7 @@ static inline uint64_t gcm_get_last_flip_time(void) {
 
 extern void *memalign(size_t boundary, size_t size);
 
-/* Minimal GCM context type — enough for the function pointers we need */
+/* Minimal GCM context type - enough for the function pointers we need */
 typedef struct { uint32_t opaque[4]; } gcmContextData;
 
 static gcmContextData *s_gcm        = NULL;
@@ -407,13 +444,13 @@ static uint32_t        curr_fb      = 0;
 #define s_cur_buf curr_fb
 static int             s_gfx_ready  = 0;
 
-/* ARGB8 software framebuffer — written in main memory, copied to RSX */
+/* ARGB8 software framebuffer - written in main memory, copied to RSX */
 static uint32_t s_fb[FB_HEIGHT][FB_WIDTH];
 
 typedef struct { uint32_t *ptr; uint32_t offset; } RsxBuf;
 static RsxBuf s_rsx[NUM_BUFS];
 
-/* ── 8×8 Bitmap Font (ASCII 0x20–0x7E) ─────────────────────────────────── */
+/* - 8-8 Bitmap Font (ASCII 0x20-0x7E) - */
 static const uint8_t FONT8[95][8] = {
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* 20 SPC */
     {0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00}, /* 21 !   */
@@ -528,7 +565,7 @@ static const uint8_t FONT8[95][8] = {
 #define COL_HEAD    0xFF121212u
 #define COL_CARD    0xFF141824u
 
-/* ── Pixel / rect / text helpers ───────────────────────────────────────── */
+/* - Pixel / rect / text helpers - */
 static inline void fb_px(int x, int y, uint32_t c) {
     if ((unsigned)x < FB_WIDTH && (unsigned)y < FB_HEIGHT)
         s_fb[y][x] = c;
@@ -546,7 +583,7 @@ static void fb_glyph(int x, int y, unsigned char ch, uint32_t fg, int sc) {
     for (int r = 0; r < 8; r++) {
         uint8_t bits = g[r];
         for (int col = 0; col < 8; col++) {
-            if (bits & (0x80u >> col)) {
+            if (bits & (1u << col)) {
                 for (int sy = 0; sy < sc; sy++)
                     for (int sx = 0; sx < sc; sx++)
                         fb_px(x + col*sc + sx, y + r*sc + sy, fg);
@@ -557,21 +594,113 @@ static void fb_glyph(int x, int y, unsigned char ch, uint32_t fg, int sc) {
 
 static int fb_str(int x, int y, const char *s, uint32_t fg, int sc) {
     int cx = x;
-    while (*s) { fb_glyph(cx, y, (unsigned char)*s++, fg, sc); cx += 8*sc; }
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        unsigned char ch = *p++;
+        if (ch < 0x80) {
+            fb_glyph(cx, y, ch, fg, sc);
+            cx += 8 * sc;
+        } else if ((ch & 0xE0) == 0xC0) {
+            unsigned char b2 = *p;
+            if (b2) {
+                p++;
+                unsigned char mapped = '?';
+                if (ch == 0xC3) {
+                    if (b2 >= 0x80 && b2 <= 0x85) mapped = 'A';
+                    else if (b2 == 0x87) mapped = 'C';
+                    else if (b2 >= 0x88 && b2 <= 0x8B) mapped = 'E';
+                    else if (b2 >= 0x8C && b2 <= 0x8F) mapped = 'I';
+                    else if (b2 == 0x91) mapped = 'N';
+                    else if (b2 >= 0x92 && b2 <= 0x96) mapped = 'O';
+                    else if (b2 >= 0x99 && b2 <= 0x9C) mapped = 'U';
+                    else if (b2 >= 0xA0 && b2 <= 0xA5) mapped = 'a';
+                    else if (b2 == 0xA7) mapped = 'c';
+                    else if (b2 >= 0xA8 && b2 <= 0xAB) mapped = 'e';
+                    else if (b2 >= 0xAC && b2 <= 0xAF) mapped = 'i';
+                    else if (b2 == 0xB1) mapped = 'n';
+                    else if (b2 >= 0xB2 && b2 <= 0xB6) mapped = 'o';
+                    else if (b2 >= 0xB9 && b2 <= 0xBC) mapped = 'u';
+                    else if (b2 == 0x97) mapped = 'x'; /* multiplication - */
+                } else if (ch == 0xC2) {
+                    if (b2 == 0xBF) mapped = '?';      /* - */
+                    else if (b2 == 0xA1) mapped = '!'; /* - */
+                    else if (b2 == 0xB7) mapped = '.'; /* - */
+                }
+                fb_glyph(cx, y, mapped, fg, sc);
+                cx += 8 * sc;
+            }
+        } else if ((ch & 0xF0) == 0xE0) {
+            unsigned char b2 = *p ? *p++ : 0;
+            unsigned char b3 = *p ? *p++ : 0;
+            unsigned char mapped = '*';
+            if (ch == 0xE2) {
+                if (b2 == 0x96 && b3 == 0xB6) mapped = '>';      /* - */
+                else if (b2 == 0x8F && b3 == 0xB8) mapped = '|'; /* - */
+                else if (b2 == 0x8F && b3 == 0xAE) mapped = '<'; /* - */
+                else if (b2 == 0x8F && b3 == 0xAD) mapped = '>'; /* - */
+                else if (b2 == 0x97 && b3 == 0x88) mapped = '#'; /* - */
+                else if (b2 == 0x97 && b3 == 0x8F) mapped = '*'; /* - */
+                else if (b2 == 0x80 && b3 == 0xA2) mapped = '*'; /* - */
+                else if (b2 == 0x99 && b3 == 0xAB) mapped = '~'; /* - */
+                else if (b2 == 0x96 && b3 == 0xB2) mapped = '^'; /* - */
+                else if (b2 == 0x96 && b3 == 0xBC) mapped = 'v'; /* - */
+            }
+            fb_glyph(cx, y, mapped, fg, sc);
+            cx += 8 * sc;
+        } else if ((ch & 0xF8) == 0xF0) {
+            if (*p) p++;
+            if (*p) p++;
+            if (*p) p++;
+            fb_glyph(cx, y, '*', fg, sc);
+            cx += 8 * sc;
+        }
+    }
     return cx - x;
 }
 
 static void fb_str_r(int rx, int y, const char *s, uint32_t fg, int sc) {
-    int len = (int)strlen(s) * 8 * sc;
+    int chars = 0;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        unsigned char ch = *p++;
+        if (ch < 0x80) { chars++; }
+        else if ((ch & 0xE0) == 0xC0) { if (*p) p++; chars++; }
+        else if ((ch & 0xF0) == 0xE0) { if (*p) p++; if (*p) p++; chars++; }
+        else if ((ch & 0xF8) == 0xF0) { if (*p) p++; if (*p) p++; if (*p) p++; chars++; }
+    }
+    int len = chars * 8 * sc;
     fb_str(rx - len, y, s, fg, sc);
 }
 
 static void trunc(char *dst, size_t dsz, const char *src, int maxch) {
-    int n = (int)strlen(src);
-    if (n <= maxch) { strncpy(dst, src, dsz-1); dst[dsz-1]='\0'; return; }
-    int k = maxch - 3; if (k < 0) k = 0;
-    strncpy(dst, src, (size_t)k);
-    dst[k]='.'; dst[k+1]='.'; dst[k+2]='.'; dst[k+3]='\0';
+    if (!dst || dsz == 0) return;
+    if (!src) { dst[0] = '\0'; return; }
+
+    size_t char_count = 0;
+    size_t byte_idx = 0;
+    while (src[byte_idx] && char_count < (size_t)maxch && byte_idx + 1 < dsz) {
+        unsigned char c = (unsigned char)src[byte_idx];
+        size_t seq_len = 1;
+        if ((c & 0xE0) == 0xC0) seq_len = 2;
+        else if ((c & 0xF0) == 0xE0) seq_len = 3;
+        else if ((c & 0xF8) == 0xF0) seq_len = 4;
+
+        if (char_count + 1 > (size_t)maxch || byte_idx + seq_len >= dsz) break;
+        for (size_t k = 0; k < seq_len && src[byte_idx]; k++) {
+            dst[byte_idx] = src[byte_idx];
+            byte_idx++;
+        }
+        char_count++;
+    }
+
+    if (src[byte_idx] != '\0' && char_count >= 3 && byte_idx + 4 < dsz) {
+        dst[byte_idx - 3] = '.';
+        dst[byte_idx - 2] = '.';
+        dst[byte_idx - 1] = '.';
+        dst[byte_idx] = '\0';
+    } else {
+        dst[byte_idx] = '\0';
+    }
 }
 
 static void fb_blit_cover(int dst_x, int dst_y, int dst_w, int dst_h,
@@ -586,7 +715,7 @@ static void fb_blit_cover(int dst_x, int dst_y, int dst_w, int dst_h,
     }
 }
 
-/* ── RSX / GCM Abstraction ──────────────────────────────────────────────── */
+/* - RSX / GCM Abstraction - */
 __attribute__((weak)) int gcmGetFlipStatus(void) {
     if (SCE_BOUND(cellGcmGetFlipStatus))
         return gcm_get_flip_status();
@@ -600,10 +729,10 @@ __attribute__((weak)) void gcmResetFlipStatus(void) {
 
 __attribute__((weak)) int gcmSetFlip(gcmContextData *ctx, uint32_t id) {
     (void)ctx;
+    if (SCE_BOUND(cellGcmSetFlip) && s_gcm)
+        return gcm_set_flip((uint32_t)(uintptr_t)s_gcm, id);
     if (SCE_BOUND(cellGcmSetFlipImmediate))
         return gcm_set_flip_immediate(id);
-    if (SCE_BOUND(cellGcmSetFlip))
-        return gcm_set_flip(id);
     return 0;
 }
 
@@ -612,7 +741,7 @@ __attribute__((weak)) void rsxFlushBuffer(gcmContextData *ctx) {
 }
 
 __attribute__((weak)) void gcmSetWaitFlip(gcmContextData *ctx) {
-    (void)ctx;
+    if (SCE_BOUND(cellGcmSetWaitFlip)) gcm_set_wait_flip((uint32_t)(uintptr_t)ctx);
 }
 
 __attribute__((weak)) void sysUtilCheckCallback(void) {
@@ -653,11 +782,11 @@ __attribute__((weak)) int32_t rsxAddressToOffset(void *ptr, uint32_t *offset) {
     return 0;
 }
 
-/* ── RSX synchronization & presentation ──────────────────────────────────── */
+/* - RSX synchronization & presentation - */
 static void rsx_wait_flip(void) {
     if (gcmGetFlipStatus) {
         int timeout = 0;
-        while (gcmGetFlipStatus() != 0 && timeout < 250) {
+        while (gcmGetFlipStatus() != 0 && timeout < 12) {
             usleep(200);
             timeout++;
         }
@@ -667,16 +796,13 @@ static void rsx_wait_flip(void) {
 
 static void rsx_flip(void) {
     if (!s_gfx_ready) return;
-
-    /* Copy software FB to RSX memory backbuffer */
+    static unsigned s_flip_div = 0;
+    if ((s_flip_div++ & 1u) != 0) return;   /* present at ~30 Hz */
     if (s_rsx[curr_fb].ptr)
         memcpy(s_rsx[curr_fb].ptr, s_fb, FB_SIZE);
-
-    /* Frame presentation sequence */
-    rsx_wait_flip();
     if (gcmSetFlip && s_gcm) gcmSetFlip(s_gcm, curr_fb);
-    if (rsxFlushBuffer && s_gcm) rsxFlushBuffer(s_gcm);
     if (gcmSetWaitFlip && s_gcm) gcmSetWaitFlip(s_gcm);
+    if (rsxFlushBuffer && s_gcm) rsxFlushBuffer(s_gcm);
     curr_fb ^= 1;
     if (sysUtilCheckCallback) sysUtilCheckCallback();
 }
@@ -685,13 +811,13 @@ void platform_present_frame(void) {
     rsx_flip();
 }
 
-/* ── GFX init ────────────────────────────────────────────────────────────  */
+/* - GFX init -  */
 int platform_gfx_init(int width, int height, const char *title) {
     (void)width; (void)height; (void)title;
     tty("[RSX] Initialising %dx%d double-buffered framebuffer\n", FB_WIDTH, FB_HEIGHT);
 
     if (!SCE_BOUND(_cellGcmInitBody) || !SCE_BOUND(cellGcmSetFlip)) {
-        tty("[RSX] cellGcmSys imports not bound — running TTY-only\n");
+        tty("[RSX] cellGcmSys imports not bound - running TTY-only\n");
         return 0;
     }
 
@@ -701,31 +827,56 @@ int platform_gfx_init(int width, int height, const char *title) {
     memset((void *)(uintptr_t)s_io_ea, 0, 0x100000);
 
     int r = gcm_init_body(&s_ctx_addr, 256 * 1024, 1024 * 1024, s_io_ea);
+    tty("[RSX] gcm_init_body ret=%d ctx=0x%08x io_ea=0x%08x\n", r, s_ctx_addr, s_io_ea);
     if (r != 0 || !s_ctx_addr) {
-        tty("[RSX] _cellGcmInitBody failed (%d) — TTY-only mode\n", r);
+        tty("[RSX] _cellGcmInitBody failed (%d) - TTY-only mode\n", r);
         return 0;
     }
     s_gcm = (gcmContextData *)(uintptr_t)s_ctx_addr;
 
-    /* Register the flip handler — REQUIRED for flip status to ever clear
+    /* Register the flip handler - REQUIRED for flip status to ever clear
      * on the LLE path (see gcm_set_flip_handler comment above). */
     if (SCE_BOUND(cellGcmSetFlipHandler)) {
         gcm_set_flip_handler((uint64_t)(uintptr_t)ps3_flip_handler_cb_opd);
     }
-    (void)gcm_get_last_flip_time(); /* keep slot alive under LTO */
-
+    /* keep all GCM slots alive under LTO so the import patcher finds them */
+    {
+        volatile uint64_t keep = sce_slot_cellGcmSetFlipMode | sce_slot_cellGcmSetFlip |
+            sce_slot_cellGcmSetFlipImmediate | sce_slot_cellGcmSetWaitFlip |
+            sce_slot_cellGcmSetFlipHandler | sce_slot_cellGcmSetDisplayBuffer |
+            sce_slot_cellGcmMapMainMemory | sce_slot_cellGcmGetFlipStatus |
+            sce_slot_cellGcmResetFlipStatus | sce_slot_cellGcmGetLastFlipTime |
+            sce_slot_cellGcmGetConfiguration | sce_slot__cellGcmInitBody;
+        (void)keep;
+    }
     uint32_t fb_width = (uint32_t)FB_WIDTH;
     uint32_t fb_height = (uint32_t)FB_HEIGHT;
     uint32_t color_pitch = (uint32_t)FB_PITCH;
     uint32_t color_offset[NUM_BUFS] = {0, 0};
 
     /* Reserva de 2 framebuffers alineados a 64 bytes en memoria local RSX */
+    typedef struct { uint32_t localAddress; uint32_t localSize; uint32_t ioAddress; uint32_t ioSize; uint32_t memFreq; uint32_t coreFreq; } GcmCfg;
+    GcmCfg gcfg;
+    memset(&gcfg, 0, sizeof(gcfg));
+    uint32_t local_base = 0, local_size = 0;
+    if (SCE_BOUND(cellGcmGetConfiguration)) {
+        gcm_get_configuration(&gcfg);
+        local_base = gcfg.localAddress;
+        local_size = gcfg.localSize;
+    }
+    tty("[RSX] local_base=0x%08x size=0x%08x io=0x%08x\n", local_base, local_size, gcfg.ioAddress);
+
     for (int i = 0; i < NUM_BUFS; i++) {
         uint32_t buf_size = color_pitch * fb_height;
-        if (rsxMemalign) {
+        if (local_base && local_size >= (uint32_t)((i + 1) * 0x200000u)) {
+            s_rsx[i].ptr = (uint32_t *)(uintptr_t)(local_base + (uint32_t)(i * 0x200000u));
+            color_offset[i] = (uint32_t)(i * 0x200000u);
+        } else if (rsxMemalign) {
             s_rsx[i].ptr = (uint32_t *)rsxMemalign(64, buf_size);
+            if (rsxAddressToOffset) rsxAddressToOffset((void *)s_rsx[i].ptr, &color_offset[i]);
         } else {
             s_rsx[i].ptr = (uint32_t *)malloc(buf_size);
+            color_offset[i] = (uint32_t)((uintptr_t)s_rsx[i].ptr & 0xFFFFFFFFu);
         }
 
         if (!s_rsx[i].ptr) {
@@ -733,14 +884,8 @@ int platform_gfx_init(int width, int height, const char *title) {
             return 0;
         }
         memset(s_rsx[i].ptr, 0, buf_size);
-
-        color_offset[i] = 0;
-        if (rsxAddressToOffset) {
-            rsxAddressToOffset((void *)s_rsx[i].ptr, &color_offset[i]);
-        } else {
-            color_offset[i] = (uint32_t)((uintptr_t)s_rsx[i].ptr & 0xFFFFFFFFu);
-        }
         s_rsx[i].offset = color_offset[i];
+        tty("[RSX] buf%d ea=0x%08x offset=0x%08x\n", i, (unsigned)(uintptr_t)s_rsx[i].ptr, color_offset[i]);
     }
 
     /* Registro de los buffers mediante gcmSetDisplayBuffer */
@@ -773,7 +918,7 @@ void platform_gfx_shutdown(void) {
     tty("[RSX] Framebuffer released.\n");
 }
 
-/* ── Render frame ────────────────────────────────────────────────────────  */
+/* - Render frame -  */
 /*
  * TrackMetadata fields (from monochrome.h):
  *   id[64], title[128], artist[128], album[128], cover_url[256],
@@ -784,21 +929,61 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
                           const struct TrackMetadata *tracks, int track_count,
                           int cursor, const char *search_query) {
     (void)state;
+    static unsigned s_present_count = 0;
+    static int s_fb_dumped = 0;
+    static int s_play_dumped = 0;
+    static int s_play_seen = 0;
+    s_present_count++;
+    if (s_present_count % 30 == 0) {
+        tty("[RSX] PRESENT frames=%u flip_cb=%u\n", s_present_count, s_flip_cb_count);
+    }
+    if (state == 5) {
+        if (s_play_seen == 0) s_play_seen = (int)s_present_count;
+        if (s_play_dumped == 0 && (int)s_present_count >= s_play_seen + 90) {
+            s_play_dumped = 1;
+            PlatformFileHandle df = platform_file_open_write("/dev_hdd0/game/MCRM00001/USRDIR/fb_play.raw");
+            if (df) {
+                size_t wr = platform_file_write(df, s_fb, FB_SIZE);
+                platform_file_close(df);
+                tty("[RSX] FB play dumped (%u bytes)\n", (unsigned)wr);
+            }
+        }
+    }
+    if (s_present_count % 120 == 0) {
+        tty("[RSX] flipstat=%d p0=%08x fb0=%08x\n",
+            gcmGetFlipStatus(),
+            s_rsx[0].ptr ? s_rsx[0].ptr[0] : 0,
+            s_fb[0][0]);
+    }    if (s_present_count == 300 && s_fb_dumped == 0) {
+        s_fb_dumped = 1;
+        PlatformFileHandle df = platform_file_open_write("/dev_hdd0/game/MCRM00001/USRDIR/fb_home.raw");
+        if (df) {
+            size_t wr = platform_file_write(df, s_fb, FB_SIZE);
+            platform_file_close(df);
+            tty("[RSX] FB home dumped (%u bytes)\n", (unsigned)wr);
+            PlatformFileHandle rf = platform_file_open_write("/dev_hdd0/game/MCRM00001/USRDIR/fb_rsx.raw");
+            if (rf) { platform_file_write(rf, s_rsx[0].ptr, FB_SIZE); platform_file_close(rf); tty("[RSX] RSX buf dumped\n"); }
+        }
+    }
 
-    /* ── Clear ─────────────────────────────────────────────────────────── */
-    for (int y = 0; y < FB_HEIGHT; y++)
-        for (int x = 0; x < FB_WIDTH; x++)
-            s_fb[y][x] = COL_BG;
+    /* - Clear - */
+    {
+        uint64_t bg2 = ((uint64_t)COL_BG << 32) | (uint64_t)COL_BG;
+        for (int y = 0; y < FB_HEIGHT; y++) {
+            uint64_t *row = (uint64_t *)s_fb[y];
+            for (int x = 0; x < FB_WIDTH / 2; x++) row[x] = bg2;
+        }
+    }
 
-    /* ── Header (0–39) ──────────────────────────────────────────────────  */
+    /* - Header (0-39) -  */
     fb_rect(0, 0, FB_WIDTH, 40, COL_HEAD);
     fb_str(20, 12, "MONOCHROME", COL_ACCENT, 2);
     fb_str(188, 18, "v01.00", COL_DIM, 1);
     fb_str_r(FB_WIDTH - 20, 14,
-             "[X]Play  [L1/R1]Skip  [SEL]Shuf  [L2]Rep  [O]Back",
+             "[X]Play [L1/R1]Skip [<][>]Seek [SEL]Shuf [L2]Rep [O]Back",
              COL_DIM, 1);
 
-    /* ── Now-playing strip (41–109) ─────────────────────────────────────  */
+    /* - Now-playing strip (41-109) -  */
     fb_rect(0, 40, FB_WIDTH, 1, COL_DIM);
     fb_rect(0, 41, FB_WIDTH, 68, 0xFF0D1B2Au);
 
@@ -841,7 +1026,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
         fb_str(FB_WIDTH - 150, 42, badges, COL_ACCENT, 1);
     }
 
-    /* ── 16-Band Real-Time Audio Spectrum Visualizer (x: 360–504, y: 56–88) ── */
+    /* - 16-Band Real-Time Audio Spectrum Visualizer (x: 360-504, y: 56-88) - */
     float vis_bands[VIS_BANDS];
     audio_get_visualization(vis_bands, VIS_BANDS);
     for (int b = 0; b < VIS_BANDS; b++) {
@@ -854,7 +1039,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
         fb_rect(bar_x, bar_y - 2, 6, 2, COL_FG);
     }
 
-    /* ── Volume HUD & DMA Ring-Buffer Occupancy ───────────────────────── */
+    /* - Volume HUD & DMA Ring-Buffer Occupancy - */
     extern float platform_audio_get_volume_hud(void);
     extern uint32_t platform_audio_get_dma_occ(void);
     extern uint32_t platform_audio_get_nblk(void);
@@ -878,7 +1063,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     char dstr[16]; snprintf(dstr, sizeof(dstr), "%u/%u", occ, nblk ? nblk : 8);
     fb_str(dx + dw + 8, dy, dstr, COL_DIM, 1);
 
-    /* ── Progress bar (98–108) ───────────────────────────────────────────  */
+    /* - Progress bar (98-108) -  */
     int bx = 20, by = 98, bw = FB_WIDTH - 40, bh = 6;
     fb_rect(bx, by, bw, bh, COL_BAR_BG);
     if (progress > 0.0f) {
@@ -886,14 +1071,14 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
         if (fill > 0) fb_rect(bx, by, fill, bh, COL_BAR_FG);
     }
 
-    /* ── Search line ──────────────────────────────────────────────────── */
+    /* - Search line - */
     fb_rect(0, 109, FB_WIDTH, 1, COL_DIM);
     if (search_query && search_query[0]) {
         char sq[80]; snprintf(sq, sizeof(sq), "Filter: %s", search_query);
         fb_str(20, 114, sq, COL_ACCENT, 1);
     }
 
-    /* ── Track list ───────────────────────────────────────────────────── */
+    /* - Track list - */
     int list_top = 128;
     int item_h   = 36;
     int visible  = (FB_HEIGHT - list_top - 20) / item_h;
@@ -936,7 +1121,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
         fb_rect(0, ty+item_h-1, FB_WIDTH, 1, 0xFF1A1A1Au);
     }
 
-    /* ── Scrollbar ───────────────────────────────────────────────────── */
+    /* - Scrollbar - */
     if (track_count > visible) {
         int sbh = FB_HEIGHT - list_top - 20;
         fb_rect(FB_WIDTH-6, list_top, 4, sbh, COL_BAR_BG);
@@ -945,10 +1130,10 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
         fb_rect(FB_WIDTH-6, ty2, 4, th, COL_ACCENT);
     }
 
-    /* ── Status bar ──────────────────────────────────────────────────── */
+    /* - Status bar - */
     fb_rect(0, FB_HEIGHT-16, FB_WIDTH, 16, 0xFF080808u);
     char st[80]; snprintf(st, sizeof(st), "%d tracks  |  MONOCHROME PS3 Homebrew", track_count);
-    /* ── On-Screen Keyboard Modal Overlay (when state == STATE_SEARCH) ── */
+    /* - On-Screen Keyboard Modal Overlay (when state == STATE_SEARCH) - */
     if (state == (int)STATE_SEARCH) {
         int osk_r = 0, osk_c = 0;
         const char *osk_q = NULL;
@@ -997,7 +1182,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
         fb_str(mx + 20, my + mh - 18, "[Square] Quick Preset  Select [GO] to search live API", COL_ACCENT, 1);
     }
 
-    /* ── Flush to RSX ─────────────────────────────────────────────────── */
+    /* - Flush to RSX - */
     rsx_flip();
 
     static uint32_t s_frames = 0;
@@ -1006,17 +1191,17 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
         tty("[RSX] Frame %u | tracks=%d cursor=%d\n", s_frames, track_count, cursor);
 }
 
-/* ── Console stubs ───────────────────────────────────────────────────── */
-void platform_clear_screen(void) { /* visual — handled by render */ }
+/* - Console stubs - */
+void platform_clear_screen(void) { /* visual - handled by render */ }
 void platform_set_cursor(int r, int c) { (void)r; (void)c; }
 int  platform_get_mouse_track_selection(void) { return -1; }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- *  SECTION 3 — AUDIO OUTPUT  (cellAudioInit / cellAudioPortOpen / cellAudioPortStart)
+/* -
+ *  SECTION 3 - AUDIO OUTPUT  (cellAudioInit / cellAudioPortOpen / cellAudioPortStart)
  *
  *  Bound at load time through the SCE dynamic import tables written by
  *  tools/sce_imports.py.  Silence is the fallback if binding failed.
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * - */
 
 /* cellAudio SDK structures (big-endian, native to the PPU) */
 typedef struct {
@@ -1107,11 +1292,11 @@ int platform_audio_init(uint32_t sample_rate, uint8_t channels) {
     tty("[PS3] cellAudio initialising: 48000 Hz, %u ch\n", s_ach);
 
     if (!SCE_BOUND(cellAudioInit) || !SCE_BOUND(cellAudioPortOpen)) {
-        tty("[PS3] cellAudio imports not bound — silent mode\n");
+        tty("[PS3] cellAudio imports not bound - silent mode\n");
         return 0;
     }
     if (aud_init() != 0) {
-        tty("[PS3] cellAudioInit failed — silent mode\n");
+        tty("[PS3] cellAudioInit failed - silent mode\n");
         return 0;
     }
 
@@ -1141,7 +1326,7 @@ int platform_audio_init(uint32_t sample_rate, uint8_t channels) {
     if (SCE_BOUND(cellAudioPortStart)) aud_port_start(s_aport);
     s_aready = 1;
     platform_audio_set_volume(1.0f); /* also keeps this call path alive under LTO */
-    tty("[PS3] cellAudioPortStart OK — port %u, %u blocks, stride %u floats\n",
+    tty("[PS3] cellAudioPortStart OK - port %u, %u blocks, stride %u floats\n",
         s_aport, s_anblk, s_astride);
     return 0;
 }
@@ -1213,14 +1398,14 @@ void platform_audio_set_volume(float vol) {
     if (s_aready && SCE_BOUND(cellAudioSetPortLevel)) aud_set_level(s_aport, s_master_volume);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- *  SECTION 4 — INPUT  (DualShock 3 via cellPadGetData)
+/* -
+ *  SECTION 4 - INPUT  (DualShock 3 via cellPadGetData)
  *
  *  CellPadData.button[] u16 slots:
  *    [2] digital1: 0x10=Up  0x20=Right  0x40=Down  0x80=Left  0x08=Start
  *    [3] digital2: 0x10=Triangle  0x20=Circle  0x40=Cross  0x80=Square
  *                  0x04=L1  0x08=R1  0x01=L2  0x02=R2
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * - */
 
 typedef struct {
     int32_t  len;
@@ -1272,16 +1457,16 @@ InputAction platform_poll_input(void) {
     if (n2 & 0x80) return INPUT_LEFT;
     if (n2 & 0x20) return INPUT_RIGHT;
 
-    /* Cross (✕): Select track / Confirm OSK key */
+    /* Cross (-): Select track / Confirm OSK key */
     if (n3 & 0x40) return INPUT_SELECT;
 
-    /* Circle (○): Cancel / Back */
+    /* Circle (-): Cancel / Back */
     if (n3 & 0x20) return INPUT_CANCEL;
 
-    /* Square (□): Action / Search (OSK) */
+    /* Square (-): Action / Search (OSK) */
     if (n3 & 0x80) return INPUT_ACTION_SEARCH;
 
-    /* Triangle (△): Toggle Play / Pause */
+    /* Triangle (-): Toggle Play / Pause */
     if (n3 & 0x10) return INPUT_PLAY_PAUSE;
 
     /* R1 (0x08) / L1 (0x04): Skip Next / Previous track */
@@ -1311,9 +1496,9 @@ InputAction platform_poll_input(void) {
 }
 
 
-/* ═══════════════════════════════════════════════════════════════════════════
- *  SECTION 5 — NETWORK (pre-cached fallback catalogue)
- * ═══════════════════════════════════════════════════════════════════════════ */
+/* -
+ *  SECTION 5 - NETWORK (pre-cached fallback catalogue)
+ * - */
 
 static const char k_catalog[] =
     "{\"tracks\":["
@@ -1333,24 +1518,6 @@ static const char k_catalog[] =
      "\"duration\":248,\"audioQuality\":\"HI_RES\"}"
     "]}";
 
-int platform_http_get(const char *url, char **resp, size_t *sz) {
-    tty("[NET] GET %s (PS3 fallback catalogue)\n", url ? url : "(null)");
-    size_t n = strlen(k_catalog);
-    char  *b = (char *)malloc(n + 1);
-    if (!b) return -1;
-    memcpy(b, k_catalog, n + 1);
-    *resp = b; *sz = n;
-    return 0;
-}
 
-int platform_http_get_streaming(const char *url, PlatformHttpChunkCallback on_chunk, void *userdata) {
-    if (!on_chunk) return -1;
-    tty("[NET] Streaming %s (PS3 fallback catalogue)\n", url ? url : "(null)");
-    size_t n = strlen(k_catalog);
-    on_chunk((const uint8_t *)k_catalog, n, userdata);
-    return 0;
-}
-
-void platform_http_free(char *r) { if (r) free(r); }
 
 #endif /* TARGET_PS3 */

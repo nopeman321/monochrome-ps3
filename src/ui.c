@@ -147,10 +147,17 @@ void ui_get_osk_state(int *row, int *col, const char **query) {
 void ui_osk_input_char(char ch) {
     if (ch == '\b' || ch == 127) {
         if (g_search_query_len > 0) {
-            g_search_query[--g_search_query_len] = '\0';
+            /* Pop UTF-8 continuation bytes if any */
+            while (g_search_query_len > 0 &&
+                   ((unsigned char)g_search_query[g_search_query_len - 1] & 0xC0) == 0x80) {
+                g_search_query[--g_search_query_len] = '\0';
+            }
+            if (g_search_query_len > 0) {
+                g_search_query[--g_search_query_len] = '\0';
+            }
             net_search_async_query(g_search_query);
         }
-    } else if (ch >= 32 && ch < 127) {
+    } else if ((unsigned char)ch >= 32 && (unsigned char)ch != 127) {
         if (g_search_query_len < (int)sizeof(g_search_query) - 1) {
             g_search_query[g_search_query_len++] = ch;
             g_search_query[g_search_query_len] = '\0';
@@ -311,18 +318,60 @@ AppState pad_update(AppState current) {
 
     switch (act) {
         case INPUT_UP:
-            if (g_track_count > 1) {
-                g_cursor = (g_cursor - 1 + g_track_count) % g_track_count;
-                printf("[INPUT] Navigate UP: [%d/%d] \"%s\" by %s\n",
-                       g_cursor + 1, g_track_count, g_tracks[g_cursor].title, g_tracks[g_cursor].artist);
+            if (current == STATE_PLAYING) {
+                extern float platform_audio_get_volume_hud(void);
+                extern void platform_audio_set_volume(float vol);
+                float cur = platform_audio_get_volume_hud();
+                float next_v = cur + 0.05f;
+                if (next_v > 1.0f) next_v = 1.0f;
+                platform_audio_set_volume(next_v);
+                printf("[INPUT] Volume %d%%\n", (int)(next_v * 100.0f + 0.5f));
+            } else {
+                if (g_track_count > 1) {
+                    g_cursor = (g_cursor - 1 + g_track_count) % g_track_count;
+                    printf("[INPUT] Navigate UP: [%d/%d] \"%s\" by %s\n",
+                           g_cursor + 1, g_track_count, g_tracks[g_cursor].title, g_tracks[g_cursor].artist);
+                }
             }
             break;
 
         case INPUT_DOWN:
-            if (g_track_count > 1) {
-                g_cursor = (g_cursor + 1) % g_track_count;
-                printf("[INPUT] Navigate DOWN: [%d/%d] \"%s\" by %s\n",
-                       g_cursor + 1, g_track_count, g_tracks[g_cursor].title, g_tracks[g_cursor].artist);
+            if (current == STATE_PLAYING) {
+                extern float platform_audio_get_volume_hud(void);
+                extern void platform_audio_set_volume(float vol);
+                float cur = platform_audio_get_volume_hud();
+                float next_v = cur - 0.05f;
+                if (next_v < 0.0f) next_v = 0.0f;
+                platform_audio_set_volume(next_v);
+                printf("[INPUT] Volume %d%%\n", (int)(next_v * 100.0f + 0.5f));
+            } else {
+                if (g_track_count > 1) {
+                    g_cursor = (g_cursor + 1) % g_track_count;
+                    printf("[INPUT] Navigate DOWN: [%d/%d] \"%s\" by %s\n",
+                           g_cursor + 1, g_track_count, g_tracks[g_cursor].title, g_tracks[g_cursor].artist);
+                }
+            }
+            break;
+
+        case INPUT_LEFT:
+            if (current == STATE_PLAYING) {
+                /* Seek real: reposiciona -10 s sobre la duracion conocida. */
+                int target = (int)audio_get_elapsed_sec() - 10;
+                if (target < 0) target = 0;
+                printf("[INPUT] Seek -10s -> %d:%02d\n", target / 60, target % 60);
+                net_seek_to_sec(target);
+            }
+            break;
+
+        case INPUT_RIGHT:
+            if (current == STATE_PLAYING) {
+                TrackMetadata *cur = app_get_current_track();
+                int total = cur ? (int)cur->duration_sec : 0;
+                int target = (int)audio_get_elapsed_sec() + 10;
+                if (total > 0 && target > total - 1) target = total - 1;
+                if (target < 0) target = 0;
+                printf("[INPUT] Seek +10s -> %d:%02d\n", target / 60, target % 60);
+                net_seek_to_sec(target);
             }
             break;
 

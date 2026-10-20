@@ -1,0 +1,60 @@
+﻿{
+    "tag":  "final2",
+    "started":  "2026-10-20T01:20:54",
+    "build_mtime":  "2026-10-20T01:17:33",
+    "fps":  [
+                60.11,
+                60.09
+            ],
+    "shots":  [
+                  "final2_012054_0.png",
+                  "final2_012054_1.png"
+              ],
+    "tty":  [
+                "[AUDIO] State â†’ BUFFERING",
+                "[UI] Playing [1/6]: \"Trending\" by Dei V",
+                "[STREAM] SUCCESS: Opened progressive FLAC stream (31374 KB buffered)!",
+                "[STREAM] FLAC Format: 48000 Hz | 2 ch | 7600825 frames (158.4 sec)",
+                "[STREAM] Metadata updated: 48000 Hz source/24-bit -\u003e LPCM 48000 Hz/16-bit",
+                "[AUDIO] State â†’ PLAYING",
+                "[RSX] PRESENT frames=570 flip_cb=0",
+                "[NOW PLAYING] â–¶ Trending â€” Dei V [] | DAC: 48000 Hz 16-bit | XDR Buf: 600 KB",
+                "[RSX] PRESENT frames=600 flip_cb=0",
+                "[AUDIO] State â†’ PAUSED",
+                "[INPUT] Playback Paused (â¸)",
+                "[RSX] PRESENT frames=630 flip_cb=0",
+                "[NOW PLAYING] â–¶ Trending â€” Dei V [] | DAC: 48000 Hz 16-bit | XDR Buf: 1432 KB",
+                "[RSX] PRESENT frames=660 flip_cb=0",
+                "[AUDIO] State â†’ PLAYING",
+                "[INPUT] Playback Resumed (â–¶)",
+                "[AUDIO] LPCM DAC 48 kHz stereo active | Pumped: 4 blks/tick | Buffer: 1668 KB",
+                "[RSX] PRESENT frames=690 flip_cb=0",
+                "[NOW PLAYING] â–¶ Trending â€” Dei V [] | DAC: 48000 Hz 16-bit | XDR Buf: 2112 KB",
+                "[RSX] PRESENT frames=720 flip_cb=0",
+                "[AUDIO] LPCM DAC 48 kHz stereo active | Pumped: 4 blks/tick | Buffer: 2324 KB",
+                "[RSX] PRESENT frames=750 flip_cb=0",
+                "[NOW PLAYING] â–¶ Trending â€” Dei V [] | DAC: 48000 Hz 16-bit | XDR Buf: 2752 KB",
+                "[RSX] PRESENT frames=780 flip_cb=0",
+                "[AUDIO] LPCM DAC 48 kHz stereo active | Pumped: 4 blks/tick | Buffer: 2996 KB",
+                "[RSX] PRESENT frames=810 flip_cb=0",
+                "[INPUT] Volume 100%",
+                "[NOW PLAYING] â–¶ Trending â€” Dei V [] | DAC: 48000 Hz 16-bit | XDR Buf: 3472 KB",
+                "[RSX] PRESENT frames=840 flip_cb=0",
+                "[AUDIO] LPCM DAC 48 kHz stereo active | Pumped: 4 blks/tick | Buffer: 3684 KB",
+                "[RSX] PRESENT frames=870 flip_cb=0",
+                "[INPUT] Volume 95%",
+                "[NOW PLAYING] â–¶ Trending â€” Dei V [] | DAC: 48000 Hz 16-bit | XDR Buf: 4208 KB",
+                "[RSX] PRESENT frames=900 flip_cb=0",
+                "[AUDIO] LPCM DAC 48 kHz stereo active | Pumped: 4 blks/tick | Buffer: 4452 KB",
+                "[RSX] PRESENT frames=930 flip_cb=0",
+                "[NOW PLAYING] â–¶ Trending â€” Dei V [] | DAC: 48000 Hz 16-bit | XDR Buf: 4976 KB",
+                "[RSX] PRESENT frames=960 flip_cb=0",
+                "[AUDIO] LPCM DAC 48 kHz stereo active | Pumped: 4 blks/tick | Buffer: 5220 KB",
+                "[RSX] PRESENT frames=990 flip_cb=0"
+            ],
+    "errors":  [
+                   "  Stub PPU Traps: 0"
+               ],
+    "title":  "FPS: 60.09 | Vulkan | 0.0.43-20331 | Monochrome Music [MCRM00001]",
+    "best_colors":  6392
+}

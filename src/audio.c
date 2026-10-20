@@ -208,6 +208,18 @@ void audio_reset_progress(void) {
     memset(s_vis_bands, 0, sizeof(s_vis_bands));
 }
 
+/* Posicion real de reproduccion tras un seek: el worker de stream reabre el
+   decoder en el frame objetivo y aqui se sincroniza el contador que usa la UI. */
+void audio_seek_to_frames(uint64_t frames) {
+    g_total_frames_played = frames;
+    CELL_LWSYNC();
+    memset(s_vis_bands, 0, sizeof(s_vis_bands));
+}
+
+uint64_t audio_get_elapsed_frames(void) {
+    return g_total_frames_played;
+}
+
 uint32_t audio_get_elapsed_sec(void) {
     return (uint32_t)(g_total_frames_played / 48000);
 }

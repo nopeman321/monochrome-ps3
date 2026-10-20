@@ -152,6 +152,10 @@ int  net_search_async_poll(TrackMetadata *out, int max, bool *is_searching);
 int  net_resolve_stream(const char *track_id, char *url_out, size_t url_len);
 int  net_start_stream(const char *url, AudioRingBuffer *rb);
 void net_stop_stream(void);
+/* Seek real: reposiciona la reproduccion en el segundo indicado (0..duracion).
+   El worker reabre el decoder sobre el buffer completo y limpia el ring. */
+void net_seek_to_sec(int seconds);
+int  net_seek_is_pending(void);
 void ui_set_search_query(const char *query);
 const char *ui_get_search_query(void);
 
@@ -166,6 +170,10 @@ float audio_get_progress(uint32_t total_duration_sec);
 void audio_get_visualization(float *out_bands, int count);
 void audio_reset_progress(void);
 void audio_seek_progress(float progress, uint32_t total_duration_sec);
+uint32_t audio_get_elapsed_sec(void);
+/* Fija la posicion real de reproduccion (usado por el seek del worker de stream). */
+void audio_seek_to_frames(uint64_t frames);
+uint64_t audio_get_elapsed_frames(void);
 
 /* ── SPU DSP kernels ─────────────────────────────────────────────── */
 void spu_resample_44_to_48(const int16_t *src, size_t frames_in,

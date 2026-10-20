@@ -134,10 +134,10 @@ typedef struct {
     uint32_t tls;
 } PpuThreadParam;
 
-int ps3_sys_ppu_thread_create(uint64_t *thread_id, void (*entry)(uint64_t), uint64_t arg, int32_t prio, uint64_t stack_size, uint64_t flags, const char *thread_name) {
+int ps3_sys_ppu_thread_create(uint64_t *thread_id, void (*entry)(uint64_t), uint64_t arg, int32_t prio, uint64_t stack_size, uint64_t flags, const char *thread_name, void *tls) {
     PpuThreadParam param;
     param.entry = (uint32_t)(uintptr_t)entry;
-    param.tls   = 0;
+    param.tls   = (uint32_t)(uintptr_t)tls;
 
     return (int)lv2_sc8(52,
                         (uint64_t)(uintptr_t)thread_id,
@@ -157,6 +157,39 @@ int ps3_sys_ppu_thread_join(uint64_t thread_id, uint64_t *val) {
         if (ret2 == 0) return ret2;
     }
     return ret;
+}
+
+int ps3_sys_ppu_thread_start(uint64_t thread_id) {
+    return (int)lv2_sc1(53, thread_id);
+}
+
+/* ── PS3 GameOS LV2 sys_net socket syscalls (700-726) ─────────────── */
+int ps3_sys_net_socket(int domain, int type, int protocol) {
+    return (int)lv2_sc4(713, (uint64_t)(uint32_t)domain, (uint64_t)(uint32_t)type, (uint64_t)(uint32_t)protocol, 0);
+}
+int ps3_sys_net_connect(int s, const void *addr, uint32_t addrlen) {
+    return (int)lv2_sc4(702, (uint64_t)(uint32_t)s, (uint64_t)(uintptr_t)addr, (uint64_t)addrlen, 0);
+}
+int ps3_sys_net_sendto(int s, const void *buf, uint32_t len, int flags, const void *addr, uint32_t addrlen) {
+    return (int)lv2_sc7(710, (uint64_t)(uint32_t)s, (uint64_t)(uintptr_t)buf, (uint64_t)len,
+                        (uint64_t)(uint32_t)flags, (uint64_t)(uintptr_t)addr, (uint64_t)addrlen, 0);
+}
+int ps3_sys_net_recvfrom(int s, void *buf, uint32_t len, int flags, void *addr, uint32_t *addrlen) {
+    return (int)lv2_sc7(707, (uint64_t)(uint32_t)s, (uint64_t)(uintptr_t)buf, (uint64_t)len,
+                        (uint64_t)(uint32_t)flags, (uint64_t)(uintptr_t)addr, (uint64_t)(uintptr_t)addrlen, 0);
+}
+int ps3_sys_net_close(int s) {
+    return (int)lv2_sc1(714, (uint64_t)(uint32_t)s);
+}
+int ps3_sys_net_shutdown(int s, int how) {
+    return (int)lv2_sc4(712, (uint64_t)(uint32_t)s, (uint64_t)(uint32_t)how, 0, 0);
+}
+int ps3_sys_net_setsockopt(int s, int level, int optname, const void *optval, uint32_t optlen) {
+    return (int)lv2_sc7(711, (uint64_t)(uint32_t)s, (uint64_t)(uint32_t)level, (uint64_t)(uint32_t)optname,
+                        (uint64_t)(uintptr_t)optval, (uint64_t)optlen, 0, 0);
+}
+int ps3_sys_memory_allocate(uint32_t size, uint64_t flags, uint32_t *addr) {
+    return (int)lv2_sc4(348, (uint64_t)size, flags, (uint64_t)(uintptr_t)addr, 0);
 }
 
 void ps3_sys_ppu_thread_exit(uint64_t val) {

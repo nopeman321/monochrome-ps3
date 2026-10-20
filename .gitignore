@@ -40,3 +40,7 @@ __pycache__/
 Thumbs.db
 .vscode/
 .idea/
+
+# Evidencia pesada (los PNG y los .md si se versionan)
+evidence/*.raw
+monochrome_pc.exe

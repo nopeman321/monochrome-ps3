@@ -15,7 +15,7 @@ if not exist "%SCRIPT_DIR%build" mkdir "%SCRIPT_DIR%build"
 if not exist "%SCRIPT_DIR%pkg_build\USRDIR" mkdir "%SCRIPT_DIR%pkg_build\USRDIR"
 
 echo [1/4] Compiling Cell PPU PowerPC64 ELF binary...
-"%ZIG%" cc -target powerpc64-linux-musl -O2 "-Wl,-T,%SCRIPT_DIR%link.ld" "-Wl,-z,norelro" "-Wl,-e,ps3_entry_opd" -o "%SCRIPT_DIR%build\EBOOT.ELF" "%SCRIPT_DIR%src\entry.s" "%SCRIPT_DIR%src\main.c" "%SCRIPT_DIR%src\ui.c" "%SCRIPT_DIR%src\audio.c" "%SCRIPT_DIR%src\network.c" "%SCRIPT_DIR%src\cover.c" "%SCRIPT_DIR%src\cJSON.c" "%SCRIPT_DIR%src\flac_decoder.c" "%SCRIPT_DIR%src\platform_ps3.c" "%SCRIPT_DIR%src\lv2.c" -I"%SCRIPT_DIR%include" -I"%SCRIPT_DIR%src"
+"%ZIG%" cc -target powerpc64-linux-musl -O2 "-Wl,-T,%SCRIPT_DIR%link.ld" "-Wl,-z,norelro" "-Wl,-e,ps3_entry_opd" -o "%SCRIPT_DIR%build\EBOOT.ELF" "%SCRIPT_DIR%src\entry.s" "%SCRIPT_DIR%src\main.c" "%SCRIPT_DIR%src\ui.c" "%SCRIPT_DIR%src\audio.c" "%SCRIPT_DIR%src\network.c" "%SCRIPT_DIR%src\cover.c" "%SCRIPT_DIR%src\cJSON.c" "%SCRIPT_DIR%src\flac_decoder.c" "%SCRIPT_DIR%src\http_ps3.c" "%SCRIPT_DIR%src\platform_ps3.c" "%SCRIPT_DIR%src\lv2.c" -I"%SCRIPT_DIR%include" -I"%SCRIPT_DIR%src"
 if errorlevel 1 (
     echo [ERROR] PPU Compilation failed!
     exit /b 1

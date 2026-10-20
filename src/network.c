@@ -185,7 +185,7 @@ int net_search(const char *query, TrackMetadata *out, int max) {
     }
 
     char url[512];
-    snprintf(url, sizeof(url), "https://%s/search?q=%s",
+    snprintf(url, sizeof(url), "http://%s/search?q=%s",
              g_api_hosts[g_current_host], clean_q);
 
     printf("[NET] Querying live API: %s\n", url);
@@ -202,6 +202,9 @@ int net_search(const char *query, TrackMetadata *out, int max) {
 
     /* Fallback to embedded catalogue if offline or network error */
     if (found <= 0) {
+        /* Rotate to next live mirror host for subsequent requests */
+        g_current_host = (g_current_host + 1) % NUM_API_HOSTS;
+
         static const char fallback_mock[] =
             "{\"tracks\":["
             "{\"trackId\":\"155102881689636864\",\"title\":\"Harder, Better, Faster, Stronger\","
@@ -223,11 +226,8 @@ int net_search(const char *query, TrackMetadata *out, int max) {
             "]}";
 
         found = parse_search(fallback_mock, out, max);
-        if (found < 0) {
-            g_current_host = (g_current_host + 1) % NUM_API_HOSTS;
-            return 0;
-        }
-        printf("[NET] Live fetch unavailable, using offline cached catalogue (%d tracks)\n", found);
+        printf("[NET] Live fetch unavailable, rotated to mirror %s, using offline cached catalogue (%d tracks)\n",
+               g_api_hosts[g_current_host], found);
     } else {
         printf("[NET] Live search succeeded: %d tracks found\n", found);
     }
@@ -238,7 +238,7 @@ int net_search(const char *query, TrackMetadata *out, int max) {
 int net_resolve_stream(const char *track_id, char *url_out, size_t url_len) {
     if (!track_id || !url_out) return -1;
     /* Upstream track streaming: GET https://tracks.monochrome.st/track/:id */
-    snprintf(url_out, url_len, "https://%s/track/%s",
+    snprintf(url_out, url_len, "http://%s/track/%s",
              g_api_hosts[g_current_host], track_id);
     printf("[NET] Stream URL → %s\n", url_out);
     return 0;
@@ -254,6 +254,21 @@ typedef struct {
 } StreamWorkerState;
 
 static StreamWorkerState s_worker = {0};
+
+/* ── Seek real ───────────────────────────────────────────────────────
+   El worker reabre el decoder sobre el buffer completo (drflac_open_memory)
+   y se posiciona con drflac_seek_to_pcm_frame. No se falsea el progreso. */
+static volatile int32_t s_seek_req_sec = -1;
+static volatile bool    s_seek_pending = false;
+
+void net_seek_to_sec(int seconds) {
+    if (seconds < 0) seconds = 0;
+    s_seek_req_sec = (int32_t)seconds;
+    s_seek_pending = true;
+    printf("[SEEK] Solicitado -> %d:%02d\n", seconds / 60, seconds % 60);
+}
+
+int net_seek_is_pending(void) { return s_seek_pending ? 1 : 0; }
 
 typedef struct {
     char                 url[512];
@@ -310,10 +325,11 @@ static drflac_bool32 flac_stream_tell(void *pUserData, drflac_int64 *pCursor) {
 }
 
 #if defined(PLATFORM_IS_PS3)
-    #define STREAM_BUFFER_CAPACITY (16 * 1024 * 1024)
+    #define STREAM_BUFFER_CAPACITY (64 * 1024 * 1024)
 #else
     #define STREAM_BUFFER_CAPACITY (48 * 1024 * 1024)
 #endif
+static uint8_t *s_stream_media_buffer = NULL;
 
 static bool on_http_stream_chunk(const uint8_t *chunk, size_t chunk_len, void *userdata) {
     FlacStreamContext *ctx = (FlacStreamContext *)userdata;
@@ -327,6 +343,8 @@ static bool on_http_stream_chunk(const uint8_t *chunk, size_t chunk_len, void *u
     memcpy(ctx->data + ctx->received, chunk, chunk_len);
     CELL_LWSYNC();
     ctx->received += chunk_len;
+    if (((ctx->received - chunk_len) >> 23) != (ctx->received >> 23))
+        printf("[STREAM] Downloaded %zu MB\n", ctx->received >> 20);
     return true;
 }
 
@@ -377,13 +395,21 @@ static void stream_worker_func(void *arg) {
     FlacStreamContext ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.capacity = STREAM_BUFFER_CAPACITY;
-    ctx.data = (uint8_t *)malloc(ctx.capacity);
-    if (!ctx.data) {
-        printf("[STREAM] Error: Failed to allocate initial stream buffer!\n");
-        worker->is_running = false;
-        audio_set_state(PLAYBACK_STOPPED);
-        return;
+    if (!s_stream_media_buffer) {
+#ifdef PLATFORM_IS_PS3
+        s_stream_media_buffer = (uint8_t *)platform_alloc_stream_buffer(STREAM_BUFFER_CAPACITY);
+#else
+        s_stream_media_buffer = (uint8_t *)malloc(STREAM_BUFFER_CAPACITY);
+#endif
+        if (!s_stream_media_buffer) {
+            printf("[STREAM] Error: XDR allocation of %zu MB failed!\n", ctx.capacity / (1024*1024));
+            worker->is_running = false;
+            audio_set_state(PLAYBACK_STOPPED);
+            return;
+        }
+        printf("[STREAM] XDR media buffer allocated: %zu MB\n", ctx.capacity / (1024*1024));
     }
+    ctx.data = s_stream_media_buffer;
 
     snprintf(ctx.url, sizeof(ctx.url), "%s", worker->url);
 
@@ -408,12 +434,13 @@ static void stream_worker_func(void *arg) {
         if (c_size > 1024) {
             PlatformFileHandle cf = platform_file_open_read(cache_path);
             if (cf) {
-                uint8_t *cached_data = (uint8_t *)malloc(c_size);
+                uint8_t *cached_data = (c_size <= STREAM_BUFFER_CAPACITY) ? s_stream_media_buffer : NULL;
                 if (cached_data) {
                     size_t n_read = platform_file_read(cf, cached_data, c_size);
                     platform_file_close(cf);
                     if (n_read == c_size) {
-                        free(ctx.data);
+                        /* ctx.data ya apunta a s_stream_media_buffer: NO liberarlo
+                           (en PC seria use-after-free; en PS3 free() es no-op). */
                         ctx.data = cached_data;
                         ctx.capacity = c_size;
                         ctx.received = c_size;
@@ -480,6 +507,20 @@ static void stream_worker_func(void *arg) {
            sample_rate, (int)channels, (unsigned long long)total_frames,
            (sample_rate > 0) ? (float)total_frames / (float)sample_rate : 0.0f);
 
+    /* El catalogo solo estima 44.1/96 kHz: publicar el formato real del stream.
+       El pipeline decodifica a LPCM signed 16-bit (drflac_read_pcm_frames_s16),
+       asi que el DAC siempre entrega 16-bit aunque el FLAC origen sea 24-bit. */
+    {
+        TrackMetadata *now = app_get_current_track();
+        if (now) {
+            if (sample_rate > 0) now->sample_rate = sample_rate;
+            now->bit_depth = 16; /* formato de salida real del pipeline LPCM */
+            now->is_hi_res = (sample_rate > 48000u || pFlac->bitsPerSample > 16u);
+        }
+        printf("[STREAM] Metadata updated: %u Hz source/%u-bit -> LPCM %u Hz/16-bit\n",
+               (unsigned)sample_rate, (unsigned)pFlac->bitsPerSample, (unsigned)sample_rate);
+    }
+
     #define DECODE_CHUNK_FRAMES 2048
     int16_t raw_pcm[DECODE_CHUNK_FRAMES * 2];
     int16_t resampled_pcm[DECODE_CHUNK_FRAMES * 2 * 2];
@@ -491,6 +532,46 @@ static void stream_worker_func(void *arg) {
 
     /* 4. Progressive decode loop */
     while (!worker->abort_requested && !ctx.abort) {
+        /* ── Seek real: reabrir el decoder sobre el buffer completo ── */
+        if (s_seek_pending) {
+            if (!ctx.eof) {
+                static bool seek_warned = false;
+                if (!seek_warned) {
+                    seek_warned = true;
+                    printf("[SEEK] Buffer %zu MB; se aplicara al completar la descarga\n",
+                           ctx.received >> 20);
+                }
+            } else {
+                int32_t target_sec = s_seek_req_sec;
+                if (target_sec < 0) target_sec = 0;
+                drflac_uint64 target_frame = (sample_rate > 0)
+                    ? (drflac_uint64)target_sec * (drflac_uint64)sample_rate : 0;
+                if (total_frames > 0 && target_frame >= total_frames) target_frame = total_frames - 1;
+
+                drflac *seek_flac = drflac_open_memory(ctx.data, ctx.received, NULL);
+                if (seek_flac && drflac_seek_to_pcm_frame(seek_flac, target_frame)) {
+                    drflac_close(pFlac);
+                    pFlac = seek_flac;
+                    if (worker->rb) {
+                        worker->rb->stream_eof = false;
+                        CELL_LWSYNC();
+                        worker->rb->write_pos = worker->rb->read_pos; /* descarta lo pendiente */
+                    }
+                    total_decoded_frames = (size_t)target_frame;
+                    audio_seek_to_frames((uint64_t)target_frame);
+                    printf("[SEEK] -> %d:%02d (frame %llu/%llu)\n",
+                           target_sec / 60, target_sec % 60,
+                           (unsigned long long)target_frame,
+                           (unsigned long long)total_frames);
+                } else {
+                    if (seek_flac) drflac_close(seek_flac);
+                    printf("[SEEK] El decoder no pudo posicionarse; se mantiene la posicion\n");
+                }
+                s_seek_pending = false;
+                s_seek_req_sec = -1;
+            }
+        }
+
         /* Check ring buffer space before decoding */
         size_t max_bytes = 2500 * 2 * sizeof(int16_t);
         if (ring_free(worker->rb) < max_bytes) {

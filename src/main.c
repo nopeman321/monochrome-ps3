@@ -91,7 +91,14 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    /* Performance tracking / loop timing */
+    uint64_t last_perf_time = platform_get_time_ms();
+    uint32_t loop_count = 0;
+    uint64_t accumulated_ms = 0;
+
     while (g_running) {
+        uint64_t loop_start = platform_get_time_ms();
+
         /* 1 ── Read input (DualShock 3 on PS3 / Keyboard on PC) */
         g_state = pad_update(g_state);
 
@@ -102,8 +109,26 @@ int main(int argc, char *argv[]) {
         g_progress = audio_get_progress(g_now.duration_sec);
         gfx_render(g_state, &g_now, audio_get_state(), g_progress);
 
-        /* 4 ── 60 FPS pacing */
-        platform_sleep_ms(16);
+        uint64_t loop_end = platform_get_time_ms();
+        uint64_t elapsed = loop_end - loop_start;
+        accumulated_ms += elapsed;
+        loop_count++;
+
+        /* Every 120 iterations, output [PERF] metrics for objective verification */
+        if (loop_count >= 120) {
+            uint64_t total_time = loop_end - last_perf_time;
+            double loops_per_sec = (total_time > 0) ? ((double)loop_count * 1000.0 / (double)total_time) : 60.0;
+            double avg_ms = (double)accumulated_ms / (double)loop_count;
+            printf("[PERF] loops/s=%.1f avg_ms=%.2f\n", loops_per_sec, avg_ms);
+            last_perf_time = loop_end;
+            loop_count = 0;
+            accumulated_ms = 0;
+        }
+
+        /* 4 ── Adaptive pacing: yield only if frame took less than 16ms */
+        if (elapsed < 16) {
+            platform_sleep_ms(16 - (uint32_t)elapsed);
+        }
     }
 
     app_shutdown();

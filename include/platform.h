@@ -54,6 +54,7 @@ int  platform_ensure_cache_dirs(void);
 bool platform_file_exists(const char *path);
 PlatformFileHandle platform_file_open_read(const char *path);
 PlatformFileHandle platform_file_open_write(const char *path);
+void *platform_alloc_stream_buffer(size_t size);
 size_t platform_file_read(PlatformFileHandle handle, void *buffer, size_t bytes);
 size_t platform_file_write(PlatformFileHandle handle, const void *buffer, size_t bytes);
 void   platform_file_close(PlatformFileHandle handle);

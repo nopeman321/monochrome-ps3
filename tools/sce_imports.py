@@ -56,6 +56,8 @@ IMPORTS = [
         "cellGcmResetFlipStatus",
         "cellGcmSetFlipHandler",
         "cellGcmGetLastFlipTime",
+        "cellGcmSetWaitFlip",
+        "cellGcmGetConfiguration",
     ]),
     # cellPad* functions live in retail libsys_io.sprx; RPCS3 registers them
     # under the module name "sys_io" (REG_FUNC(sys_io, cellPadInit)).  Using

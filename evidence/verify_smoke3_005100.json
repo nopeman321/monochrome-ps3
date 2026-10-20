@@ -1,0 +1,32 @@
+﻿{
+    "tag":  "smoke3",
+    "started":  "2026-10-20T00:51:00",
+    "build_mtime":  "2026-10-20T00:23:42",
+    "fps":  [
+                1.4,
+                1.4,
+                49.74
+            ],
+    "shots":  [
+                  "smoke3_005100_0.png",
+                  "smoke3_005100_1.png",
+                  "smoke3_005100_2.png"
+              ],
+    "tty":  [
+                "[RSX] local_base=0xc0000000 size=0x01b00000 io=0x0f900000",
+                "[RSX] buf0 ea=0xc0000000 offset=0x00000000",
+                "[HTTP] 200 len=-1 chunked=0 http://tracks.monochrome.st/search?q=trending",
+                "[RSX] PRESENT frames=30 flip_cb=0",
+                "[RSX] PRESENT frames=60 flip_cb=0",
+                "[RSX] PRESENT frames=90 flip_cb=0",
+                "[RSX] PRESENT frames=120 flip_cb=0",
+                "[RSX] PRESENT frames=150 flip_cb=0",
+                "[RSX] PRESENT frames=180 flip_cb=0",
+                "[RSX] PRESENT frames=210 flip_cb=0",
+                "[RSX] PRESENT frames=240 flip_cb=0"
+            ],
+    "errors":  [
+                   "  Stub PPU Traps: 0"
+               ],
+    "title":  "FPS: 49.74 | Vulkan | 0.0.43-20331 | Monochrome Music [MCRM00001]"
+}

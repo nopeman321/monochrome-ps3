@@ -1,0 +1,56 @@
+﻿{
+    "tag":  "cachefix",
+    "started":  "2026-10-20T01:13:30",
+    "build_mtime":  "2026-10-20T01:13:29",
+    "fps":  [
+                54.6,
+                53.46
+            ],
+    "shots":  [
+                  "cachefix_011330_0.png",
+                  "cachefix_011330_1.png"
+              ],
+    "tty":  [
+                "[RSX] local_base=0xc0000000 size=0x01b00000 io=0x0f900000",
+                "[RSX] buf0 ea=0xc0000000 offset=0x00000000",
+                "[HTTP] 200 len=-1 chunked=0 http://tracks.monochrome.st/search?q=trending",
+                "[RSX] PRESENT frames=30 flip_cb=0",
+                "[RSX] PRESENT frames=60 flip_cb=0",
+                "[RSX] PRESENT frames=90 flip_cb=0",
+                "[RSX] PRESENT frames=120 flip_cb=0",
+                "[RSX] PRESENT frames=150 flip_cb=0",
+                "[RSX] PRESENT frames=180 flip_cb=0",
+                "[RSX] PRESENT frames=210 flip_cb=0",
+                "[RSX] PRESENT frames=240 flip_cb=0",
+                "[RSX] PRESENT frames=270 flip_cb=0",
+                "[RSX] PRESENT frames=300 flip_cb=0",
+                "[RSX] PRESENT frames=330 flip_cb=0",
+                "[RSX] PRESENT frames=360 flip_cb=0",
+                "[RSX] PRESENT frames=390 flip_cb=0",
+                "[RSX] PRESENT frames=420 flip_cb=0",
+                "[RSX] PRESENT frames=450 flip_cb=0",
+                "[AUDIO] State â†’ BUFFERING",
+                "[UI] Playing [1/6]: \"Trending\" by Dei V",
+                "[NOW PLAYING] â–¶ Trending â€” Dei V [] | DAC: 44100 Hz 16-bit | XDR Buf: 0 KB",
+                "[RSX] PRESENT frames=480 flip_cb=0",
+                "[HTTP] 200 len=142775 chunked=0 http://tracks.monochrome.st/proxy/mi/191250002612965376-1A01.jpg",
+                "[HTTP] 200 len=32127641 chunked=0 http://tracks.monochrome.st/track/192484768301232128",
+                "[RSX] PRESENT frames=510 flip_cb=0",
+                "[NOW PLAYING] â–¶ Trending â€” Dei V [] | DAC: 44100 Hz 16-bit | XDR Buf: 0 KB",
+                "[RSX] PRESENT frames=540 flip_cb=0",
+                "[RSX] PRESENT frames=570 flip_cb=0",
+                "[NOW PLAYING] â–¶ Trending â€” Dei V [] | DAC: 44100 Hz 16-bit | XDR Buf: 0 KB",
+                "[RSX] PRESENT frames=600 flip_cb=0",
+                "[STREAM] SUCCESS: Opened progressive FLAC stream (86 KB buffered)!",
+                "[STREAM] FLAC Format: 48000 Hz | 2 ch | 7600825 frames (158.4 sec)",
+                "[AUDIO] State â†’ PLAYING",
+                "[RSX] PRESENT frames=630 flip_cb=0"
+            ],
+    "errors":  [
+                   "  Stub PPU Traps: 0",
+                   "·E 0:00:13.738655 {PPU[0x1000003] Thread (monochrome_stream) [0x0101c670]} sys_fs: \u0027sys_fs_stat\u0027 failed with 0x80010006 : CELL_ENOENT, “/dev_hdd0/game/MCRM00001/USRDIR/cache/covers/192484768301232128.bin” [1]",
+                   "·E 0:00:13.802878 {PPU[0x1000005] Thread (monochrome_stream) [0x01018a88]} sys_fs: \u0027sys_fs_stat\u0027 failed with 0x80010006 : CELL_ENOENT, “/dev_hdd0/game/MCRM00001/USRDIR/cache/tracks/192484768301232128.flac” [1]"
+               ],
+    "title":  "FPS: 53.46 | Vulkan | 0.0.43-20331 | Monochrome Music [MCRM00001]",
+    "best_colors":  6140
+}

@@ -63,7 +63,7 @@ Video:
   Renderer: Vulkan
   Resolution: 720x480
   Aspect ratio: 16:9
-  VSync Mode: Enabled
+  VSync Mode: Full
   Frame limit: 60
   Multithreaded RSX: true
   Write Color Buffers: true
@@ -103,7 +103,7 @@ def configure():
             ("PSN status: Disconnected", "PSN status: Simulated"),
             ("UPNP Enabled: true", "UPNP Enabled: false"),
             ("Multithreaded RSX: false", "Multithreaded RSX: true"),
-            ("VSync Mode: Disabled", "VSync Mode: Enabled"),
+            ("VSync Mode: Disabled", "VSync Mode: Full"),
             ("Write Color Buffers: false", "Write Color Buffers: true"),
         ]
 
