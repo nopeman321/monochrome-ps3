@@ -85,8 +85,13 @@ try {
   Get-Process -Name rpcs3 -ErrorAction SilentlyContinue | Stop-Process -Force
   Start-Sleep -Seconds 2
   $p = Start-Process -FilePath (Join-Path $rpcs3 'rpcs3.exe') -ArgumentList 'dev_hdd0/game/MCRM00001/USRDIR/EBOOT.BIN' -WorkingDirectory $rpcs3 -PassThru -WindowStyle Normal
-  Start-Sleep -Seconds 4
-  $hwnd = [VR]::Find([uint32]$p.Id, 'Monochrome Music')
+  # El primer arranque compila PPU/SPU y tarda: reintentar la busqueda de ventana.
+  $hwnd = [IntPtr]::Zero
+  for ($w = 0; $w -lt 30 -and $hwnd -eq [IntPtr]::Zero; $w++) {
+    Start-Sleep -Milliseconds 800
+    if ($p.HasExited) { break }
+    $hwnd = [VR]::Find([uint32]$p.Id, 'Monochrome Music')
+  }
   if ($hwnd -eq [IntPtr]::Zero) { throw 'no se encontro la ventana Monochrome Music' }
   Start-Sleep -Milliseconds $WaitMs
 

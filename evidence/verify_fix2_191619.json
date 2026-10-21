@@ -1,0 +1,48 @@
+﻿{
+    "tag":  "fix2",
+    "started":  "2026-10-20T19:16:19",
+    "build_mtime":  "2026-10-20T19:15:45",
+    "fps":  [
+                60.02,
+                59.95,
+                60.09
+            ],
+    "shots":  [
+                  "fix2_191619_0.png",
+                  "fix2_191619_1.png",
+                  "fix2_191619_2.png"
+              ],
+    "tty":  [
+                "[RSX] local_base=0xc0000000 size=0x01b00000 io=0x0f900000",
+                "[RSX] buf0 ea=0xc0000000 offset=0x00000000",
+                "[HTTP] 200 len=-1 chunked=0 http://tracks.monochrome.st/search?q=trending",
+                "[RSX] PRESENT frames=30 flip_cb=0",
+                "[RSX] PRESENT frames=60 flip_cb=0",
+                "[RSX] PRESENT frames=90 flip_cb=0",
+                "[RSX] PRESENT frames=120 flip_cb=0",
+                "[RSX] PRESENT frames=150 flip_cb=0",
+                "[RSX] PRESENT frames=180 flip_cb=0",
+                "[RSX] PRESENT frames=210 flip_cb=0",
+                "[RSX] PRESENT frames=240 flip_cb=0",
+                "[RSX] PRESENT frames=270 flip_cb=0",
+                "[RSX] PRESENT frames=300 flip_cb=0",
+                "[RSX] PRESENT frames=330 flip_cb=0",
+                "[RSX] PRESENT frames=360 flip_cb=0",
+                "[RSX] PRESENT frames=390 flip_cb=0",
+                "[RSX] PRESENT frames=420 flip_cb=0",
+                "[RSX] PRESENT frames=450 flip_cb=0",
+                "[RSX] PRESENT frames=480 flip_cb=0",
+                "[RSX] PRESENT frames=510 flip_cb=0",
+                "[RSX] PRESENT frames=540 flip_cb=0",
+                "[RSX] PRESENT frames=570 flip_cb=0",
+                "[RSX] PRESENT frames=600 flip_cb=0",
+                "[RSX] PRESENT frames=630 flip_cb=0",
+                "[RSX] PRESENT frames=660 flip_cb=0",
+                "[RSX] PRESENT frames=690 flip_cb=0"
+            ],
+    "errors":  [
+                   "  Stub PPU Traps: 0"
+               ],
+    "title":  "FPS: 60.09 | Vulkan | 0.0.43-20331 | Monochrome Music [MCRM00001]",
+    "best_colors":  2399
+}

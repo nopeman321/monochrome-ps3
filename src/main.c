@@ -95,19 +95,28 @@ int main(int argc, char *argv[]) {
     uint64_t last_perf_time = platform_get_time_ms();
     uint32_t loop_count = 0;
     uint64_t accumulated_ms = 0;
+    /* Desglose por seccion (se imprime junto a [PERF] cada 120 frames) */
+    uint64_t acc_input = 0, acc_audio = 0, acc_render = 0;
 
     while (g_running) {
         uint64_t loop_start = platform_get_time_ms();
 
         /* 1 ── Read input (DualShock 3 on PS3 / Keyboard on PC) */
         g_state = pad_update(g_state);
+        uint64_t t_input = platform_get_time_ms();
 
         /* 2 ── Pump decoded audio to hardware DAC (waveOut / sys_audio_out) */
         audio_tick();
+        uint64_t t_audio = platform_get_time_ms();
 
         /* 3 ── Render frame and VSync-flip */
         g_progress = audio_get_progress(g_now.duration_sec);
         gfx_render(g_state, &g_now, audio_get_state(), g_progress);
+        uint64_t t_render = platform_get_time_ms();
+
+        acc_input  += (t_input  - loop_start);
+        acc_audio  += (t_audio  - t_input);
+        acc_render += (t_render - t_audio);
 
         uint64_t loop_end = platform_get_time_ms();
         uint64_t elapsed = loop_end - loop_start;
@@ -119,10 +128,15 @@ int main(int argc, char *argv[]) {
             uint64_t total_time = loop_end - last_perf_time;
             double loops_per_sec = (total_time > 0) ? ((double)loop_count * 1000.0 / (double)total_time) : 60.0;
             double avg_ms = (double)accumulated_ms / (double)loop_count;
-            printf("[PERF] loops/s=%.1f avg_ms=%.2f\n", loops_per_sec, avg_ms);
+            printf("[PERF] loops/s=%.1f avg_ms=%.2f | in=%.2f au=%.2f rd=%.2f\n",
+                   loops_per_sec, avg_ms,
+                   (double)acc_input / (double)loop_count,
+                   (double)acc_audio / (double)loop_count,
+                   (double)acc_render / (double)loop_count);
             last_perf_time = loop_end;
             loop_count = 0;
             accumulated_ms = 0;
+            acc_input = acc_audio = acc_render = 0;
         }
 
         /* 4 ── Adaptive pacing: yield only if frame took less than 16ms */

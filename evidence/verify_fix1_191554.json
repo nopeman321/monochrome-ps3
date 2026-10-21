@@ -1,0 +1,18 @@
+﻿{
+    "tag":  "fix1",
+    "started":  "2026-10-20T19:15:54",
+    "build_mtime":  "2026-10-20T19:15:45",
+    "fps":  [
+
+            ],
+    "shots":  [
+
+              ],
+    "tty":  [
+
+            ],
+    "errors":  [
+                   "EXCEPTION: no se encontro la ventana Monochrome Music"
+               ],
+    "title":  ""
+}

@@ -4,7 +4,8 @@ MONOCHROME PS3 — RPCS3 Automated Configuration Tool
 Configures RPCS3 settings optimally for Monochrome Music (MCRM00001):
 - Low-latency uncompressed LPCM audio buffer (100ms, no sample-skipping, no time-stretching)
 - Internet connection enabled for streaming API (sys_net HTTP / TLS)
-- RSX Vulkan 1280x720 60Hz double-buffered VSync with Write Color Buffers
+- RSX Vulkan 720x480 60Hz double-buffered VSync, Bilinear scaling (sin FSR) y
+  Write Color Buffers desactivado (framebuffer 2D por software: no hace falta)
 - Persistent input polling and DualShock 3 / Keyboard mapping
 """
 
@@ -66,13 +67,13 @@ Video:
   VSync Mode: Full
   Frame limit: 60
   Multithreaded RSX: true
-  Write Color Buffers: true
+  Write Color Buffers: false
   Read Color Buffers: false
   Strict Rendering Mode: false
   Shader Mode: Async Recompiler (multi-threaded)
   Shader Precision: High
   Use full RGB output range: true
-  Output Scaling Mode: FidelityFX Super Resolution
+  Output Scaling Mode: Bilinear
 """
 
 def configure():
@@ -104,7 +105,13 @@ def configure():
             ("UPNP Enabled: true", "UPNP Enabled: false"),
             ("Multithreaded RSX: false", "Multithreaded RSX: true"),
             ("VSync Mode: Disabled", "VSync Mode: Full"),
-            ("Write Color Buffers: false", "Write Color Buffers: true"),
+            # Write Color Buffers solo hace falta para juegos que renderizan por
+            # RSX; aqui el framebuffer es 2D por software, asi que activarlo solo
+            # anade sincronizacion GPU->CPU en cada flip (stutter en GPU integrada).
+            ("Write Color Buffers: true", "Write Color Buffers: false"),
+            # FSR son pasadas de compute shaders por frame: en una Intel UHD de
+            # 15W satura la memoria compartida y provoca tirones. Bilinear es gratis.
+            ("Output Scaling Mode: FidelityFX Super Resolution", "Output Scaling Mode: Bilinear"),
         ]
 
         for old, new in replacements:

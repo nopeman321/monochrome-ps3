@@ -23,6 +23,15 @@ static PlaybackState    g_pstate = PLAYBACK_STOPPED;
 #define AUDIO_BLOCK_FRAMES  256
 #define AUDIO_BLOCK_BYTES   (AUDIO_BLOCK_FRAMES * 2 * sizeof(int16_t))
 
+/* PS3: huecos libres en el anillo DMA de cellAudio (implementado en
+   platform_ps3.c). En PC el simbolo no existe y el enlace debil nos deja
+   bombear un bloque por tick, igual que antes. */
+extern uint32_t platform_audio_free_blocks(void) __attribute__((weak));
+static inline uint32_t audio_dma_free_blocks(void) {
+    if (platform_audio_free_blocks) return platform_audio_free_blocks();
+    return 1u;
+}
+
 static int16_t g_pcm_block[AUDIO_BLOCK_FRAMES * 2];  /* L R L R … */
 
 /* ── Init / Shutdown ─────────────────────────────────────────────── */
@@ -127,23 +136,26 @@ void audio_tick(void) {
         return;
     }
 
+    /* Solo escribimos los bloques que el anillo DMA acepta SIN bloquear.
+       Antes se bombeaban 4 bloques fijos (21.3 ms) por vuelta mientras el
+       fotograma duraba 16.6 ms: el anillo se llenaba y platform_audio_write
+       esperaba hasta 10 ms por bloque, congelando la UI a ~46 Hz. */
+    const uint32_t free_blocks = audio_dma_free_blocks();
     int blocks_pumped = 0;
-    while (blocks_pumped < 4) {
+    bool vis_done = false;
+
+    while (blocks_pumped < (int)free_blocks) {
         size_t avail = ring_available(g_rb);
         if (avail < AUDIO_BLOCK_BYTES) {
-            if (blocks_pumped == 0) {
-                for (int b = 0; b < VIS_BANDS; b++) {
-                    s_vis_bands[b] *= 0.82f;
-                }
-                if (g_rb->stream_eof) {
-                    audio_set_state(PLAYBACK_STOPPED);
-                    return;
-                }
-                /* Buffer underrun / buffering: output silence to keep hardware DAC active without clicks */
-                memset(g_pcm_block, 0, sizeof(g_pcm_block));
-                platform_audio_write(g_pcm_block, AUDIO_BLOCK_FRAMES);
+            if (g_rb->stream_eof) {
+                if (blocks_pumped == 0) audio_set_state(PLAYBACK_STOPPED);
+                break;
             }
-            break;
+            /* Sin datos suficientes: mantenemos el DAC activo con silencio */
+            memset(g_pcm_block, 0, sizeof(g_pcm_block));
+            platform_audio_write(g_pcm_block, AUDIO_BLOCK_FRAMES);
+            blocks_pumped++;
+            continue;
         }
 
         /* Fast contiguous read with wraparound handling */
@@ -163,7 +175,8 @@ void audio_tick(void) {
         g_rb->read_pos = r;
 
         /* Compute 16-band frequency spectrum for UI visualizer via differential filterbank */
-        if (blocks_pumped == 0) {
+        if (!vis_done) {
+            vis_done = true;
             for (int b = 0; b < VIS_BANDS; b++) {
                 int stride = 1 + (b * b * (AUDIO_BLOCK_FRAMES / 2)) / (VIS_BANDS * VIS_BANDS);
                 if (stride < 1) stride = 1;
@@ -195,11 +208,18 @@ void audio_tick(void) {
         blocks_pumped++;
     }
 
+    /* Sin datos reales este tick: el visualizador decae suavemente */
+    if (!vis_done) {
+        for (int b = 0; b < VIS_BANDS; b++) {
+            s_vis_bands[b] *= 0.82f;
+        }
+    }
+
     static uint32_t s_audio_ticks = 0;
     s_audio_ticks++;
-    if (s_audio_ticks % 60 == 0) {
-        printf("[AUDIO] LPCM DAC 48 kHz stereo active | Pumped: %d blks/tick | Buffer: %zu KB\n",
-               blocks_pumped, ring_available(g_rb) / 1024);
+    if (s_audio_ticks % 120 == 0) {
+        printf("[AUDIO] LPCM DAC 48 kHz stereo active | Pumped: %d blks/tick | DMA free: %u | Ring: %zu KB\n",
+               blocks_pumped, (unsigned)free_blocks, ring_available(g_rb) / 1024);
     }
 }
 

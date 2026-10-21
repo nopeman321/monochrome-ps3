@@ -566,15 +566,58 @@ static const uint8_t FONT8[95][8] = {
 #define COL_CARD    0xFF141824u
 
 /* - Pixel / rect / text helpers - */
+
+/* Suciedad por filas: copiar 1.38 MB a memoria local RSX en cada frame costaba
+   ~7 ms medidos en RPCS3. Solo es necesario copiar las filas que cambiaron. */
+static uint8_t s_dirty[NUM_BUFS][FB_HEIGHT];
+static uint8_t s_drawn[FB_HEIGHT];       /* filas tocadas en el frame actual */
+static uint8_t s_prev_drawn[FB_HEIGHT];  /* filas tocadas en el frame anterior */
+static int     s_fb_cleared = 0;
+
+static inline void fb_mark_copy_row(int y) {
+    if ((unsigned)y < FB_HEIGHT) {
+        s_dirty[0][y] = 1;
+        s_dirty[1][y] = 1;
+    }
+}
+
+static inline void fb_mark_row(int y) {
+    fb_mark_copy_row(y);
+    if ((unsigned)y < FB_HEIGHT) s_drawn[y] = 1;   /* habra que limpiarla */
+}
+
+static inline void fb_mark(int y0, int y1) {
+    if (y0 < 0) y0 = 0;
+    if (y1 > FB_HEIGHT - 1) y1 = FB_HEIGHT - 1;
+    for (int y = y0; y <= y1; y++) fb_mark_row(y);
+}
+
 static inline void fb_px(int x, int y, uint32_t c) {
-    if ((unsigned)x < FB_WIDTH && (unsigned)y < FB_HEIGHT)
+    if ((unsigned)x < FB_WIDTH && (unsigned)y < FB_HEIGHT) {
         s_fb[y][x] = c;
+        fb_mark_row(y);
+    }
 }
 
 static void fb_rect(int x, int y, int w, int h, uint32_t c) {
-    for (int r = y; r < y + h; r++)
-        for (int cx = x; cx < x + w; cx++)
-            fb_px(cx, r, c);
+    if (w <= 0 || h <= 0) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > FB_WIDTH)  w = FB_WIDTH - x;
+    if (y + h > FB_HEIGHT) h = FB_HEIGHT - y;
+    if (w <= 0 || h <= 0) return;
+
+    const uint64_t pair = ((uint64_t)c << 32) | (uint64_t)c;
+    const int x_end = x + w;
+    for (int r = y; r < y + h; r++) {
+        uint32_t *row = s_fb[r];
+        int cx = x;
+        if (cx & 1) row[cx++] = c;                    /* alinear a 8 bytes */
+        for (; cx + 1 < x_end; cx += 2)
+            *(uint64_t *)&row[cx] = pair;
+        if (cx < x_end) row[cx] = c;
+    }
+    fb_mark(y, y + h - 1);
 }
 
 static void fb_glyph(int x, int y, unsigned char ch, uint32_t fg, int sc) {
@@ -796,10 +839,20 @@ static void rsx_wait_flip(void) {
 
 static void rsx_flip(void) {
     if (!s_gfx_ready) return;
-    static unsigned s_flip_div = 0;
-    if ((s_flip_div++ & 1u) != 0) return;   /* present at ~30 Hz */
-    if (s_rsx[curr_fb].ptr)
-        memcpy(s_rsx[curr_fb].ptr, s_fb, FB_SIZE);
+    /* Presentamos CADA fotograma (sin divisor: el divisor antiguo descartaba
+       la mitad y generaba judder sobre VSync de 60 Hz).
+       Copiamos solo las filas sucias del buffer que toca presentar: el memcpy
+       completo de 1.38 MB costaba ~7 ms por frame en RPCS3. */
+    if (s_rsx[curr_fb].ptr) {
+        uint8_t *dr = s_dirty[curr_fb];
+        uint32_t *dst_fb = s_rsx[curr_fb].ptr;
+        for (int y = 0; y < FB_HEIGHT; y++) {
+            if (dr[y]) {
+                memcpy(dst_fb + (size_t)y * FB_WIDTH, s_fb[y], FB_PITCH);
+                dr[y] = 0;
+            }
+        }
+    }
     if (gcmSetFlip && s_gcm) gcmSetFlip(s_gcm, curr_fb);
     if (gcmSetWaitFlip && s_gcm) gcmSetWaitFlip(s_gcm);
     if (rsxFlushBuffer && s_gcm) rsxFlushBuffer(s_gcm);
@@ -966,12 +1019,30 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
         }
     }
 
-    /* - Clear - */
+    /* - Clear -
+       Solo limpiamos las filas que pintamos en el frame anterior (y la
+       pantalla entera la primera vez). Repintar las 480 filas cada frame
+       costaba CPU y ensuciaba todo el framebuffer, forzando a copiarlo
+       completo a la memoria local RSX. */
     {
-        uint64_t bg2 = ((uint64_t)COL_BG << 32) | (uint64_t)COL_BG;
-        for (int y = 0; y < FB_HEIGHT; y++) {
-            uint64_t *row = (uint64_t *)s_fb[y];
-            for (int x = 0; x < FB_WIDTH / 2; x++) row[x] = bg2;
+        const uint64_t bg2 = ((uint64_t)COL_BG << 32) | (uint64_t)COL_BG;
+        if (!s_fb_cleared) {
+            for (int y = 0; y < FB_HEIGHT; y++) {
+                uint64_t *row = (uint64_t *)s_fb[y];
+                for (int x = 0; x < FB_WIDTH / 2; x++) row[x] = bg2;
+            }
+            memset(s_drawn, 1, sizeof(s_drawn));
+            fb_mark(0, FB_HEIGHT - 1);
+            s_fb_cleared = 1;
+        } else {
+            memset(s_drawn, 0, sizeof(s_drawn));
+            for (int y = 0; y < FB_HEIGHT; y++) {
+                if (s_prev_drawn[y]) {
+                    uint64_t *row = (uint64_t *)s_fb[y];
+                    for (int x = 0; x < FB_WIDTH / 2; x++) row[x] = bg2;
+                    fb_mark_copy_row(y);   /* cambio: hay que copiarla, pero ya no esta "dibujada" */
+                }
+            }
         }
     }
 
@@ -1002,7 +1073,9 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
 
     if (track && track->title[0]) {
         const char *icon = (pstate == (int)PLAYBACK_PLAYING) ? "> " : "|| ";
-        char ttl[64]; trunc(ttl, sizeof(ttl), track->title, 20);
+        /* 15 chars a escala 2 = 240 px desde x=100: termina en 340, antes del
+           visualizador (x=360). Con 20 se solapaba con las barras. */
+        char ttl[64]; trunc(ttl, sizeof(ttl), track->title, 15);
         fb_str(68, 52, icon, COL_GREEN, 2);
         fb_str(68 + (int)strlen(icon)*16, 52, ttl, COL_FG, 2);
 
@@ -1183,6 +1256,7 @@ void platform_gfx_render(int state, const struct TrackMetadata *track,
     }
 
     /* - Flush to RSX - */
+    memcpy(s_prev_drawn, s_drawn, sizeof(s_drawn));   /* para el clear del proximo frame */
     rsx_flip();
 
     static uint32_t s_frames = 0;
@@ -1340,25 +1414,31 @@ void platform_audio_shutdown(void) {
     tty("[PS3] cellAudio released.\n");
 }
 
+/* Cuantos bloques puede aceptar el anillo DMA de cellAudio sin bloquear.
+   Bloques "en vuelo" = distancia entre el puntero de escritura y el que esta
+   leyendo el DMA. Dejamos siempre 1 bloque de margen para no escribir nunca
+   el bloque que el hardware esta consumiendo en este instante. */
+uint32_t platform_audio_free_blocks(void) {
+    if (!s_aready || !s_adma || !s_anblk) return 0;
+    uint64_t hw_read_idx = s_aridx ? *s_aridx : 0;
+    uint32_t hw_block = (uint32_t)(hw_read_idx % s_anblk);
+    uint32_t wr_block = (uint32_t)(s_audio_write_block % s_anblk);
+    uint32_t in_flight = (wr_block + s_anblk - hw_block) % s_anblk;
+    if (in_flight >= s_anblk) return 0;
+    return s_anblk - 1u - in_flight;
+}
+
 void platform_audio_write(const int16_t *samples, size_t frames) {
     if (!s_aready || !s_adma || !frames) return;
 
     size_t done = 0;
     while (done < frames) {
-        /* Read current hardware consumed block counter from EA (big-endian PPU64) */
-        uint64_t hw_read_idx = s_aridx ? *s_aridx : 0;
-        uint32_t hw_read_block = (uint32_t)(hw_read_idx % s_anblk);
-
-        /* Only write when target block is not currently being read by hardware DMA */
-        int timeout_us = 10000;
-        while ((s_audio_write_block % s_anblk) == hw_read_block && timeout_us > 0) {
-            ps3_sys_timer_usleep(200);
-            timeout_us -= 200;
-            if (s_aridx) {
-                hw_read_idx = *s_aridx;
-                hw_read_block = (uint32_t)(hw_read_idx % s_anblk);
-            }
-        }
+        /* NO BLOQUEANTE: si el anillo DMA esta lleno salimos inmediatamente.
+           Antes se esperaba hasta 10 ms por bloque con ps3_sys_timer_usleep,
+           y eso congelaba el hilo que dibuja la UI y lee el mando (~21 ms por
+           vuelta = 46 Hz fijos). Ahora el ritmo lo marca el hardware y el
+           llamador decide cuanto bombear con platform_audio_free_blocks(). */
+        if (platform_audio_free_blocks() == 0) break;
 
         uint32_t cur_block = s_audio_write_block % s_anblk;
         float *dst = s_adma + (size_t)cur_block * s_astride;
