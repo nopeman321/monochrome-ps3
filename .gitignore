@@ -44,3 +44,5 @@ Thumbs.db
 # Evidencia pesada (los PNG y los .md si se versionan)
 evidence/*.raw
 monochrome_pc.exe
+
+restore_point_backup/
