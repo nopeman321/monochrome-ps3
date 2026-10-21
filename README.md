@@ -104,17 +104,24 @@ This automatically:
 1. Compiles all PowerPC64 C and assembly sources via Zig (`powerpc64-linux-musl`).
 2. Patches 21 SCE dynamic imports across `cellGcmSys`, `cellAudio`, and `sys_io`.
 3. Cryptographically signs the ELF into an NPDRM executable (`EBOOT.BIN`) using SCETool.
-4. Builds the installable `MCRM00001.pkg` package.
-5. Deploys `EBOOT.BIN` directly to the local RPCS3 virtual HDD (`/dev_hdd0/game/MCRM00001/USRDIR/`).
+4. Builds `MCRM00001.pkg` in the real PS3 PKG3 debug format (`tools/pkg3.py`).
+5. Builds `dist/MCRM00001/` and `dist/Monochrome-PS3-folder.zip` for folder (JB) installation.
+6. Deploys `EBOOT.BIN` to the local RPCS3 virtual HDD (`/dev_hdd0/game/MCRM00001/USRDIR/`).
 
 ### Running in RPCS3
 Double-click `run_rpcs3.bat` to launch RPCS3 with Vulkan rendering and XInput controller support.
 
 ### Installing on Physical PS3 Hardware
-1. Copy `MCRM00001.pkg` to a FAT32 USB drive.
-2. Plug into your PS3 (CFW or PS3HEN enabled).
-3. Navigate to **Game → Package Manager → Standard**.
-4. Select `MCRM00001.pkg` to install. Launch from the XMB!
+See **[INSTALACION_PS3.md](INSTALACION_PS3.md)** for the complete guide. Summary:
+
+| Method | Works on | Steps |
+|---|---|---|
+| **A. Folder (JB) install** — recommended | PS3HEN / CFW | Copy `dist/MCRM00001/` to `/dev_hdd0/game/` via FTP (webMAN / multiMAN / irisMAN) or USB + multiMAN, then refresh the XMB. |
+| **B. PKG install** | PS3HEN / CFW | Copy `MCRM00001.pkg` to the root of a FAT32 USB and install from *Game → Package Manager → Install Package Files*. |
+
+> ⚠️ The PKG shipped with **v1.0.0** was built with a non-standard container and **cannot be
+> installed on real hardware** (it only worked in RPCS3). Use the folder method, or the PKG
+> from **v1.0.1** onwards.
 
 ---
 

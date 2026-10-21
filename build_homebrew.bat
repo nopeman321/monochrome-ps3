@@ -49,7 +49,16 @@ if exist "%SCRIPT_DIR%emulator\rpcs3\dev_hdd0\game" (
     python "%SCRIPT_DIR%tools\configure_rpcs3.py"
 )
 
+echo [DIST] Building folder (JB) install package for PS3HEN...
+if exist "%SCRIPT_DIR%dist\MCRM00001" rmdir /S /Q "%SCRIPT_DIR%dist\MCRM00001"
+mkdir "%SCRIPT_DIR%dist\MCRM00001"
+xcopy /E /I /Y "%SCRIPT_DIR%pkg_build" "%SCRIPT_DIR%dist\MCRM00001" >nul
+python -c "import shutil; shutil.make_archive(r'%SCRIPT_DIR%dist\Monochrome-PS3-folder', 'zip', r'%SCRIPT_DIR%dist\MCRM00001', '.')" 2>nul
+if exist "%SCRIPT_DIR%dist\Monochrome-PS3-folder.zip" echo   [OK] Folder package: dist\Monochrome-PS3-folder.zip
+
 echo ========================================================
 echo   [SUCCESS] Homebrew PKG ready for PS3HEN:
 echo   %SCRIPT_DIR%MCRM00001.pkg
+echo   [SUCCESS] Folder (JB) install package ready:
+echo   %SCRIPT_DIR%dist\MCRM00001\
 echo ========================================================

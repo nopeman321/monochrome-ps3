@@ -1,8 +1,31 @@
-# Monochrome PS3 — Release 1.0.0
+# Monochrome PS3 — Release 1.0.1
 
 **Title ID**: `MCRM00001`  
 **Package Version**: `01.00`  
 **Target Platform**: Sony PlayStation 3 (Cell B.E. / GameOS / RSX) & RPCS3  
+
+---
+
+## 🔧 1.0.1 — Corregido el paquete de instalación para hardware real
+
+La versión 1.0.0 **no se podía instalar en una PS3 real** (probado en PS3 Super Slim con HEN):
+el `MCRM00001.pkg` se generaba con un contenedor inventado (cabecera propia y un "cifrado
+SHA-1" casero) que RPCS3 toleraba pero el Package Manager de PS3HEN rechaza.
+
+Cambios de esta versión:
+
+* **Nuevo empaquetador PKG3 real** (`tools/pkg3.py` + `tools/pkg_builder.py`): cabecera PKG3,
+  bloque de metadatos TLV (5 entradas), digests SHA-1 de cabecera/metadatos, payload cifrado
+  con el keystream SHA-1 del formato *debug/no finalizado*, tabla de items de 0x20 bytes y
+  cola de 0x60 ceros. Verificado con round-trip (5/5 ficheros idénticos) y
+  `python tools/pkg3.py verify`.
+* **Paquete de instalación por carpeta** (`dist/MCRM00001/` y `dist/Monochrome-PS3-folder.zip`):
+  es la vía recomendada en HEN, ya que el XMB escanea `/dev_hdd0/game/<TITLE_ID>/` y no valida
+  ningún contenedor.
+* **ICON0.PNG corregido** a 320×176 (antes 64×176).
+* **Guía de instalación** completa en [INSTALACION_PS3.md](INSTALACION_PS3.md).
+
+> El PKG de la 1.0.0 sigue publicado por trazabilidad, pero **no lo uses en una consola real**.
 
 ---
 

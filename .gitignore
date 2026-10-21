@@ -46,3 +46,6 @@ evidence/*.raw
 monochrome_pc.exe
 
 restore_point_backup/
+
+# Salida de distribucion (se genera con build_homebrew.bat)
+dist/
