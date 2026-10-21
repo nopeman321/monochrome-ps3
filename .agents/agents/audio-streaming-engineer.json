@@ -1,8 +1,0 @@
-{
-  "name": "audio-streaming-engineer",
-  "displayName": "Audio Streaming Engineer",
-  "description": "Lossless FLAC decoder, 48kHz LPCM resampler, byte-range streaming, and Tidal Hi-Res API specialist",
-  "model": "deepseek/deepseek-v4-pro",
-  "role": "Lossless Audio & DSP Specialist",
-  "skills": ["audio-flac-pipeline", "desktop-launcher"]
-}
