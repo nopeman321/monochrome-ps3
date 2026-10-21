@@ -250,6 +250,21 @@ def main(elf_path):
         p_type = struct.unpack_from(">I", ph, 0)[0]
         (loads if p_type == PT_LOAD else others).append(ph)
 
+    # ── sanitizado para GameOS/LV2 real ─────────────────────────────────────
+    # El loader de una PS3 fisica solo entiende PT_LOAD y el header
+    # SCE_PROC_PRX_PARAM (0x60000002). Cualquier otro tipo (GNU_EH_FRAME
+    # 0x6474e550, GNU_STACK 0x6474e551, PT_TLS 7) hace que el arranque falle
+    # con 80010007 ("error en la operacion de inicio"). RPCS3 los ignoraba.
+    PT_TLS = 7
+    PT_GNU_EH_FRAME = 0x6474E550
+    PT_GNU_STACK = 0x6474E551
+    DROP_TYPES = {PT_TLS, PT_GNU_EH_FRAME, PT_GNU_STACK}
+    others = [ph for ph in others
+              if struct.unpack_from(">I", ph, 0)[0] not in DROP_TYPES]
+
+    # EI_OSABI debe ser 0x66 (ELFOSABI_CELL_LV2) en un ejecutable de PS3.
+    d[7] = 0x66
+
     # All LOADs (originals + blob) stay contiguous at the front.
     table = loads + [blob_phdr] + others + [param_phdr]
     new_phnum = len(table)
