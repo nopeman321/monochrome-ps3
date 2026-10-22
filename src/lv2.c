@@ -384,10 +384,48 @@ void *memalign(size_t alignment, size_t size) {
     return (void *)aligned;
 }
 
+/* ── GameOS PPU Process Parameters (Stack size & priority) ────────── */
+typedef struct {
+    uint32_t size;           /* 0x20 */
+    uint32_t magic;          /* 0x13bcc5f6 (SYS_PROCESS_SPAWN_MAGIC) */
+    uint32_t version;        /* 0x00009000 (SYS_PROCESS_SPAWN_VERSION_090) */
+    uint32_t sdk_version;    /* 0x00192001 (SYS_PROCESS_SPAWN_FW_VERSION_192) */
+    int32_t  prio;           /* 1001 (standard user thread priority) */
+    uint32_t stacksize;      /* 0x00100000 = 1 MB stack */
+    uint32_t malloc_pagesize;/* 0x00100000 = 1 MB page size */
+    uint32_t ppc_seg;        /* 0 */
+} sys_process_param_t;
+
+sys_process_param_t __sys_process_param __attribute__((aligned(8), section(".sys_proc_param"), used)) = {
+    sizeof(sys_process_param_t),
+    0x13bcc5f6,
+    0x00009000,
+    0x00192001,
+    1001,
+    0x100000,
+    0x00100000,
+    0x00000000
+};
+
 /* ── GameOS PPU Thread Entry Point ───────────────────────────────── */
 extern int main(int argc, char *argv[]);
 
+static unsigned char s_main_thread_tcb[65536] __attribute__((aligned(64)));
+
 void ps3_main_entry(void) {
+    /* Keep process parameters alive so linker does not strip it */
+    volatile const void *keep_param = &__sys_process_param;
+    (void)keep_param;
+
+    /* Initialize Thread Pointer (r13) for the primary PPU thread.
+     * On Linux, the kernel sets r13 to point to the thread control block.
+     * On GameOS (PS3 real), r13 is NOT initialized for musl libc.
+     * Without r13 pointing to a valid TCB, any stdio/errno/pthread access
+     * crashes immediately with a data abort, causing a black screen freeze. */
+    uintptr_t tp = (uintptr_t)(s_main_thread_tcb + 0x7060);
+    *(uintptr_t *)s_main_thread_tcb = (uintptr_t)s_main_thread_tcb;
+    __asm__ volatile("mr 13, %0" : : "r"(tp) : "memory");
+
     int ret = main(0, NULL);
     ps3_sys_process_exit(ret);
 }

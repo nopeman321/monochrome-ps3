@@ -27,8 +27,6 @@ TrackMetadata   *app_get_current_track(void) { return &g_now; }
 
 /* ── Lifecycle ───────────────────────────────────────────────────── */
 int app_init(void) {
-    setvbuf(stdout, NULL, _IONBF, 0);
-    setvbuf(stderr, NULL, _IONBF, 0);
     platform_init();
 
     printf("[SYS] ══════════════════════════════════════════\n");

@@ -53,7 +53,7 @@ echo [DIST] Building folder (JB) install package for PS3HEN...
 if exist "%SCRIPT_DIR%dist\MCRM00001" rmdir /S /Q "%SCRIPT_DIR%dist\MCRM00001"
 mkdir "%SCRIPT_DIR%dist\MCRM00001"
 xcopy /E /I /Y "%SCRIPT_DIR%pkg_build" "%SCRIPT_DIR%dist\MCRM00001" >nul
-python -c "import shutil; shutil.make_archive(r'%SCRIPT_DIR%dist\Monochrome-PS3-folder', 'zip', r'%SCRIPT_DIR%dist\MCRM00001', '.')" 2>nul
+python -c "import shutil; shutil.make_archive(r'%SCRIPT_DIR%dist\Monochrome-PS3-folder', 'zip', r'%SCRIPT_DIR%dist', 'MCRM00001')" 2>nul
 if exist "%SCRIPT_DIR%dist\Monochrome-PS3-folder.zip" echo   [OK] Folder package: dist\Monochrome-PS3-folder.zip
 
 echo ========================================================

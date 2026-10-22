@@ -76,6 +76,10 @@ IMPORTS = [
         "cellAudioPortClose",
         "cellAudioSetPortLevel",
     ]),
+    ("cellSysutil", [
+        "cellVideoOutGetState",
+        "cellVideoOutConfigure",
+    ]),
 ]
 
 
@@ -265,8 +269,27 @@ def main(elf_path):
     # EI_OSABI debe ser 0x66 (ELFOSABI_CELL_LV2) en un ejecutable de PS3.
     d[7] = 0x66
 
+    # ── PT_SCE_PROC_PARAM (0x60000001) para stack y prioridad en GameOS ─────
+    PT_SCE_PROC_PARAM = 0x60000001
+    proc_param_magic = b"\x13\xbc\xc5\xf6"
+    proc_idx = d.find(proc_param_magic)
+    proc_param_phdrs = []
+    if proc_idx != -1:
+        p_off = proc_idx - 4
+        p_vaddr = None
+        for ph in loads:
+            poff, pvaddr = struct.unpack_from(">QQ", ph, 8)
+            psz = struct.unpack_from(">Q", ph, 32)[0]
+            if poff <= p_off < poff + psz:
+                p_vaddr = pvaddr + (p_off - poff)
+                break
+        if p_vaddr is not None:
+            proc_param_phdrs.append(struct.pack(">IIQQQQQQ", PT_SCE_PROC_PARAM, 4,
+                                                p_off, p_vaddr, p_vaddr,
+                                                0x20, 0x20, 4))
+
     # All LOADs (originals + blob) stay contiguous at the front.
-    table = loads + [blob_phdr] + others + [param_phdr]
+    table = loads + [blob_phdr] + others + proc_param_phdrs + [param_phdr]
     new_phnum = len(table)
 
     end_old = e_phoff + e_phnum * e_phentsize

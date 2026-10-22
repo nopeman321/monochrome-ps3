@@ -357,6 +357,46 @@ SCE_SLOT(cellGcmSetFlipImmediate);
 SCE_SLOT(cellGcmGetLastFlipTime);
 SCE_SLOT(cellGcmSetWaitFlip);
 SCE_SLOT(cellGcmGetConfiguration);
+SCE_SLOT(cellVideoOutGetState);
+SCE_SLOT(cellVideoOutConfigure);
+
+typedef struct {
+    uint8_t  resolutionId;
+    uint8_t  scanMode;
+    uint8_t  conversion;
+    uint8_t  aspect;
+    uint8_t  reserved[2];
+    uint16_t refreshRates;
+} CellVideoOutDisplayMode;
+
+typedef struct {
+    uint8_t  state;
+    uint8_t  colorSpace;
+    uint8_t  reserved[6];
+    CellVideoOutDisplayMode displayMode;
+} CellVideoOutState;
+
+typedef struct {
+    uint8_t  resolutionId;
+    uint8_t  format;
+    uint8_t  aspect;
+    uint8_t  reserved[9];
+    uint32_t pitch;
+} CellVideoOutConfiguration;
+
+static inline int video_get_state(int videoOut, int deviceIndex, CellVideoOutState *state) {
+    if (!SCE_BOUND(cellVideoOutGetState)) return -1;
+    return (int)sce_opd_call6(sce_slot_cellVideoOutGetState,
+                              (uint64_t)videoOut, (uint64_t)deviceIndex,
+                              (uint64_t)(uintptr_t)state, 0, 0, 0);
+}
+
+static inline int video_configure(int videoOut, CellVideoOutConfiguration *config, void *option, int waitForEvent) {
+    if (!SCE_BOUND(cellVideoOutConfigure)) return -1;
+    return (int)sce_opd_call6(sce_slot_cellVideoOutConfigure,
+                              (uint64_t)videoOut, (uint64_t)(uintptr_t)config,
+                              (uint64_t)(uintptr_t)option, (uint64_t)waitForEvent, 0, 0);
+}
 
 static inline int gcm_init_body(uint32_t *ctx, uint32_t cmd, uint32_t io,
                                 uint32_t ea) {
@@ -899,7 +939,8 @@ int platform_gfx_init(int width, int height, const char *title) {
             sce_slot_cellGcmSetFlipHandler | sce_slot_cellGcmSetDisplayBuffer |
             sce_slot_cellGcmMapMainMemory | sce_slot_cellGcmGetFlipStatus |
             sce_slot_cellGcmResetFlipStatus | sce_slot_cellGcmGetLastFlipTime |
-            sce_slot_cellGcmGetConfiguration | sce_slot__cellGcmInitBody;
+            sce_slot_cellGcmGetConfiguration | sce_slot__cellGcmInitBody |
+            sce_slot_cellVideoOutGetState | sce_slot_cellVideoOutConfigure;
         (void)keep;
     }
     uint32_t fb_width = (uint32_t)FB_WIDTH;
@@ -947,9 +988,32 @@ int platform_gfx_init(int width, int height, const char *title) {
         gcmSetDisplayBuffer(1, color_offset[1], color_pitch, fb_width, fb_height);
     }
 
+    /* Configurar salida de video HDMI / AV en GameOS (hardware real) */
+    CellVideoOutState vstate;
+    memset(&vstate, 0, sizeof(vstate));
+    int vret = video_get_state(0, 0, &vstate);
+    tty("[RSX] video_get_state ret=%d state=%d res=%d aspect=%d\n",
+        vret, (int)vstate.state, (int)vstate.displayMode.resolutionId, (int)vstate.displayMode.aspect);
+
+    CellVideoOutConfiguration vconfig;
+    memset(&vconfig, 0, sizeof(vconfig));
+    vconfig.resolutionId = 4; /* CELL_VIDEO_OUT_RESOLUTION_480 (720x480 standard progressive) */
+    vconfig.format = 0;       /* CELL_VIDEO_OUT_BUFFER_COLOR_FORMAT_X8R8G8B8 */
+    vconfig.aspect = (vret == 0 && vstate.displayMode.aspect != 0) ? vstate.displayMode.aspect : 2; /* 16:9 */
+    vconfig.pitch = color_pitch; /* FB_PITCH = 720 * 4 = 2880 */
+    int cret = video_configure(0, &vconfig, NULL, 0);
+    tty("[RSX] video_configure ret=%d res=%d pitch=%u\n", cret, (int)vconfig.resolutionId, color_pitch);
+
     /* Configurar gcmSetFlipMode(GCM_FLIP_VSYNC) */
     if (gcmSetFlipMode) {
         gcmSetFlipMode(GCM_FLIP_VSYNC);
+    }
+
+    /* Cebar el controlador de pantalla con el buffer 0 */
+    if (gcmSetFlip && s_gcm) {
+        gcmSetFlip(s_gcm, 0);
+        if (gcmSetWaitFlip) gcmSetWaitFlip(s_gcm);
+        if (rsxFlushBuffer) rsxFlushBuffer(s_gcm);
     }
 
     curr_fb     = 0;
