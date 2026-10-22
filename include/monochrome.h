@@ -23,9 +23,9 @@
 #define APP_VERSION        "01.00"
 #define APP_TITLEID        "MCRM00001"
 
-/* ── Display (PS3 480p Minimum Resolution) ───────────────────────── */
-#define SCREEN_WIDTH        720
-#define SCREEN_HEIGHT       480
+/* ── Display (PS3 Native 720p HD Standard Resolution) ─────────────── */
+#define SCREEN_WIDTH        1280
+#define SCREEN_HEIGHT       720
 #define TARGET_FPS          60
 
 /* ── Memory budgets (XDR DRAM) ───────────────────────────────────── */

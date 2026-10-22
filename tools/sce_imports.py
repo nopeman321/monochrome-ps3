@@ -76,10 +76,6 @@ IMPORTS = [
         "cellAudioPortClose",
         "cellAudioSetPortLevel",
     ]),
-    ("cellSysutil", [
-        "cellVideoOutGetState",
-        "cellVideoOutConfigure",
-    ]),
 ]
 
 
