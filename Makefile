@@ -1,88 +1,145 @@
-# Monochrome PS3 — Makefile for PSL1GHT v2
-# Also supports local builds without PSL1GHT via HOST_CC for testing.
+#---------------------------------------------------------------------------------
+# Clear the implicit built in rules
+#---------------------------------------------------------------------------------
 .SUFFIXES:
+#---------------------------------------------------------------------------------
+ifeq ($(strip $(PSL1GHT)),)
+$(error "Please set PSL1GHT in your environment. export PSL1GHT=<path>")
+endif
 
-# ── Detect environment ───────────────────────────────────────────────
-ifdef PSL1GHT
-include $(PSL1GHT)/Makefile.base
-CC      := ppu-gcc
-CFLAGS  := -O2 -Wall -Wextra -Werror=return-type --std=gnu99 \
-           -mcpu=cell -mtune=cell -fno-strict-aliasing
-LDFLAGS :=
-LIBS    := -L$(PS3DEV)/portlibs/ppu/lib \
-           -ltiny3d -lgcm_sys -lio -laudio -lnet -lsysutil \
-           -lmbedtls -lmbedcrypto -lmbedx509 -lcurl -lm
-FSELF   := make_fself
+include $(PSL1GHT)/ppu_rules
+
+#---------------------------------------------------------------------------------
+# TARGET is the name of the output
+# BUILD is the directory where object files & intermediate files will be placed
+DATA		:=	data
+#---------------------------------------------------------------------------------
+TARGET		:=	$(notdir $(CURDIR))
+BUILD		:=	build
+SOURCES		:=	source
+INCLUDES	:=	include
+
+TITLE		:=	Monochrome Music Player
+APPID		:=	MONO00024
+CONTENTID	:=	UP0001-$(APPID)_00-0000000000000000
+
+ICON0		:=	$(CURDIR)/pkgfiles/ICON0.PNG
+PKGFILES	:=	$(CURDIR)/pkgfiles
+
+#---------------------------------------------------------------------------------
+# options for code generation
+#---------------------------------------------------------------------------------
+
+CFLAGS		=	-Wall -mcpu=cell $(MACHDEP) $(INCLUDE) -I$(PORTLIBS)/include
+CXXFLAGS	=	$(CFLAGS)
+
+LDFLAGS		=	$(MACHDEP) -Wl,-Map,$(notdir $@).map
+
+#---------------------------------------------------------------------------------
+# any extra libraries we wish to link with the project
+#---------------------------------------------------------------------------------
+LIBS	:=	-lrsx -lgcm_sys -laudio -lnet -lsysmodule -lio -lsysutil -lrt -llv2 -lm -ljpeg
+
+#---------------------------------------------------------------------------------
+# list of directories containing libraries, this must be the top level containing
+# include and lib
+#---------------------------------------------------------------------------------
+LIBDIRS	:=	$(PORTLIBS)
+
+#---------------------------------------------------------------------------------
+# no real need to edit anything past this point unless you need to add additional
+# rules for different file extensions
+#---------------------------------------------------------------------------------
+ifneq ($(BUILD),$(notdir $(CURDIR)))
+#---------------------------------------------------------------------------------
+
+export OUTPUT	:=	$(CURDIR)/$(TARGET)
+
+export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
+					$(foreach dir,$(DATA),$(CURDIR)/$(dir))
+
+export DEPSDIR	:=	$(CURDIR)/$(BUILD)
+
+export BUILDDIR	:=	$(CURDIR)/$(BUILD)
+
+#---------------------------------------------------------------------------------
+# automatically build a list of object files for our project
+#---------------------------------------------------------------------------------
+CFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+CPPFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
+sFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
+SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.S)))
+BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
+
+#---------------------------------------------------------------------------------
+# use CXX for linking C++ projects, CC for standard C
+#---------------------------------------------------------------------------------
+ifeq ($(strip $(CPPFILES)),)
+	export LD	:=	$(CC)
 else
-# Host-native build for testing on PC (no PSL1GHT required)
-CC      := gcc
-CFLAGS  := -O2 -Wall -Wextra -Werror=return-type --std=gnu99 -g
-LDFLAGS :=
-LIBS    := -lm
-FSELF   :=
+	export LD	:=	$(CXX)
 endif
 
-# ── Paths ────────────────────────────────────────────────────────────
-BUILD     := build
-SOURCE    := src
-INCLUDE   := include
-PKG_DIR   := pkg_build
+export OFILES	:=	$(addsuffix .o,$(BINFILES)) \
+					$(CPPFILES:.cpp=.o) $(CFILES:.c=.o) \
+					$(sFILES:.s=.o) $(SFILES:.S=.o)
 
-TITLE     := Monochrome Music
-APPID     := MCRM00001
-CONTENTID := UP0001-$(APPID)_00-MONOCHROMEPS3001
+#---------------------------------------------------------------------------------
+# build a list of include paths
+#---------------------------------------------------------------------------------
+export INCLUDE	:=	$(foreach dir,$(INCLUDES), -I$(CURDIR)/$(dir)) \
+					$(foreach dir,$(LIBDIRS),-I$(dir)/include) \
+					$(LIBPSL1GHT_INC) \
+					-I$(CURDIR)/$(BUILD)
 
-INCLUDES  := -I$(INCLUDE)
-ifdef PSL1GHT
-INCLUDES  += -I$(PS3DEV)/portlibs/ppu/include
-endif
+#---------------------------------------------------------------------------------
+# build a list of library paths
+#---------------------------------------------------------------------------------
+export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib) \
+					$(LIBPSL1GHT_LIB)
 
-# ── Source files ─────────────────────────────────────────────────────
-CFILES := $(notdir $(wildcard $(SOURCE)/*.c))
-OFILES := $(addprefix $(BUILD)/,$(CFILES:.c=.o))
-ELF    := $(BUILD)/monochrome.elf
-EBOOT  := $(PKG_DIR)/USRDIR/EBOOT.BIN
+export OUTPUT	:=	$(CURDIR)/$(TARGET)
+.PHONY: $(BUILD) clean bin
 
-# ── Targets ──────────────────────────────────────────────────────────
-.PHONY: all clean pkg test sfo assets
+#---------------------------------------------------------------------------------
+$(BUILD):
+	@[ -d $@ ] || mkdir -p $@
+	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
-all: $(ELF)
-
-$(ELF): $(OFILES)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LDFLAGS) $^ $(LIBS) -o $@
-	@echo "[OK] ELF built: $@"
-
-$(BUILD)/%.o: $(SOURCE)/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
-
-# ── PS3 packaging (requires PSL1GHT) ────────────────────────────────
-ifdef PSL1GHT
-eboot: $(ELF)
-	@mkdir -p $(dir $(EBOOT))
-	$(FSELF) $< $(EBOOT)
-	@echo "[OK] EBOOT.BIN signed."
-
-pkg: eboot sfo assets
-	python3 tools/pkg_builder.py $(PKG_DIR) $(APPID).pkg
-	@echo "[OK] $(APPID).pkg ready for PS3 installation."
-else
-pkg: sfo assets
-	python3 tools/pkg_builder.py $(PKG_DIR) $(APPID).pkg
-	@echo "[OK] $(APPID).pkg built (host test mode — needs real EBOOT.BIN for PS3)."
-endif
-
-sfo:
-	python3 tools/sfo_builder.py $(PKG_DIR)/PARAM.SFO
-
-assets:
-	python3 tools/generate_assets.py
-
-# ── Quick test on host ───────────────────────────────────────────────
-test: $(ELF)
-	@echo "[TEST] Running on host…"
-	./$(ELF)
-
+#---------------------------------------------------------------------------------
 clean:
-	rm -rf $(BUILD) $(EBOOT) $(APPID).pkg
+	@echo clean ...
+	@rm -fr $(BUILD) $(OUTPUT).elf $(OUTPUT).self
+
+#---------------------------------------------------------------------------------
+run:
+	ps3load $(OUTPUT).self
+
+#---------------------------------------------------------------------------------
+pkg:	$(BUILD) $(OUTPUT).pkg
+
+#---------------------------------------------------------------------------------
+else
+
+DEPENDS	:=	$(OFILES:.o=.d)
+
+#---------------------------------------------------------------------------------
+# main targets
+#---------------------------------------------------------------------------------
+$(OUTPUT).self: $(OUTPUT).elf
+$(OUTPUT).elf:	$(OFILES)
+
+#---------------------------------------------------------------------------------
+# This rule links in binary data with the .bin extension
+#---------------------------------------------------------------------------------
+%.bin.o	:	%.bin
+#---------------------------------------------------------------------------------
+	@echo $(notdir $<)
+	@$(bin2o)
+
+-include $(DEPENDS)
+
+#---------------------------------------------------------------------------------
+endif
+#---------------------------------------------------------------------------------
+

@@ -1,107 +1,41 @@
-/**
- * Monochrome Music Player — Platform Hardware Abstraction Layer (HAL)
- * Unifies host PC (Windows / Linux) and PlayStation 3 (Cell B.E. / GameOS).
- */
-
-#ifndef PLATFORM_HAL_H
-#define PLATFORM_HAL_H
+#ifndef PLATFORM_PSL1GHT_H
+#define PLATFORM_PSL1GHT_H
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <stddef.h>
+#include "monochrome.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+int  platform_init(void);
+void platform_shutdown(void);
 
-/* ── Platform Identifiers ────────────────────────────────────────── */
-#if defined(__powerpc__) || defined(__CELLOS_LV2__) || defined(TARGET_PS3)
-    #define PLATFORM_IS_PS3 1
-    #define PLATFORM_NAME   "PlayStation 3 (Cell B.E. / GameOS)"
-#else
-    #define PLATFORM_IS_PC  1
-    #define PLATFORM_NAME   "Host PC (Windows x86_64)"
-#endif
+int  platform_get_width(void);
+int  platform_get_height(void);
 
-/* ── Input Action Codes ──────────────────────────────────────────── */
-typedef enum {
-    INPUT_NONE = 0,
-    INPUT_UP,
-    INPUT_DOWN,
-    INPUT_LEFT,
-    INPUT_RIGHT,
-    INPUT_SELECT,      /* Cross (×) on PS3 / Enter on PC */
-    INPUT_CANCEL,      /* Circle (○) on PS3 / Escape on PC */
-    INPUT_ACTION_SEARCH,/* Square (□) on PS3 / 'S' on PC */
-    INPUT_PLAY_PAUSE,  /* Triangle (△) on PS3 / Space on PC */
-    INPUT_NEXT_TRACK,  /* R1 on PS3 / 'N' on PC */
-    INPUT_PREV_TRACK,  /* L1 on PS3 / 'P' on PC */
-    INPUT_SHUFFLE,     /* Select on PS3 / 'H' on PC */
-    INPUT_REPEAT,      /* L2 on PS3 / 'R' on PC */
-    INPUT_QUIT         /* PS Button / Start on PS3 / 'Q' on PC */
-} InputAction;
+/* Screen adjustment for overscan compensation */
+void platform_set_screen_adjust(int offset_x, int offset_y, float scale);
+void platform_get_screen_adjust(int *offset_x, int *offset_y, float *scale);
+void platform_set_font_scale(float scale);
+float platform_get_font_scale(void);
+int  platform_save_screen_config(void);
+int  platform_load_screen_config(void);
 
-/* ── Lifecycle & Timer ───────────────────────────────────────────── */
-int      platform_init(void);
-void     platform_shutdown(void);
-void     platform_sleep_ms(uint32_t ms);
-uint64_t platform_get_time_ms(void);
-
-/* ── File I/O & Persistent Cache Abstraction ─────────────────────── */
-typedef void *PlatformFileHandle;
-
-int  platform_ensure_cache_dirs(void);
-bool platform_file_exists(const char *path);
-PlatformFileHandle platform_file_open_read(const char *path);
-PlatformFileHandle platform_file_open_write(const char *path);
-void *platform_alloc_stream_buffer(size_t size);
-size_t platform_file_read(PlatformFileHandle handle, void *buffer, size_t bytes);
-size_t platform_file_write(PlatformFileHandle handle, const void *buffer, size_t bytes);
-void   platform_file_close(PlatformFileHandle handle);
-size_t platform_file_size(const char *path);
-
-void platform_get_cache_track_path(const char *track_id, char *out_path, size_t max_len);
-void platform_get_cache_cover_path(const char *track_id, char *out_path, size_t max_len);
-
-/* ── Thread Abstraction ─────────────────────────────────────────── */
-typedef void (*PlatformThreadFunc)(void *arg);
-typedef void *PlatformThreadHandle;
-
-PlatformThreadHandle platform_thread_create(PlatformThreadFunc func, void *arg);
-void platform_thread_join(PlatformThreadHandle thread);
-
-/* ── Network & HTTPS Abstraction ─────────────────────────────────── */
-typedef bool (*PlatformHttpChunkCallback)(const uint8_t *chunk, size_t chunk_len, void *userdata);
-
-int  platform_http_get(const char *url, char **response_out, size_t *size_out);
-int  platform_http_get_streaming(const char *url, PlatformHttpChunkCallback on_chunk, void *userdata);
-void platform_http_free(char *response);
-
-/* ── Audio Output Abstraction ────────────────────────────────────── */
-int  platform_audio_init(uint32_t sample_rate, uint8_t channels);
-void platform_audio_shutdown(void);
-void platform_audio_write(const int16_t *samples, size_t frames);
-void platform_audio_set_volume(float volume_0_to_1);
-
-/* ── Input Abstraction ───────────────────────────────────────────── */
 InputAction platform_poll_input(void);
-int         platform_get_mouse_track_selection(void);
 
-/* ── Console / Terminal Abstraction ──────────────────────────────── */
-void platform_clear_screen(void);
-void platform_set_cursor(int row, int col);
+void platform_clear(uint32_t color);
+void platform_draw_rect(int x, int y, int w, int h, uint32_t color);
+int  platform_draw_text(int x, int y, const char *str, uint32_t color, int scale);
+int  platform_draw_text_r(int rx, int y, const char *str, uint32_t color, int scale);
 
-/* ── Display / Frame Rendering Abstraction ───────────────────────── */
-struct TrackMetadata;
-int  platform_gfx_init(int width, int height, const char *title);
-void platform_gfx_shutdown(void);
-void platform_gfx_render(int state, const struct TrackMetadata *track,
-                         int pstate, float progress,
-                         const struct TrackMetadata *tracks, int track_count, int cursor,
-                         const char *search_query);
+// Texture drawing (for cover art)
+// texture_data: RGBA8888 pixel data
+// tex_w, tex_h: texture dimensions
+// dst_x, dst_y, dst_w, dst_h: destination rectangle on screen
+void platform_draw_texture(const uint8_t *texture_data, int tex_w, int tex_h,
+                           int dst_x, int dst_y, int dst_w, int dst_h);
 
-#ifdef __cplusplus
-}
-#endif
+void platform_flip(void);
+void platform_log(const char *fmt, ...);
 
-#endif /* PLATFORM_HAL_H */
+uint64_t platform_get_time_usec(void);
+
+#endif /* PLATFORM_PSL1GHT_H */
