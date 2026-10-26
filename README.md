@@ -4,18 +4,6 @@ PlayStation 3 native music streaming engine built with the **PSL1GHT v2** open-s
 
 ---
 
-## 📸 Screenshots
-
-| Now Playing (Reproducción en Curso) | Reproductor (Biblioteca de Pistas) |
-|:---:|:---:|
-| ![Now Playing](docs/screenshots/playing.png) | ![Reproductor](docs/screenshots/home.png) |
-
-| On-Screen Keyboard (OSK) Search |
-|:---:|
-| ![OSK Search](docs/screenshots/search.png) |
-
----
-
 ## ⚙️ Especificaciones Técnicas de la Arquitectura
 
 ### 1. Subsistema de Audio (GameOS Audio DMA)
