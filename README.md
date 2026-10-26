@@ -1,5 +1,9 @@
 # Monochrome PS3 — Technical Specification (v2.3.0)
 
+<p align="center">
+  <img src="docs/banner.png" alt="Monochrome PS3 Splash Screen Banner" width="100%">
+</p>
+
 PlayStation 3 native music streaming engine built with the **PSL1GHT v2** open-source toolchain for the Cell Broadband Engine and RSX Reality Synthesizer.
 
 ---
