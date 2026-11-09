@@ -31,3 +31,17 @@
 4. **Integración Total con el XMB**:
    - Icono oficial `ICON0.PNG` adaptado a la relación de aspecto nativa (320×176).
    - Fondo panorámico oscuro `PIC1.PNG` (1920×1080) asegurando que el texto blanco del XMB mantenga total legibilidad.
+
+5. **Navegación Web Completa (8 Pestañas EGM)**:
+   - Cobertura 100% de la web oficial `monochrome.st`: Home, Search (con sub-pestañas Tracks, Albums, Artists, Playlists, Podcasts y OSK interactivo), Library, Recent, Unreleased, Donate, Settings y About.
+   - Navegación global inmediata mediante gatillos L1/R1 y alternancia de filtros con L2/R2.
+
+6. **Subsistema Asíncrono de Carátulas (`mono_cover`)**:
+   - Descarga y descompresión JPEG delegada a un hilo PPU independiente en segundo plano (prioridad 1500, stack 128 KB).
+   - Protección contra fallos y corrupción de datos con manejador `custom_jpeg_error_mgr` (`setjmp`/`longjmp`), erradicando cualquier riesgo de cuelgue o caída al XMB.
+   - Enrutamiento dinámico de URLs HTTP/HTTPS respetando host y puerto asignado.
+
+7. **Renderizado de 60 FPS y Prevención de Desbordamiento**:
+   - Eliminación de 102.400 divisiones escalares por cuadro con la tabla precalculada `tx_lut[1920]`.
+   - Ráfagas alineadas de 64 bits hacia la VRAM de la RSX para descongestionar el bus FlexIO.
+   - Sistema de recorte de texto adaptativo (`platform_draw_text_clipped`) con elipsis automática (`...`) que garantiza que ningún título, URL o ficha técnica desborde los marcos o se salga de la pantalla.
