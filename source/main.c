@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <time.h>
 
@@ -51,6 +52,24 @@ int main(int argc, const char *argv[])
     platform_log("  - Application heap: ~4 MB estatico");
 
     AppState state = STATE_HOME;
+    FILE *f_init = fopen("/dev_hdd0/game/MONO00024/USRDIR/initial_state.txt", "r");
+    if (!f_init) f_init = fopen("/dev_hdd0/game/MCRM00001/USRDIR/initial_state.txt", "r");
+    if (f_init) {
+        char init_name[32] = {0};
+        if (fscanf(f_init, "%31s", init_name) == 1) {
+            if (strcmp(init_name, "SEARCH") == 0) state = STATE_SEARCH;
+            else if (strcmp(init_name, "LIBRARY") == 0) state = STATE_LIBRARY;
+            else if (strcmp(init_name, "RECENT") == 0) state = STATE_RECENT;
+            else if (strcmp(init_name, "UNRELEASED") == 0) state = STATE_UNRELEASED;
+            else if (strcmp(init_name, "DONATE") == 0) state = STATE_DONATE;
+            else if (strcmp(init_name, "SETTINGS") == 0) state = STATE_SETTINGS;
+            else if (strcmp(init_name, "ABOUT") == 0) state = STATE_ABOUT;
+            else if (strcmp(init_name, "PLAYING") == 0) state = STATE_PLAYING;
+        }
+        fclose(f_init);
+        unlink("/dev_hdd0/game/MONO00024/USRDIR/initial_state.txt");
+        unlink("/dev_hdd0/game/MCRM00001/USRDIR/initial_state.txt");
+    }
     platform_log("[NAV] Pantalla inicial: %s", ui_get_state_name(state));
 
     long frame = 0;

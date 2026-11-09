@@ -29,6 +29,8 @@ public static class VR {
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
@@ -38,6 +40,7 @@ public static class VR {
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
   public struct RECT { public int Left, Top, Right, Bottom; }
+  public struct POINT { public int X; public int Y; }
   public static void ForceForeground(IntPtr h) {
     IntPtr fg = GetForegroundWindow();
     uint fgPid; uint fgTid = GetWindowThreadProcessId(fg, out fgPid);
@@ -127,9 +130,23 @@ try {
     $result.title = [VR]::Title($hwnd)
     if ($result.title -match 'FPS:\s*([0-9.]+)') { $result.fps += [double]$matches[1] }
     $path = Join-Path $ev ("{0}_{1}_{2}.png" -f $Tag,$stamp,$i)
-    $bmp = New-Object System.Drawing.Bitmap($b.Width, $b.Height)
+    $rc = New-Object VR+RECT
+    [void][VR]::GetClientRect($hwnd, [ref]$rc)
+    $pt = New-Object VR+POINT
+    $pt.X = 0; $pt.Y = 0
+    [void][VR]::ClientToScreen($hwnd, [ref]$pt)
+    $w = $rc.Right - $rc.Left
+    $h = $rc.Bottom - $rc.Top
+    $top_bar = 26
+    $bot_bar = 24
+    $crop_y = $pt.Y + $top_bar
+    $crop_h = $h - $top_bar - $bot_bar
+    if ($crop_h -lt 200 -or $w -lt 200) { $crop_y = $pt.Y; $crop_h = $h }
+
+    $bmp = New-Object System.Drawing.Bitmap($w, $crop_h)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($b.X, $b.Y, 0, 0, $b.Size); $g.Dispose()
+    $g.CopyFromScreen($pt.X, $crop_y, 0, 0, (New-Object System.Drawing.Size($w, $crop_h)))
+    $g.Dispose()
     $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
     $result.shots += (Split-Path -Leaf $path)
     Start-Sleep -Milliseconds 250

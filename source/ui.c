@@ -1402,6 +1402,12 @@ void ui_render(AppState state, long frame)
         s_search_status = SEARCH_STATUS_OK;
         s_last_http_code = hcode;
         s_cursor = 0;
+        if (state == STATE_PLAYING && s_current_track_idx < 0 && count > 0) {
+            s_current_track_idx = 0;
+            s_playback_state = PLAYBACK_PLAYING;
+            s_playback_progress = 0.0f;
+            play_track_with_cover(0);
+        }
     } else if (st == SEARCH_STATUS_NO_RESULTS) {
         s_display_count = 0;
         s_search_status = SEARCH_STATUS_NO_RESULTS;
