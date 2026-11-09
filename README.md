@@ -52,6 +52,22 @@ PlayStation 3 native music streaming engine built with the **PSL1GHT v2** open-s
 
 ---
 
+## 📸 Capturas de Pantalla (Verificadas en Runtime RPCS3)
+
+| Vista Principal (8 Pestañas EGM) | Búsqueda & Teclado OSK |
+|:---:|:---:|
+| <img src="docs/screenshots/home.png" alt="Monochrome PS3 Home Screen" width="100%"> | <img src="docs/screenshots/search.png" alt="Monochrome PS3 Search & OSK" width="100%"> |
+
+| Reproducción en Vivo & Espectro 16 Bandas | Biblioteca & Caché HDD |
+|:---:|:---:|
+| <img src="docs/screenshots/playing.png" alt="Monochrome PS3 Playing Screen" width="100%"> | <img src="docs/screenshots/library.png" alt="Monochrome PS3 Library Screen" width="100%"> |
+
+| Proyectos Exclusivos & Bootlegs |
+|:---:|
+| <img src="docs/screenshots/unreleased.png" alt="Monochrome PS3 Unreleased Screen" width="65%"> |
+
+---
+
 ## 🎮 Mapeo de Entradas (DualShock 3 / ioPad)
 
 | Código de Entrada | Botón Físico | Función en Sistema |
