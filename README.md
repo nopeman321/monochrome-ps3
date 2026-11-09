@@ -24,15 +24,17 @@ PlayStation 3 native music streaming engine built with the **PSL1GHT v2** open-s
 ### 2. Capa de Red y Streaming TCP (BSD Sockets / libnet)
 - **Protocolo**: HTTP/1.1 persistente hacia `tracks.monochrome.st:80`.
 - **Configuración de Socket**: `SO_RCVBUF` ajustado a 512 KB para evitar estancamiento de ventana TCP en flujos Hi-Res de alto bitrate (hasta 96 kHz / 24-bit).
-- **Recepción No Bloqueante**: Consumo concorrente mediante `recv(..., MSG_DONTWAIT)` dentro del bucle de decodificación para prevenir bloqueos del pipeline.
+- **Recepción No Bloqueante**: Consumo concurrente mediante `recv(..., MSG_DONTWAIT)` dentro del bucle de decodificación para prevenir bloqueos del pipeline.
 - **Estrategia de Prebuffer**: Umbral mínimo de 4 MB de flujo FLAC crudo verificado antes del inicio de reproducción.
 - **Manejo de Respuestas HTTP 429**: Algoritmo de backoff exponencial configurable (hasta 8 reintentos: 3s, 6s, 12s, 24s, 48s, 60s).
-- **Caché Persistente en Disco**: Persistencia atómica en `/dev_hdd0/tmp/monochrome/tracks/<id>.flac`.
+- **Caché Persistente en Disco**: Persistencia atómica en `/dev_hdd0/tmp/monochrome/tracks/<id>.flac` y `/dev_hdd0/tmp/monochrome/cache/`.
+- **Subsistema de Carátulas Asíncrono (`mono_cover`)**: Hilo PPU cooperativo en segundo plano (prioridad **1500**, stack 128 KB) con parsing dinámico de URL (host/puerto/path) y decodificación protegida con `libjpeg` vía `custom_jpeg_error_mgr` (`setjmp`/`longjmp`) para inmunidad absoluta ante datos truncados o corruptos sin abortar el proceso.
 
 ### 3. Subsistema Gráfico y Presentación (RSX Reality Synthesizer)
 - **Contexto de Comando**: RSX GCM context asignado en memoria de host XDR (`0x40100000`, 32 MB IO mapping).
-- **Resolución y Formato**: 1920×1080 nativo, 32-bit XRGB (8.294.400 bytes por buffer de visualización).
-- **Estrategia de Buffer**: Doble buffer en RSX Local Memory con sincronización vertical `gcmSetFlipMode(GCM_FLIP_VSYNC)`.
+- **Resolución y Formato**: 1920×1080 / 1280×720 nativo, 32-bit XRGB (3.686.400 / 8.294.400 bytes por buffer de visualización).
+- **Estrategia de Buffer**: Doble buffer en RSX Local Memory con sincronización vertical `gcmSetFlipMode(GCM_FLIP_VSYNC)` (`flip` / `waitFlip`).
+- **Optimización de Bus FlexIO**: Precomputación de tabla de mapeo horizontal (`tx_lut[1920]`) eliminando divisiones por cuadro, y transferencias empaquetadas en ráfagas de 64 bits (`uint64_t`) hacia VRAM para tasa sostenida de 60 FPS sin saturar el bus PPU-RSX.
 - **Ajuste de Geometría de Pantalla**:
   - Offset horizontal y vertical con precisión de 1 píxel.
   - Factor de escala con precisión flotante de 0.005 (`0.50` a `1.50`).

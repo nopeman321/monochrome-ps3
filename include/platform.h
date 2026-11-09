@@ -25,6 +25,7 @@ void platform_clear(uint32_t color);
 void platform_draw_rect(int x, int y, int w, int h, uint32_t color);
 int  platform_draw_text(int x, int y, const char *str, uint32_t color, int scale);
 int  platform_draw_text_r(int rx, int y, const char *str, uint32_t color, int scale);
+int  platform_draw_text_clipped(int x, int y, int max_w, const char *str, uint32_t color, int scale);
 
 // Texture drawing (for cover art)
 // texture_data: RGBA8888 pixel data

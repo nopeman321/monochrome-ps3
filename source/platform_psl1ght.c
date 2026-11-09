@@ -396,6 +396,7 @@ static inline void draw_pixel(rsxBuffer *b, int x, int y, uint32_t color)
 
 int platform_draw_text(int x, int y, const char *str, uint32_t color, int scale)
 {
+    if (!str || !*str) return 0;
     rsxBuffer *b = &s_buffers[s_cur_buffer];
     
     /* Apply screen adjustment */
@@ -409,6 +410,7 @@ int platform_draw_text(int x, int y, const char *str, uint32_t color, int scale)
     int bh = b->height;
 
     while (*str) {
+        if (cur_x >= bw) break; /* Strict horizontal boundary clipping */
         unsigned char ch = (unsigned char)*str++;
         if (ch < 0x20 || ch > 0x7E) ch = '?';
         const uint8_t *g = FONT8[ch - 0x20];
@@ -443,8 +445,44 @@ int platform_draw_text(int x, int y, const char *str, uint32_t color, int scale)
 
 int platform_draw_text_r(int rx, int y, const char *str, uint32_t color, int scale)
 {
+    if (!str || !*str) return 0;
     int len = (int)strlen(str) * 8 * scale;
-    return platform_draw_text(rx - len, y, str, color, scale);
+    int start_x = rx - len;
+    if (start_x < 0) start_x = 0;
+    return platform_draw_text(start_x, y, str, color, scale);
+}
+
+int platform_draw_text_clipped(int x, int y, int max_w, const char *str, uint32_t color, int scale)
+{
+    if (!str || !*str) return 0;
+    if (max_w <= 0) return 0;
+
+    int char_w = 8 * scale;
+    if (char_w < 1) char_w = 1;
+    int max_chars = max_w / char_w;
+    if (max_chars <= 0) return 0;
+
+    int len = (int)strlen(str);
+    if (len <= max_chars) {
+        return platform_draw_text(x, y, str, color, scale);
+    }
+
+    char buf[256];
+    if (max_chars > 3) {
+        int copy_len = max_chars - 3;
+        if (copy_len >= (int)sizeof(buf) - 4) copy_len = (int)sizeof(buf) - 4;
+        memcpy(buf, str, copy_len);
+        buf[copy_len] = '.';
+        buf[copy_len + 1] = '.';
+        buf[copy_len + 2] = '.';
+        buf[copy_len + 3] = '\0';
+    } else {
+        int copy_len = max_chars;
+        if (copy_len >= (int)sizeof(buf) - 1) copy_len = (int)sizeof(buf) - 1;
+        memcpy(buf, str, copy_len);
+        buf[copy_len] = '\0';
+    }
+    return platform_draw_text(x, y, buf, color, scale);
 }
 
 void platform_draw_texture(const uint8_t *texture_data, int tex_w, int tex_h,

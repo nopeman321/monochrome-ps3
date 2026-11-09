@@ -752,8 +752,8 @@ static void render_ascii_metalheart_background(int sw, int sh)
     platform_draw_text(35, sh / 3, "+ .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  +", 0x00151515, 1);
     platform_draw_text(35, (sh * 2) / 3, "+ .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  +", 0x00151515, 1);
 
-    platform_draw_text(25, sh - 28, "// MONOCHROME.ST // LOSSLESS FLAC // CELL-BE //", 0x001C1C1C, 1);
-    platform_draw_text_r(sw - 25, sh - 28, "LOC: 0x40100000 // BUFFER: 48MB //", 0x001C1C1C, 1);
+    platform_draw_text(25, sh - 52, "// MONOCHROME.ST // LOSSLESS FLAC // CELL-BE //", 0x001C1C1C, 1);
+    platform_draw_text_r(sw - 25, sh - 52, "LOC: 0x40100000 // BUFFER: 48MB //", 0x001C1C1C, 1);
 }
 
 static void render_header(int sw, AppState current_state, const char *right_hint)
@@ -767,7 +767,10 @@ static void render_header(int sw, AppState current_state, const char *right_hint
 
     /* Top right status/hint */
     if (right_hint) {
-        platform_draw_text_r(sw - 25, 14, right_hint, 0x0090A4AE, 2);
+        int hint_len = (int)strlen(right_hint);
+        int hint_scale = (hint_len * 16 > sw - 360) ? 1 : 2;
+        int hint_y = (hint_scale == 1) ? 18 : 14;
+        platform_draw_text_r(sw - 25, hint_y, right_hint, 0x0090A4AE, hint_scale);
     }
 
     /* 8 Navigation tabs row */
@@ -800,17 +803,20 @@ static void render_now_playing_mini_bar(int sw, int sh)
         const char *icon = (s_playback_state == PLAYBACK_PLAYING) ? ">" : "||";
         platform_draw_text(30, bar_y + 15, icon, 0x00C83838, 3);
 
+        char dac[64];
+        snprintf(dac, sizeof(dac), "%s | %uHz %dbit", t->is_hi_res ? "HI-RES" : "FLAC", t->sample_rate, t->bit_depth);
+        int dac_w = (int)strlen(dac) * 8 * 2;
+        platform_draw_text_r(sw - 30, bar_y + 16, dac, t->is_hi_res ? 0xFFFFFFFF : 0x00C83838, 2);
+
         char info[260];
         snprintf(info, sizeof(info), "%s - %s", t->title, t->artist);
-        platform_draw_text(65, bar_y + 12, info, 0xFFFFFFFF, 2);
+        int max_info_w = (sw - 30 - dac_w - 20) - 65;
+        if (max_info_w < 100) max_info_w = 100;
+        platform_draw_text_clipped(65, bar_y + 12, max_info_w, info, 0xFFFFFFFF, 2);
 
         char id_str[80];
         snprintf(id_str, sizeof(id_str), "ID: %s", t->id);
-        platform_draw_text(65, bar_y + 32, id_str, 0xFFFFFFFF, 1);
-
-        char dac[64];
-        snprintf(dac, sizeof(dac), "%s | %uHz %dbit", t->is_hi_res ? "HI-RES" : "FLAC", t->sample_rate, t->bit_depth);
-        platform_draw_text_r(sw - 30, bar_y + 16, dac, t->is_hi_res ? 0xFFFFFFFF : 0x00C83838, 2);
+        platform_draw_text_clipped(65, bar_y + 32, max_info_w, id_str, 0xFFFFFFFF, 1);
     } else {
         platform_draw_text(30, bar_y + 16, "-- Ningun tema seleccionado (Pulsa X en la lista) --", 0x00808080, 2);
     }
@@ -826,7 +832,10 @@ static void render_now_playing_mini_bar(int sw, int sh)
 static void render_footer(int sw, int sh, const char *hints)
 {
     platform_draw_rect(0, sh - 40, sw, 40, 0x000F121B);
-    platform_draw_text(30, sh - 28, hints, 0x00B0BEC5, 2);
+    int h_len = (int)strlen(hints);
+    int f_scale = (h_len * 16 > sw - 60) ? 1 : 2;
+    int f_y = (f_scale == 1) ? sh - 24 : sh - 28;
+    platform_draw_text_clipped(30, f_y, sw - 60, hints, 0x00B0BEC5, f_scale);
 }
 
 static void render_home_screen(int sw, int sh)
@@ -839,19 +848,22 @@ static void render_home_screen(int sw, int sh)
     if (s_search_status == SEARCH_STATUS_BUSY) {
         char msg[128];
         snprintf(msg, sizeof(msg), "Buscando '%s' en tracks.monochrome.st...", s_search_query);
-        platform_draw_text(30, 58, msg, 0x00C83838, 2);
+        platform_draw_text_clipped(30, 58, sw - 60, msg, 0x00C83838, 2);
     } else if (s_search_status == SEARCH_STATUS_NO_RESULTS) {
         char msg[128];
         snprintf(msg, sizeof(msg), "Sin resultados para '%s' (Pulsa [] para buscar de nuevo)", s_search_query);
-        platform_draw_text(30, 58, msg, 0x00C83838, 2);
+        platform_draw_text_clipped(30, 58, sw - 60, msg, 0x00C83838, 2);
     } else if (s_search_status == SEARCH_STATUS_ERROR) {
         char msg[128];
         snprintf(msg, sizeof(msg), "Error de red al consultar API (HTTP %d, errno %d)", s_last_http_code, s_last_errno);
-        platform_draw_text(30, 58, msg, 0x00C83838, 2);
+        platform_draw_text_clipped(30, 58, sw - 60, msg, 0x00C83838, 2);
     } else {
         char f_info[128];
         snprintf(f_info, sizeof(f_info), "Resultados API: \"%s\" (%d temas reales recibidos)", s_search_query, s_display_count);
-        platform_draw_text(30, 58, f_info, 0xFFFFFFFF, 2);
+        int online_w = 30 * 8 * 2;
+        int max_finfo_w = sw - 30 - online_w - 40;
+        if (max_finfo_w < 100) max_finfo_w = 100;
+        platform_draw_text_clipped(30, 58, max_finfo_w, f_info, 0xFFFFFFFF, 2);
         platform_draw_text_r(sw - 30, 58, "[ONLINE: tracks.monochrome.st]", 0x00C83838, 2);
     }
 
@@ -887,11 +899,13 @@ static void render_home_screen(int sw, int sh)
             snprintf(num, sizeof(num), "%02d.", i + 1);
             platform_draw_text(60, ry + 16, num, is_sel ? 0xFFFFFFFF : 0x00707070, 2);
 
-            platform_draw_text(110, ry + 10, t->title, is_sel ? 0xFFFFFFFF : 0x00E0E0E0, 2);
+            int max_row_w = sw - 120 - 20 - 110;
+            if (max_row_w < 100) max_row_w = 100;
+            platform_draw_text_clipped(110, ry + 10, max_row_w, t->title, is_sel ? 0xFFFFFFFF : 0x00E0E0E0, 2);
 
             char subline[256];
             snprintf(subline, sizeof(subline), "%s  |  [ID: %s]", t->artist, t->id);
-            platform_draw_text(110, ry + 32, subline, is_sel ? 0xFFFFFFFF : 0x00808080, 1);
+            platform_draw_text_clipped(110, ry + 32, max_row_w, subline, is_sel ? 0xFFFFFFFF : 0x00808080, 1);
 
             char dur[16];
             snprintf(dur, sizeof(dur), "%d:%02d", t->duration_sec / 60, t->duration_sec % 60);
@@ -937,26 +951,32 @@ static void render_playing_screen(int sw, int sh, long frame)
     }
 
     /* Card Right: Track Details */
-    int info_x = cover_x + cover_size + 60;
-    int info_y = 110;
+    int info_x = cover_x + cover_size + 50;
+    int info_y = 105;
+    int max_detail_w = sw - info_x - 40;
+    if (max_detail_w < 200) max_detail_w = 200;
 
-    platform_draw_text(info_x, info_y, t->title, 0xFFFFFFFF, 3);
-    platform_draw_text(info_x, info_y + 35, t->artist, 0xFFFFFFFF, 2);
+    int t_len = (int)strlen(t->title);
+    int title_scale = (t_len * 24 > max_detail_w) ? 2 : 3;
+    platform_draw_text_clipped(info_x, info_y, max_detail_w, t->title, 0xFFFFFFFF, title_scale);
+    platform_draw_text_clipped(info_x, info_y + 35, max_detail_w, t->artist, 0xFFFFFFFF, 2);
     if (t->album[0]) {
-        platform_draw_text(info_x, info_y + 65, t->album, 0x0090A4AE, 2);
+        platform_draw_text_clipped(info_x, info_y + 65, max_detail_w, t->album, 0x0090A4AE, 2);
     }
 
     /* Track ID verification box */
     char id_box[256];
-    snprintf(id_box, sizeof(id_box), "TRACK ID: %s (http://tracks.monochrome.st/track/%s)", t->id, t->id);
-    platform_draw_rect(info_x, info_y + 95, 600, 24, 0x00101824);
-    platform_draw_text(info_x + 10, info_y + 101, id_box, 0xFFFFFFFF, 1);
+    snprintf(id_box, sizeof(id_box), "ID: %s  |  tracks.monochrome.st/track/%s", t->id, t->id);
+    int box_w = max_detail_w;
+    if (box_w > 640) box_w = 640;
+    platform_draw_rect(info_x, info_y + 95, box_w, 24, 0x00101824);
+    platform_draw_text_clipped(info_x + 10, info_y + 101, box_w - 20, id_box, 0xFFFFFFFF, 1);
 
     /* Audio spec badges */
     char dac_spec[128];
     snprintf(dac_spec, sizeof(dac_spec), "FORMATO: LOSSLESS FLAC STREAM  |  SALIDA: 48000 Hz Float Stereo");
-    platform_draw_rect(info_x, info_y + 130, 600, 32, 0x00141C2B);
-    platform_draw_text(info_x + 15, info_y + 138, dac_spec, 0x00C83838, 2);
+    platform_draw_rect(info_x, info_y + 130, box_w, 26, 0x00141C2B);
+    platform_draw_text_clipped(info_x + 15, info_y + 137, box_w - 30, dac_spec, 0x00C83838, 1);
 
     /* 16-Band Visualizer */
     int vis_x = info_x;
@@ -1049,7 +1069,7 @@ static void render_search_screen(int sw, int sh)
 
     char q_display[80];
     snprintf(q_display, sizeof(q_display), "Buscar en Monochrome: %s_", s_search_query);
-    platform_draw_text(card_x + 45, card_y + 38, q_display, 0xFFFFFFFF, 2);
+    platform_draw_text_clipped(card_x + 45, card_y + 38, card_w - 90, q_display, 0xFFFFFFFF, 2);
 
     /* OSK Grid */
     int key_w = 64;
@@ -1106,11 +1126,13 @@ static void render_queue_screen(int sw, int sh)
             platform_draw_text(45, ry + 20, q_num, 0x00757575, 2);
         }
 
-        platform_draw_text(180, ry + 12, t->title, 0xFFFFFFFF, 2);
+        int max_q_w = sw - 180 - 100;
+        if (max_q_w < 100) max_q_w = 100;
+        platform_draw_text_clipped(180, ry + 12, max_q_w, t->title, 0xFFFFFFFF, 2);
 
         char sub[256];
         snprintf(sub, sizeof(sub), "%s | ID: %s", t->artist, t->id);
-        platform_draw_text(180, ry + 34, sub, 0x00909090, 1);
+        platform_draw_text_clipped(180, ry + 34, max_q_w, sub, 0x00909090, 1);
 
         char dur[16];
         snprintf(dur, sizeof(dur), "%d:%02d", t->duration_sec / 60, t->duration_sec % 60);
@@ -1151,9 +1173,9 @@ static void render_library_screen(int sw, int sh)
         if (sel) {
             platform_draw_rect(40, py, card_w - 20, 36, 0x00243450);
             platform_draw_rect(40, py, 4, 36, 0xFFFFFFFF);
-            platform_draw_text(50, py + 10, playlists[i], 0xFFFFFFFF, 2);
+            platform_draw_text_clipped(50, py + 10, card_w - 40, playlists[i], 0xFFFFFFFF, 2);
         } else {
-            platform_draw_text(50, py + 10, playlists[i], 0x00A0A0A0, 2);
+            platform_draw_text_clipped(50, py + 10, card_w - 40, playlists[i], 0x00A0A0A0, 2);
         }
     }
 
@@ -1206,11 +1228,14 @@ static void render_recent_screen(int sw, int sh)
             char num[8];
             snprintf(num, sizeof(num), "%02d.", i + 1);
             platform_draw_text(60, ry + 16, num, is_sel ? 0xFFFFFFFF : 0x00707070, 2);
-            platform_draw_text(110, ry + 10, t->title, is_sel ? 0xFFFFFFFF : 0x00E0E0E0, 2);
+
+            int max_rec_w = sw - 120 - 20 - 110;
+            if (max_rec_w < 100) max_rec_w = 100;
+            platform_draw_text_clipped(110, ry + 10, max_rec_w, t->title, is_sel ? 0xFFFFFFFF : 0x00E0E0E0, 2);
 
             char subline[256];
             snprintf(subline, sizeof(subline), "%s  |  [ID: %s]", t->artist, t->id);
-            platform_draw_text(110, ry + 32, subline, is_sel ? 0xFFFFFFFF : 0x00808080, 1);
+            platform_draw_text_clipped(110, ry + 32, max_rec_w, subline, is_sel ? 0xFFFFFFFF : 0x00808080, 1);
 
             char dur[16];
             snprintf(dur, sizeof(dur), "%d:%02d", t->duration_sec / 60, t->duration_sec % 60);
@@ -1253,8 +1278,10 @@ static void render_unreleased_screen(int sw, int sh)
             platform_draw_rect(20, ry, sw - 40, row_h - 4, (i % 2 == 0) ? 0x00111722 : 0x00161E2C);
         }
 
-        platform_draw_text(60, ry + 12, unreleased_items[i][0], is_sel ? 0xFFFFFFFF : 0x00E0E0E0, 2);
-        platform_draw_text(60, ry + 34, unreleased_items[i][1], is_sel ? 0x00C83838 : 0x00808080, 1);
+        int max_unr_w = sw - 120 - 20 - 60;
+        if (max_unr_w < 100) max_unr_w = 100;
+        platform_draw_text_clipped(60, ry + 12, max_unr_w, unreleased_items[i][0], is_sel ? 0xFFFFFFFF : 0x00E0E0E0, 2);
+        platform_draw_text_clipped(60, ry + 34, max_unr_w, unreleased_items[i][1], is_sel ? 0x00C83838 : 0x00808080, 1);
         platform_draw_text_r(sw - 120, ry + 20, unreleased_items[i][2], 0x00909090, 2);
         platform_draw_text_r(sw - 40, ry + 20, "EXCLUSIVE", 0x00C83838, 1);
     }
@@ -1276,17 +1303,17 @@ static void render_donate_screen(int sw, int sh)
     platform_draw_rect(card_x - 3, card_y - 3, card_w + 6, card_h + 6, 0x00C83838);
     platform_draw_rect(card_x, card_y, card_w, card_h, 0x00121722);
 
-    platform_draw_text(card_x + 40, card_y + 30, "MONOCHROME MUSIC: STREAMING SIN ANUNCIOS NI DRM", 0xFFFFFFFF, 3);
-    platform_draw_text(card_x + 40, card_y + 70, "Un ecosistema de streaming abierto, gratuito y lossless,", 0x00CCCCCC, 2);
-    platform_draw_text(card_x + 40, card_y + 95, "creado por la comunidad y portado de forma nativa a la PS3.", 0x00CCCCCC, 2);
+    platform_draw_text(card_x + 40, card_y + 30, "MONOCHROME MUSIC: STREAMING SIN ANUNCIOS NI DRM", 0xFFFFFFFF, 2);
+    platform_draw_text(card_x + 40, card_y + 65, "Un ecosistema de streaming abierto, gratuito y lossless,", 0x00CCCCCC, 2);
+    platform_draw_text(card_x + 40, card_y + 90, "creado por la comunidad y portado de forma nativa a la PS3.", 0x00CCCCCC, 2);
 
-    platform_draw_rect(card_x + 40, card_y + 135, card_w - 80, 2, 0x00243450);
+    platform_draw_rect(card_x + 40, card_y + 125, card_w - 80, 2, 0x00243450);
 
-    platform_draw_text(card_x + 40, card_y + 155, "ENLACES OFICIALES:", 0x00C83838, 2);
-    platform_draw_text(card_x + 40, card_y + 185, "Web oficial:    https://monochrome.st", 0xFFFFFFFF, 2);
-    platform_draw_text(card_x + 40, card_y + 215, "Donaciones:     https://monochrome.st/donate", 0xFFFFFFFF, 2);
-    platform_draw_text(card_x + 40, card_y + 245, "Repositorio Web: github.com/monochrome-music/monochrome", 0x0090A4AE, 2);
-    platform_draw_text(card_x + 40, card_y + 275, "Port PS3:        github.com/nopeman321/monochrome-ps3", 0x0090A4AE, 2);
+    platform_draw_text(card_x + 40, card_y + 145, "ENLACES OFICIALES:", 0x00C83838, 2);
+    platform_draw_text(card_x + 40, card_y + 175, "Web oficial:    https://monochrome.st", 0xFFFFFFFF, 2);
+    platform_draw_text(card_x + 40, card_y + 205, "Donaciones:     https://monochrome.st/donate", 0xFFFFFFFF, 2);
+    platform_draw_text(card_x + 40, card_y + 235, "Repo Web:       github.com/monochrome-music/monochrome", 0x0090A4AE, 2);
+    platform_draw_text(card_x + 40, card_y + 265, "Port PS3:       github.com/nopeman321/monochrome-ps3", 0x0090A4AE, 2);
 
     platform_draw_rect(card_x + 40, card_y + 315, card_w - 80, 45, 0x001B2433);
     platform_draw_text(card_x + 55, card_y + 330, "Agradecimientos a la escena homebrew de PS3 y a los desarrolladores de PSL1GHT.", 0x00788898, 1);
@@ -1303,10 +1330,10 @@ static void render_settings_screen(int sw, int sh)
     platform_draw_text(30, 72, "+ AJUSTES DE AUDIO, PANTALLA Y RED +", 0xFFFFFFFF, 2);
 
     const char *settings_items[] = {
-        "1. Ajuste de Geometria de Pantalla (Escala, offset X/Y y tipografia)",
-        "2. Configuracion de Red (Timeout de sockets HTTP y reintentos 429)",
-        "3. Informacion de Hardware y Diagnostico del Cell Broadband Engine",
-        "4. Restablecer valores de pantalla a configuracion de fabrica"
+        "1. Calibracion de Pantalla (Overscan, Offset X/Y y Escala)",
+        "2. Configuracion de Red (Timeouts HTTP y Reintentos 429)",
+        "3. Diagnostico del Sistema (Cell B.E., RSX y Memoria XDR)",
+        "4. Restablecer Pantalla a Valores de Fabrica"
     };
 
     int card_w = 940;
@@ -1323,10 +1350,10 @@ static void render_settings_screen(int sw, int sh)
         if (sel) {
             platform_draw_rect(card_x + 20, py, card_w - 40, 50, 0x00243450);
             platform_draw_rect(card_x + 20, py, 6, 50, 0x00C83838);
-            platform_draw_text(card_x + 35, py + 16, settings_items[i], 0xFFFFFFFF, 2);
+            platform_draw_text_clipped(card_x + 35, py + 16, card_w - 60, settings_items[i], 0xFFFFFFFF, 2);
         } else {
             platform_draw_rect(card_x + 20, py, card_w - 40, 50, 0x00101520);
-            platform_draw_text(card_x + 35, py + 16, settings_items[i], 0x00A0B0C0, 2);
+            platform_draw_text_clipped(card_x + 35, py + 16, card_w - 60, settings_items[i], 0x00A0B0C0, 2);
         }
     }
 
@@ -1350,14 +1377,14 @@ static void render_about_screen(int sw, int sh)
     platform_draw_text(card_x + 460, card_y + 31, APP_DISPLAY_VERSION, 0x00C83838, 2);
 
     int y = card_y + 70;
-    platform_draw_text(card_x + 35, y, "Title ID:          MONO00024 (Free NPDRM CEX / CFW / HEN)", 0x00CCCCCC, 2); y += 30;
-    platform_draw_text(card_x + 35, y, "Target Hardware:   Sony PlayStation 3 (Cell B.E. + RSX)", 0x00CCCCCC, 2); y += 30;
-    platform_draw_text(card_x + 35, y, "SDK Toolchain:     PSL1GHT v2 (GCC 7.2.0 PPU / newlib)", 0x00CCCCCC, 2); y += 30;
-    platform_draw_text(card_x + 35, y, "Audio Architecture: GameOS 48.000 Hz Float32 DMA (256 samples/block)", 0x00CCCCCC, 2); y += 30;
-    platform_draw_text(card_x + 35, y, "FLAC Decoding:     dr_flac progressive non-blocking engine", 0x00CCCCCC, 2); y += 30;
-    platform_draw_text(card_x + 35, y, "Resampling:        Exact 147:160 linear interpolation", 0x00CCCCCC, 2); y += 30;
-    platform_draw_text(card_x + 35, y, "Cover Art Engine:  libjpeg (JPEG to RSX Texture)", 0x00CCCCCC, 2); y += 30;
-    platform_draw_text(card_x + 35, y, "Official API:      tracks.monochrome.st (Port 80 HTTP/1.1)", 0x00C83838, 2); y += 40;
+    platform_draw_text(card_x + 35, y, "Title ID:          MONO00024 (Free NPDRM CEX / CFW / HEN)", 0x00CCCCCC, 1); y += 24;
+    platform_draw_text(card_x + 35, y, "Target Hardware:   Sony PlayStation 3 (Cell B.E. + RSX)", 0x00CCCCCC, 1); y += 24;
+    platform_draw_text(card_x + 35, y, "SDK Toolchain:     PSL1GHT v2 (GCC 7.2.0 PPU / newlib)", 0x00CCCCCC, 1); y += 24;
+    platform_draw_text(card_x + 35, y, "Audio Architecture: GameOS 48.000 Hz Float32 DMA (256 samples/block)", 0x00CCCCCC, 1); y += 24;
+    platform_draw_text(card_x + 35, y, "FLAC Decoding:     dr_flac progressive non-blocking engine", 0x00CCCCCC, 1); y += 24;
+    platform_draw_text(card_x + 35, y, "Resampling:        Exact 147:160 linear interpolation", 0x00CCCCCC, 1); y += 24;
+    platform_draw_text(card_x + 35, y, "Cover Art Engine:  libjpeg asincrono (hilo mono_cover)", 0x00CCCCCC, 1); y += 24;
+    platform_draw_text(card_x + 35, y, "Official API:      tracks.monochrome.st (Port 80 HTTP/1.1)", 0x00C83838, 1); y += 35;
 
     platform_draw_rect(card_x + 35, y, card_w - 70, 35, 0x000F1520);
     platform_draw_text(card_x + 45, y + 10, "Desarrollado para disfrute de musica libre y audio de alta fidelidad.", 0x00808080, 1);
