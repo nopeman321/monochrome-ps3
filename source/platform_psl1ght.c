@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 
 #include <sysutil/video.h>
 #include <rsx/gcm_sys.h>
@@ -284,10 +285,23 @@ int platform_save_screen_config(void)
 
 int platform_load_screen_config(void)
 {
+    /* Ensure monochrome directory tree exists */
+    mkdir("/dev_hdd0/tmp", 0777);
+    mkdir("/dev_hdd0/tmp/monochrome", 0777);
+    mkdir("/dev_hdd0/tmp/monochrome/cache", 0777);
+    mkdir("/dev_hdd0/tmp/monochrome/tracks", 0777);
+
+    if (access(SCREEN_CONFIG_PATH, F_OK) != 0) {
+        platform_log("[SCREEN] Config no existe, creando valores por defecto");
+        platform_save_screen_config();
+        return 0;
+    }
+
     FILE *f = fopen(SCREEN_CONFIG_PATH, "r");
     if (!f) {
-        platform_log("[SCREEN] No hay config guardada, usando valores por defecto");
-        return -1;
+        platform_log("[SCREEN] No hay config guardada, creando valores por defecto");
+        platform_save_screen_config();
+        return 0;
     }
     int ox, oy;
     float sc, fs = 1.0f;
@@ -318,8 +332,21 @@ void platform_clear(uint32_t color)
 {
     rsxBuffer *b = &s_buffers[s_cur_buffer];
     int count = b->width * b->height;
-    for (int i = 0; i < count; i++) {
-        b->ptr[i] = color;
+    if (color == 0) {
+        memset(b->ptr, 0, (size_t)count * sizeof(uint32_t));
+        return;
+    }
+    uint64_t color64 = ((uint64_t)color << 32) | (uint64_t)color;
+    uint64_t *ptr64 = (uint64_t *)b->ptr;
+    int count64 = count / 2;
+    for (int i = 0; i < count64; i += 4) {
+        ptr64[i]     = color64;
+        ptr64[i + 1] = color64;
+        ptr64[i + 2] = color64;
+        ptr64[i + 3] = color64;
+    }
+    if (count & 1) {
+        b->ptr[count - 1] = color;
     }
 }
 
@@ -340,10 +367,22 @@ void platform_draw_rect(int x, int y, int w, int h, uint32_t color)
     if (y + h > b->height) h = b->height - y;
     if (w <= 0 || h <= 0) return;
 
+    uint64_t color64 = ((uint64_t)color << 32) | (uint64_t)color;
+
     for (int r = y; r < y + h; r++) {
         uint32_t *row = &b->ptr[r * b->width + x];
-        for (int c = 0; c < w; c++) {
-            row[c] = color;
+        int rem = w;
+        if (((uintptr_t)row & 7) && rem > 0) {
+            *row++ = color;
+            rem--;
+        }
+        int w64 = rem / 2;
+        uint64_t *row64 = (uint64_t *)row;
+        for (int i = 0; i < w64; i++) {
+            row64[i] = color64;
+        }
+        if (rem & 1) {
+            row[w64 * 2] = color;
         }
     }
 }
@@ -366,17 +405,32 @@ int platform_draw_text(int x, int y, const char *str, uint32_t color, int scale)
     if (adj_scale < 1) adj_scale = 1;
     
     int cur_x = adj_x;
+    int bw = b->width;
+    int bh = b->height;
+
     while (*str) {
         unsigned char ch = (unsigned char)*str++;
         if (ch < 0x20 || ch > 0x7E) ch = '?';
         const uint8_t *g = FONT8[ch - 0x20];
-        for (int r = 0; r < 8; r++) {
-            uint8_t bits = g[r];
-            for (int c = 0; c < 8; c++) {
-                if (bits & (1u << c)) {
-                    for (int sy = 0; sy < adj_scale; sy++) {
-                        for (int sx = 0; sx < adj_scale; sx++) {
-                            draw_pixel(b, cur_x + c * adj_scale + sx, adj_y + r * adj_scale + sy, color);
+        
+        if (cur_x + 8 * adj_scale > 0 && cur_x < bw && adj_y + 8 * adj_scale > 0 && adj_y < bh) {
+            for (int r = 0; r < 8; r++) {
+                uint8_t bits = g[r];
+                if (!bits) continue;
+                int py_base = adj_y + r * adj_scale;
+                for (int sy = 0; sy < adj_scale; sy++) {
+                    int py = py_base + sy;
+                    if ((unsigned)py >= (unsigned)bh) continue;
+                    uint32_t *dst_row = &b->ptr[py * bw];
+                    for (int c = 0; c < 8; c++) {
+                        if (bits & (1u << c)) {
+                            int px_base = cur_x + c * adj_scale;
+                            for (int sx = 0; sx < adj_scale; sx++) {
+                                int px = px_base + sx;
+                                if ((unsigned)px < (unsigned)bw) {
+                                    dst_row[px] = color;
+                                }
+                            }
                         }
                     }
                 }
@@ -413,32 +467,55 @@ void platform_draw_texture(const uint8_t *texture_data, int tex_w, int tex_h,
     if (dst_y + dst_h > b->height) dst_h = b->height - dst_y;
     if (dst_w <= 0 || dst_h <= 0) return;
     
-    // Simple nearest-neighbor scaling from texture to destination
+    int bw = b->width;
+
+    /* Precompute X coordinate mapping lookup table to eliminate divisions from scanline loop */
+    int tx_lut[1920];
+    int max_w = (dst_w < 1920) ? dst_w : 1920;
+    if (tex_w == dst_w) {
+        for (int x = 0; x < max_w; x++) tx_lut[x] = x;
+    } else {
+        for (int x = 0; x < max_w; x++) {
+            int tx = (x * tex_w) / dst_w;
+            if (tx >= tex_w) tx = tex_w - 1;
+            tx_lut[x] = tx;
+        }
+    }
+
     for (int dy = 0; dy < dst_h; dy++) {
         int ty = (dy * tex_h) / dst_h;
         if (ty >= tex_h) ty = tex_h - 1;
+        const uint8_t *src_scanline = &texture_data[ty * tex_w * 4];
+        uint32_t *dst_row = &b->ptr[(dst_y + dy) * bw + dst_x];
         
-        for (int dx = 0; dx < dst_w; dx++) {
-            int tx = (dx * tex_w) / dst_w;
-            if (tx >= tex_w) tx = tex_w - 1;
-            
-            // Read RGBA from texture
-            int tex_offset = (ty * tex_w + tx) * 4;
-            uint8_t r = texture_data[tex_offset + 0];
-            uint8_t g = texture_data[tex_offset + 1];
-            uint8_t b_val = texture_data[tex_offset + 2];
-            uint8_t a = texture_data[tex_offset + 3];
-            
-            // Convert RGBA to XRGB (buffer format)
-            // Assuming buffer is XRGB8888 format
-            uint32_t pixel = (a << 24) | (r << 16) | (g << 8) | b_val;
-            
-            // Write to buffer
-            int buf_x = dst_x + dx;
-            int buf_y = dst_y + dy;
-            if ((unsigned)buf_x < (unsigned)b->width && (unsigned)buf_y < (unsigned)b->height) {
-                b->ptr[buf_y * b->width + buf_x] = pixel;
-            }
+        int dx = 0;
+        // Align destination row to 8 bytes if needed
+        if (((uintptr_t)dst_row & 7) && dst_w > 0) {
+            int tx = tx_lut[dx];
+            const uint8_t *p = &src_scanline[tx * 4];
+            dst_row[dx] = ((uint32_t)p[3] << 24) | ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[2];
+            dx++;
+        }
+        
+        int w2 = (dst_w - dx) / 2;
+        uint64_t *dst_row64 = (uint64_t *)&dst_row[dx];
+        for (int i = 0; i < w2; i++) {
+            int x0 = dx + i * 2;
+            int x1 = x0 + 1;
+            int tx0 = tx_lut[x0];
+            int tx1 = tx_lut[x1];
+            const uint8_t *p0 = &src_scanline[tx0 * 4];
+            const uint8_t *p1 = &src_scanline[tx1 * 4];
+            uint32_t pix0 = ((uint32_t)p0[3] << 24) | ((uint32_t)p0[0] << 16) | ((uint32_t)p0[1] << 8) | (uint32_t)p0[2];
+            uint32_t pix1 = ((uint32_t)p1[3] << 24) | ((uint32_t)p1[0] << 16) | ((uint32_t)p1[1] << 8) | (uint32_t)p1[2];
+            dst_row64[i] = ((uint64_t)pix0 << 32) | (uint64_t)pix1;
+        }
+        
+        if ((dst_w - dx) & 1) {
+            int last_x = dst_w - 1;
+            int tx = tx_lut[last_x];
+            const uint8_t *p = &src_scanline[tx * 4];
+            dst_row[last_x] = ((uint32_t)p[3] << 24) | ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[2];
         }
     }
 }

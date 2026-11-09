@@ -14,6 +14,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <errno.h>
+#include <fcntl.h>
 
 #include <audio/audio.h>
 #include <sys/thread.h>
@@ -128,6 +129,7 @@ static volatile bool s_is_playing = true;
 static volatile float s_volume = 0.85f;
 static volatile uint32_t s_hw_underruns = 0;
 static volatile uint32_t s_ring_underruns = 0;
+static u32 s_write_block = 0;
 
 static float s_vis_bands[VIS_BANDS];
 
@@ -269,8 +271,12 @@ static void audio_hw_thread_func(void *arg)
             continue;
         }
 
-        u64 current_block = *(u64 *)((u64)s_config.readIndex);
-        u32 write_block = (current_block + 1) % s_config.numBlocks;
+        /* El driver consume un bloque por evento; llevamos nuestro propio indice
+           para no leer erróneamente readIndex como puntero */
+        u32 nblocks = (u32)s_config.numBlocks;
+        if (nblocks == 0 || nblocks > 32) nblocks = 8;
+        s_write_block = (s_write_block + 1) % nblocks;
+        u32 write_block = s_write_block;
         float *dest = (float *)((u64)s_config.audioDataStart) + (NUM_CHANNELS * AUDIO_BLOCK_SAMPLES * write_block);
 
         if (!s_is_playing) {

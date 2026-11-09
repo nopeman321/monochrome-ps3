@@ -21,9 +21,25 @@
 typedef enum {
     STATE_HOME,
     STATE_SEARCH,
+    STATE_LIBRARY,
+    STATE_RECENT,
+    STATE_UNRELEASED,
+    STATE_SETTINGS,
+    STATE_ABOUT,
+    STATE_DONATE,
     STATE_PLAYING,
     STATE_QUEUE
 } AppState;
+
+/* ── Search Sub-Tabs (Monochrome web ecosystem) ─────────────────── */
+typedef enum {
+    SEARCH_TAB_TRACKS = 0,
+    SEARCH_TAB_ALBUMS,
+    SEARCH_TAB_ARTISTS,
+    SEARCH_TAB_PLAYLISTS,
+    SEARCH_TAB_PODCASTS,
+    SEARCH_TAB_COUNT
+} SearchTab;
 
 /* ── Playback states ─────────────────────────────────────────────── */
 typedef enum {

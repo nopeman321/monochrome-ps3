@@ -29,6 +29,50 @@ static float s_playback_progress = 0.0f;
 static RepeatMode s_repeat_mode = REPEAT_ALL;
 static bool s_shuffle = false;
 
+/* Navigation & Tabs (Monochrome Ecosystem) */
+#define NAV_TABS_COUNT 8
+static const char *s_nav_tab_names[NAV_TABS_COUNT] = {
+    "HOME", "SEARCH", "LIBRARY", "RECENT", "UNRELEASED", "DONATE", "SETTINGS", "ABOUT"
+};
+static const AppState s_nav_tab_states[NAV_TABS_COUNT] = {
+    STATE_HOME, STATE_SEARCH, STATE_LIBRARY, STATE_RECENT, STATE_UNRELEASED, STATE_DONATE, STATE_SETTINGS, STATE_ABOUT
+};
+static int s_active_nav_tab = 0;
+
+static const char *s_search_tab_names[SEARCH_TAB_COUNT] = {
+    "TRACKS", "ALBUMS", "ARTISTS", "PLAYLISTS", "PODCASTS"
+};
+static SearchTab s_search_active_tab = SEARCH_TAB_TRACKS;
+
+/* Screen cursors */
+static int s_library_cursor = 0;
+static int s_recent_cursor = 0;
+static int s_unreleased_cursor = 0;
+static int s_settings_cursor = 0;
+
+#define MAX_RECENT_TRACKS 15
+static TrackMetadata s_recent_tracks[MAX_RECENT_TRACKS];
+static int s_recent_count = 0;
+
+static void add_recent_track(const TrackMetadata *t)
+{
+    if (!t || t->id[0] == '\0') return;
+    for (int i = 0; i < s_recent_count; i++) {
+        if (strcmp(s_recent_tracks[i].id, t->id) == 0) {
+            TrackMetadata found = s_recent_tracks[i];
+            for (int j = i; j > 0; j--) s_recent_tracks[j] = s_recent_tracks[j - 1];
+            s_recent_tracks[0] = found;
+            return;
+        }
+    }
+    int move_cnt = (s_recent_count < MAX_RECENT_TRACKS) ? s_recent_count : MAX_RECENT_TRACKS - 1;
+    for (int i = move_cnt; i > 0; i--) {
+        s_recent_tracks[i] = s_recent_tracks[i - 1];
+    }
+    s_recent_tracks[0] = *t;
+    if (s_recent_count < MAX_RECENT_TRACKS) s_recent_count++;
+}
+
 /* Search state */
 static char s_search_query[64] = "daft";
 static int  s_search_len = 4;
@@ -78,11 +122,17 @@ static const char *s_osk[4][10] = {
 const char *ui_get_state_name(AppState state)
 {
     switch (state) {
-        case STATE_HOME:    return "STATE_HOME (Biblioteca)";
-        case STATE_SEARCH:  return "STATE_SEARCH (Teclado OSK)";
-        case STATE_PLAYING: return "STATE_PLAYING (Reproduciendo)";
-        case STATE_QUEUE:   return "STATE_QUEUE (Cola de Reproduccion)";
-        default:            return "STATE_UNKNOWN";
+        case STATE_HOME:        return "STATE_HOME (Home)";
+        case STATE_SEARCH:      return "STATE_SEARCH (Search)";
+        case STATE_LIBRARY:     return "STATE_LIBRARY (Library)";
+        case STATE_RECENT:      return "STATE_RECENT (Recent)";
+        case STATE_UNRELEASED:  return "STATE_UNRELEASED (Unreleased)";
+        case STATE_SETTINGS:    return "STATE_SETTINGS (Settings)";
+        case STATE_ABOUT:       return "STATE_ABOUT (About)";
+        case STATE_DONATE:      return "STATE_DONATE (Donate)";
+        case STATE_PLAYING:     return "STATE_PLAYING (Reproduciendo)";
+        case STATE_QUEUE:       return "STATE_QUEUE (Cola de Reproduccion)";
+        default:                return "STATE_UNKNOWN";
     }
 }
 
@@ -98,6 +148,9 @@ static void play_track_with_cover(int track_idx)
     
     TrackMetadata *t = &s_display_tracks[track_idx];
     
+    /* Record in recent history */
+    add_recent_track(t);
+
     /* Start audio playback */
     audio_engine_play_track(t->id, t->title);
     
@@ -173,6 +226,24 @@ void ui_init(void)
 AppState ui_handle_input(AppState current, InputAction act)
 {
     if (act == ACT_NONE) return current;
+
+    /* Global Nav Tab Cycling with L1 / R1 across main screens */
+    if (current != STATE_PLAYING && !s_screen_adjust_mode && !s_menu_open && !s_show_system_info && !s_show_network_settings) {
+        for (int i = 0; i < NAV_TABS_COUNT; i++) {
+            if (s_nav_tab_states[i] == current) {
+                s_active_nav_tab = i;
+                break;
+            }
+        }
+        if (act == ACT_L1) {
+            s_active_nav_tab = (s_active_nav_tab - 1 + NAV_TABS_COUNT) % NAV_TABS_COUNT;
+            return s_nav_tab_states[s_active_nav_tab];
+        }
+        if (act == ACT_R1) {
+            s_active_nav_tab = (s_active_nav_tab + 1) % NAV_TABS_COUNT;
+            return s_nav_tab_states[s_active_nav_tab];
+        }
+    }
 
     /* ── MENU STATE ── */
     if (s_menu_open) {
@@ -387,6 +458,12 @@ AppState ui_handle_input(AppState current, InputAction act)
                 }
                 break;
             }
+            case ACT_L2: /* Cycle search sub-tab left */
+                s_search_active_tab = (SearchTab)((s_search_active_tab - 1 + SEARCH_TAB_COUNT) % SEARCH_TAB_COUNT);
+                break;
+            case ACT_R2: /* Cycle search sub-tab right */
+                s_search_active_tab = (SearchTab)((s_search_active_tab + 1) % SEARCH_TAB_COUNT);
+                break;
             case ACT_TRIANGLE: /* Quick delete in OSK */
                 if (s_search_len > 0) {
                     s_search_query[--s_search_len] = '\0';
@@ -493,6 +570,142 @@ AppState ui_handle_input(AppState current, InputAction act)
         return current;
     }
 
+    /* ── LIBRARY STATE ── */
+    if (current == STATE_LIBRARY) {
+        switch (act) {
+            case ACT_UP:
+                if (s_library_cursor > 0) s_library_cursor--;
+                break;
+            case ACT_DOWN:
+                if (s_library_cursor < 4) s_library_cursor++;
+                break;
+            case ACT_CROSS:
+                /* Trigger library action / search */
+                http_search_async_start("electronic");
+                s_search_status = SEARCH_STATUS_BUSY;
+                return STATE_HOME;
+            case ACT_SQUARE:
+                return STATE_SEARCH;
+            case ACT_TRIANGLE:
+                return STATE_QUEUE;
+            case ACT_CIRCLE:
+                return STATE_HOME;
+            default: break;
+        }
+        return current;
+    }
+
+    /* ── RECENT STATE ── */
+    if (current == STATE_RECENT) {
+        switch (act) {
+            case ACT_UP:
+                if (s_recent_cursor > 0) s_recent_cursor--;
+                break;
+            case ACT_DOWN:
+                if (s_recent_cursor + 1 < s_recent_count) s_recent_cursor++;
+                break;
+            case ACT_CROSS:
+                if (s_recent_count > 0 && s_recent_cursor >= 0 && s_recent_cursor < s_recent_count) {
+                    audio_engine_play_track(s_recent_tracks[s_recent_cursor].id, s_recent_tracks[s_recent_cursor].title);
+                    if (s_recent_tracks[s_recent_cursor].cover_url[0] != '\0') {
+                        cover_art_load(s_recent_tracks[s_recent_cursor].cover_url);
+                    } else {
+                        cover_art_clear();
+                    }
+                    s_playback_state = PLAYBACK_PLAYING;
+                    s_playback_progress = 0.0f;
+                    return STATE_PLAYING;
+                }
+                break;
+            case ACT_SQUARE:
+                return STATE_SEARCH;
+            case ACT_TRIANGLE:
+                return STATE_QUEUE;
+            case ACT_CIRCLE:
+                return STATE_HOME;
+            default: break;
+        }
+        return current;
+    }
+
+    /* ── UNRELEASED STATE ── */
+    if (current == STATE_UNRELEASED) {
+        switch (act) {
+            case ACT_UP:
+                if (s_unreleased_cursor > 0) s_unreleased_cursor--;
+                break;
+            case ACT_DOWN:
+                if (s_unreleased_cursor < 4) s_unreleased_cursor++;
+                break;
+            case ACT_CROSS:
+                /* Search live bootlegs */
+                http_search_async_start("alive 2007");
+                s_search_status = SEARCH_STATUS_BUSY;
+                return STATE_HOME;
+            case ACT_SQUARE:
+                return STATE_SEARCH;
+            case ACT_TRIANGLE:
+                return STATE_QUEUE;
+            case ACT_CIRCLE:
+                return STATE_HOME;
+            default: break;
+        }
+        return current;
+    }
+
+    /* ── SETTINGS STATE ── */
+    if (current == STATE_SETTINGS) {
+        switch (act) {
+            case ACT_UP:
+                if (s_settings_cursor > 0) s_settings_cursor--;
+                break;
+            case ACT_DOWN:
+                if (s_settings_cursor < 3) s_settings_cursor++;
+                break;
+            case ACT_CROSS:
+                if (s_settings_cursor == 0) {
+                    s_screen_adjust_mode = true;
+                    platform_get_screen_adjust(&s_adjust_offset_x, &s_adjust_offset_y, &s_adjust_scale);
+                    s_adjust_font_scale = platform_get_font_scale();
+                } else if (s_settings_cursor == 1) {
+                    s_show_network_settings = true;
+                } else if (s_settings_cursor == 2) {
+                    s_show_system_info = true;
+                } else if (s_settings_cursor == 3) {
+                    s_adjust_offset_x = 0;
+                    s_adjust_offset_y = 0;
+                    s_adjust_scale = 1.0f;
+                    s_adjust_font_scale = 1.0f;
+                    platform_set_screen_adjust(0, 0, 1.0f);
+                    platform_set_font_scale(1.0f);
+                    platform_save_screen_config();
+                }
+                break;
+            case ACT_SQUARE:
+                return STATE_SEARCH;
+            case ACT_TRIANGLE:
+                return STATE_QUEUE;
+            case ACT_CIRCLE:
+                return STATE_HOME;
+            default: break;
+        }
+        return current;
+    }
+
+    /* ── ABOUT & DONATE STATES ── */
+    if (current == STATE_ABOUT || current == STATE_DONATE) {
+        switch (act) {
+            case ACT_CIRCLE:
+                return STATE_HOME;
+            case ACT_SQUARE:
+                return STATE_SEARCH;
+            case ACT_TRIANGLE:
+                return STATE_QUEUE;
+            default: break;
+        }
+        return current;
+    }
+
     /* ── HOME STATE (Default) ── */
     switch (act) {
         case ACT_UP:
@@ -543,15 +756,35 @@ static void render_ascii_metalheart_background(int sw, int sh)
     platform_draw_text_r(sw - 25, sh - 28, "LOC: 0x40100000 // BUFFER: 48MB //", 0x001C1C1C, 1);
 }
 
-static void render_header(int sw, const char *right_hint)
+static void render_header(int sw, AppState current_state, const char *right_hint)
 {
-    platform_draw_rect(0, 0, sw, 50, 0x000F121B);
-    platform_draw_rect(0, 50, sw, 2, 0xFFFFFFFF);
-    platform_draw_text(30, 14, "MONOCHROME", 0xFFFFFFFF, 3);
-    platform_draw_text(250, 20, APP_DISPLAY_VERSION, 0x00808080, 2);
+    platform_draw_rect(0, 0, sw, 64, 0x000B0E14);
+    platform_draw_rect(0, 64, sw, 2, 0x002B3444);
+
+    /* Brand logo & version */
+    platform_draw_text(25, 10, "MONOCHROME", 0xFFFFFFFF, 3);
+    platform_draw_text(245, 16, APP_DISPLAY_VERSION, 0x00707070, 2);
+
+    /* Top right status/hint */
     if (right_hint) {
-        platform_draw_text_r(sw - 30, 18, right_hint, 0x00A0A0A0, 2);
+        platform_draw_text_r(sw - 25, 14, right_hint, 0x0090A4AE, 2);
     }
+
+    /* 8 Navigation tabs row */
+    int tab_x = 25;
+    for (int i = 0; i < NAV_TABS_COUNT; i++) {
+        bool is_active = (s_nav_tab_states[i] == current_state);
+        int tw = (int)strlen(s_nav_tab_names[i]) * 8 * 1 + 16;
+        if (is_active) {
+            platform_draw_rect(tab_x, 38, tw, 22, 0x00C83838);
+            platform_draw_text(tab_x + 8, 43, s_nav_tab_names[i], 0xFFFFFFFF, 1);
+        } else {
+            platform_draw_rect(tab_x, 38, tw, 22, 0x00131B26);
+            platform_draw_text(tab_x + 8, 43, s_nav_tab_names[i], 0x00788898, 1);
+        }
+        tab_x += tw + 6;
+    }
+    platform_draw_text_r(sw - 25, 43, "[L1/R1] Tabs | [] Search", 0x00556677, 1);
 }
 
 static void render_now_playing_mini_bar(int sw, int sh)
@@ -598,7 +831,7 @@ static void render_footer(int sw, int sh, const char *hints)
 
 static void render_home_screen(int sw, int sh)
 {
-    render_header(sw, "[X] Reproducir  [Cuadrado] Buscar  [Triangulo] Cola");
+    render_header(sw, STATE_HOME, "[X] Reproducir | [] Buscar | /\\ Cola");
 
     /* Subheader with dynamic search status */
     platform_draw_rect(0, 52, sw, 32, 0x00141824);
@@ -675,7 +908,7 @@ static void render_home_screen(int sw, int sh)
 
 static void render_playing_screen(int sw, int sh, long frame)
 {
-    render_header(sw, "REPRODUCIENDO (STREAMING LOSSLESS)");
+    render_header(sw, STATE_PLAYING, "EN REPRODUCCION (LOSSLESS FLAC)");
 
     if (s_current_track_idx < 0 || s_current_track_idx >= s_display_count) {
         platform_draw_text(sw / 2 - 150, sh / 2, "Ningun tema en reproduccion", 0xFFFFFFFF, 2);
@@ -784,7 +1017,7 @@ static void render_playing_screen(int sw, int sh, long frame)
 
 static void render_search_screen(int sw, int sh)
 {
-    render_header(sw, "BUSQUEDA ONLINE EN TIEMPO REAL");
+    render_header(sw, STATE_SEARCH, "[L1/R1] Filtro | [GO] Buscar");
 
     int card_w = 800;
     int card_h = 480;
@@ -794,8 +1027,24 @@ static void render_search_screen(int sw, int sh)
     platform_draw_rect(card_x - 3, card_y - 3, card_w + 6, card_h + 6, 0xFFFFFFFF);
     platform_draw_rect(card_x, card_y, card_w, card_h, 0x00141C2B);
 
+    /* Search Sub-Tabs (Tracks, Albums, Artists, Playlists, Podcasts) */
+    int subtab_x = card_x + 30;
+    for (int t = 0; t < SEARCH_TAB_COUNT; t++) {
+        bool is_sub_active = (t == (int)s_search_active_tab);
+        int tw = (int)strlen(s_search_tab_names[t]) * 8 * 1 + 18;
+        if (is_sub_active) {
+            platform_draw_rect(subtab_x, card_y + 2, tw, 20, 0x00C83838);
+            platform_draw_text(subtab_x + 9, card_y + 6, s_search_tab_names[t], 0xFFFFFFFF, 1);
+        } else {
+            platform_draw_rect(subtab_x, card_y + 2, tw, 20, 0x001B2433);
+            platform_draw_text(subtab_x + 9, card_y + 6, s_search_tab_names[t], 0x00788898, 1);
+        }
+        subtab_x += tw + 8;
+    }
+    platform_draw_text_r(card_x + card_w - 30, card_y + 6, "[L2/R2] Filtro", 0x00667788, 1);
+
     /* Query Box */
-    platform_draw_rect(card_x + 30, card_y + 25, card_w - 60, 48, 0x000F1520);
+    platform_draw_rect(card_x + 30, card_y + 28, card_w - 60, 48, 0x000F1520);
     platform_draw_rect(card_x + 30, card_y + 25, card_w - 60, 1, 0xFFFFFFFF);
 
     char q_display[80];
@@ -835,7 +1084,7 @@ static void render_search_screen(int sw, int sh)
 
 static void render_queue_screen(int sw, int sh)
 {
-    render_header(sw, "COLA DE REPRODUCCION (QUEUE)");
+    render_header(sw, STATE_QUEUE, "COLA DE REPRODUCCION (QUEUE)");
 
     platform_draw_rect(0, 52, sw, 32, 0x00141824);
     platform_draw_text(30, 58, "Pistas en cola de streaming:", 0xFFFFFFFF, 2);
@@ -870,6 +1119,250 @@ static void render_queue_screen(int sw, int sh)
 
     render_now_playing_mini_bar(sw, sh);
     render_footer(sw, sh, "O: Volver  |  X: Saltar a esta pista  |  START: Salir");
+}
+
+
+/* ── Library Screen (Playlists & Offline Cache) ── */
+static void render_library_screen(int sw, int sh)
+{
+    render_header(sw, STATE_LIBRARY, "BIBLIOTECA & COLECCIONES");
+
+    platform_draw_rect(0, 66, sw, 32, 0x00141824);
+    platform_draw_text(30, 72, "+ TUS COLECCIONES, PLAYLISTS & DESCARGAS LOCALES +", 0xFFFFFFFF, 2);
+
+    int card_w = (sw - 80) / 2;
+    int card_h = sh - 210;
+
+    /* Card 1: Playlists & Stations */
+    platform_draw_rect(30, 110, card_w, card_h, 0x00141C2B);
+    platform_draw_rect(30, 110, card_w, 2, 0xFFFFFFFF);
+    platform_draw_text(45, 125, "PLAYLISTS Y RADIOS DINAMICAS", 0x00C83838, 2);
+
+    const char *playlists[] = {
+        "1. Infinite Radio (Mix automatico en vivo)",
+        "2. Daft Punk - Complete Discography FLAC",
+        "3. High-Resolution Audio Masterworks (96kHz)",
+        "4. French House & Electronic Essentials",
+        "5. Lo-Fi & Ambient Study Sessions"
+    };
+    for (int i = 0; i < 5; i++) {
+        bool sel = (i == s_library_cursor);
+        int py = 160 + i * 45;
+        if (sel) {
+            platform_draw_rect(40, py, card_w - 20, 36, 0x00243450);
+            platform_draw_rect(40, py, 4, 36, 0xFFFFFFFF);
+            platform_draw_text(50, py + 10, playlists[i], 0xFFFFFFFF, 2);
+        } else {
+            platform_draw_text(50, py + 10, playlists[i], 0x00A0A0A0, 2);
+        }
+    }
+
+    /* Card 2: Offline Cache & HDD Storage */
+    int card2_x = 30 + card_w + 20;
+    platform_draw_rect(card2_x, 110, card_w, card_h, 0x00141C2B);
+    platform_draw_rect(card2_x, 110, card_w, 2, 0xFFFFFFFF);
+    platform_draw_text(card2_x + 15, 125, "CACHE PERSISTENTE /dev_hdd0", 0x00C83838, 2);
+
+    platform_draw_text(card2_x + 15, 165, "Ruta: /dev_hdd0/tmp/monochrome/cache/", 0x00788898, 1);
+    platform_draw_text(card2_x + 15, 185, "Capacidad asignada: Ilimitada (Segun HDD)", 0x00788898, 1);
+    platform_draw_text(card2_x + 15, 215, "Las pistas reproducidas se almacenan", 0xFFFFFFFF, 2);
+    platform_draw_text(card2_x + 15, 240, "automaticamente en disco para", 0xFFFFFFFF, 2);
+    platform_draw_text(card2_x + 15, 265, "reproduccion instantanea offline", 0xFFFFFFFF, 2);
+    platform_draw_text(card2_x + 15, 290, "sin consumo de ancho de banda.", 0xFFFFFFFF, 2);
+
+    render_now_playing_mini_bar(sw, sh);
+    render_footer(sw, sh, "D-PAD: Navegar | X: Reproducir Playlist | L1/R1: Pestañas | [] Buscar");
+}
+
+/* ── Recent History Screen ── */
+static void render_recent_screen(int sw, int sh)
+{
+    render_header(sw, STATE_RECENT, "HISTORIAL RECIENTE");
+
+    platform_draw_rect(0, 66, sw, 32, 0x00141824);
+    platform_draw_text(30, 72, "+ PISTAS ESCUCHADAS RECIENTEMENTE +", 0xFFFFFFFF, 2);
+
+    int list_y = 110;
+    int row_h = 55;
+    int max_rows = (sh - 110 - 100) / row_h;
+
+    if (s_recent_count == 0) {
+        platform_draw_text(sw / 2 - 200, sh / 2, "Aun no has reproducido ninguna pista", 0x00808080, 2);
+        platform_draw_text(sw / 2 - 160, sh / 2 + 30, "Pulsa [] para buscar musica", 0xFFFFFFFF, 2);
+    } else {
+        for (int i = 0; i < max_rows && i < s_recent_count; i++) {
+            int ry = list_y + i * row_h;
+            bool is_sel = (i == s_recent_cursor);
+            TrackMetadata *t = &s_recent_tracks[i];
+
+            if (is_sel) {
+                platform_draw_rect(20, ry, sw - 40, row_h - 4, 0x00243450);
+                platform_draw_rect(20, ry, 6, row_h - 4, 0xFFFFFFFF);
+                platform_draw_text(36, ry + 16, ">", 0xFFFFFFFF, 3);
+            } else {
+                platform_draw_rect(20, ry, sw - 40, row_h - 4, (i % 2 == 0) ? 0x00111722 : 0x00161E2C);
+            }
+
+            char num[8];
+            snprintf(num, sizeof(num), "%02d.", i + 1);
+            platform_draw_text(60, ry + 16, num, is_sel ? 0xFFFFFFFF : 0x00707070, 2);
+            platform_draw_text(110, ry + 10, t->title, is_sel ? 0xFFFFFFFF : 0x00E0E0E0, 2);
+
+            char subline[256];
+            snprintf(subline, sizeof(subline), "%s  |  [ID: %s]", t->artist, t->id);
+            platform_draw_text(110, ry + 32, subline, is_sel ? 0xFFFFFFFF : 0x00808080, 1);
+
+            char dur[16];
+            snprintf(dur, sizeof(dur), "%d:%02d", t->duration_sec / 60, t->duration_sec % 60);
+            platform_draw_text_r(sw - 120, ry + 18, dur, 0x00909090, 2);
+            platform_draw_text_r(sw - 40, ry + 18, "FLAC", 0x00C83838, 2);
+        }
+    }
+
+    render_now_playing_mini_bar(sw, sh);
+    render_footer(sw, sh, "D-PAD: Navegar | X: Reanudar Pista | L1/R1: Pestañas | [] Buscar");
+}
+
+/* ── Unreleased Projects Screen ── */
+static void render_unreleased_screen(int sw, int sh)
+{
+    render_header(sw, STATE_UNRELEASED, "PROYECTOS EXCLUSIVOS");
+
+    platform_draw_rect(0, 66, sw, 32, 0x00141824);
+    platform_draw_text(30, 72, ":: ARCHIVO EXCLUSIVO & SESIONES EN VIVO LOSSLESS ::", 0x00C83838, 2);
+
+    const char *unreleased_items[][3] = {
+        { "Alive 2007 (Soundboard 48kHz Master Direct Feed)", "Daft Punk", "84:12" },
+        { "Justice Live at Accor Arena 2024 (FLAC Archive)", "Justice", "72:45" },
+        { "Starboy Studio Outtakes & Unreleased B-Sides", "The Weeknd & Daft Punk", "45:10" },
+        { "Tron: Legacy Translucence Sessions (Modular Synth)", "Daft Punk", "58:30" },
+        { "Monochrome Community Mixtape #01 (Lossless)", "Various Artists", "63:20" }
+    };
+
+    int list_y = 110;
+    int row_h = 60;
+    for (int i = 0; i < 5; i++) {
+        int ry = list_y + i * row_h;
+        bool is_sel = (i == s_unreleased_cursor);
+
+        if (is_sel) {
+            platform_draw_rect(20, ry, sw - 40, row_h - 4, 0x00243450);
+            platform_draw_rect(20, ry, 6, row_h - 4, 0x00C83838);
+            platform_draw_text(36, ry + 18, "*", 0x00C83838, 3);
+        } else {
+            platform_draw_rect(20, ry, sw - 40, row_h - 4, (i % 2 == 0) ? 0x00111722 : 0x00161E2C);
+        }
+
+        platform_draw_text(60, ry + 12, unreleased_items[i][0], is_sel ? 0xFFFFFFFF : 0x00E0E0E0, 2);
+        platform_draw_text(60, ry + 34, unreleased_items[i][1], is_sel ? 0x00C83838 : 0x00808080, 1);
+        platform_draw_text_r(sw - 120, ry + 20, unreleased_items[i][2], 0x00909090, 2);
+        platform_draw_text_r(sw - 40, ry + 20, "EXCLUSIVE", 0x00C83838, 1);
+    }
+
+    render_now_playing_mini_bar(sw, sh);
+    render_footer(sw, sh, "D-PAD: Seleccionar | X: Transmitir Sesion | L1/R1: Pestañas | START: Menú");
+}
+
+/* ── Donate Screen ── */
+static void render_donate_screen(int sw, int sh)
+{
+    render_header(sw, STATE_DONATE, "APOYO AL PROYECTO");
+
+    int card_w = 900;
+    int card_h = sh - 200;
+    int card_x = (sw - card_w) / 2;
+    int card_y = 90;
+
+    platform_draw_rect(card_x - 3, card_y - 3, card_w + 6, card_h + 6, 0x00C83838);
+    platform_draw_rect(card_x, card_y, card_w, card_h, 0x00121722);
+
+    platform_draw_text(card_x + 40, card_y + 30, "MONOCHROME MUSIC: STREAMING SIN ANUNCIOS NI DRM", 0xFFFFFFFF, 3);
+    platform_draw_text(card_x + 40, card_y + 70, "Un ecosistema de streaming abierto, gratuito y lossless,", 0x00CCCCCC, 2);
+    platform_draw_text(card_x + 40, card_y + 95, "creado por la comunidad y portado de forma nativa a la PS3.", 0x00CCCCCC, 2);
+
+    platform_draw_rect(card_x + 40, card_y + 135, card_w - 80, 2, 0x00243450);
+
+    platform_draw_text(card_x + 40, card_y + 155, "ENLACES OFICIALES:", 0x00C83838, 2);
+    platform_draw_text(card_x + 40, card_y + 185, "Web oficial:    https://monochrome.st", 0xFFFFFFFF, 2);
+    platform_draw_text(card_x + 40, card_y + 215, "Donaciones:     https://monochrome.st/donate", 0xFFFFFFFF, 2);
+    platform_draw_text(card_x + 40, card_y + 245, "Repositorio Web: github.com/monochrome-music/monochrome", 0x0090A4AE, 2);
+    platform_draw_text(card_x + 40, card_y + 275, "Port PS3:        github.com/nopeman321/monochrome-ps3", 0x0090A4AE, 2);
+
+    platform_draw_rect(card_x + 40, card_y + 315, card_w - 80, 45, 0x001B2433);
+    platform_draw_text(card_x + 55, card_y + 330, "Agradecimientos a la escena homebrew de PS3 y a los desarrolladores de PSL1GHT.", 0x00788898, 1);
+
+    render_footer(sw, sh, "L1/R1: Pestañas | [] Buscar | /\\ Cola | START: Menú de Sistema");
+}
+
+/* ── Settings Screen ── */
+static void render_settings_screen(int sw, int sh)
+{
+    render_header(sw, STATE_SETTINGS, "CONFIGURACION DEL SISTEMA");
+
+    platform_draw_rect(0, 66, sw, 32, 0x00141824);
+    platform_draw_text(30, 72, "+ AJUSTES DE AUDIO, PANTALLA Y RED +", 0xFFFFFFFF, 2);
+
+    const char *settings_items[] = {
+        "1. Ajuste de Geometria de Pantalla (Escala, offset X/Y y tipografia)",
+        "2. Configuracion de Red (Timeout de sockets HTTP y reintentos 429)",
+        "3. Informacion de Hardware y Diagnostico del Cell Broadband Engine",
+        "4. Restablecer valores de pantalla a configuracion de fabrica"
+    };
+
+    int card_w = 940;
+    int card_h = sh - 210;
+    int card_x = (sw - card_w) / 2;
+    int card_y = 110;
+
+    platform_draw_rect(card_x, card_y, card_w, card_h, 0x00141C2B);
+    platform_draw_rect(card_x, card_y, card_w, 2, 0xFFFFFFFF);
+
+    for (int i = 0; i < 4; i++) {
+        int py = card_y + 30 + i * 65;
+        bool sel = (i == s_settings_cursor);
+        if (sel) {
+            platform_draw_rect(card_x + 20, py, card_w - 40, 50, 0x00243450);
+            platform_draw_rect(card_x + 20, py, 6, 50, 0x00C83838);
+            platform_draw_text(card_x + 35, py + 16, settings_items[i], 0xFFFFFFFF, 2);
+        } else {
+            platform_draw_rect(card_x + 20, py, card_w - 40, 50, 0x00101520);
+            platform_draw_text(card_x + 35, py + 16, settings_items[i], 0x00A0B0C0, 2);
+        }
+    }
+
+    render_footer(sw, sh, "D-PAD: Navegar | X: Abrir Ajuste | L1/R1: Pestañas | START: Guardar");
+}
+
+/* ── About Screen ── */
+static void render_about_screen(int sw, int sh)
+{
+    render_header(sw, STATE_ABOUT, "ACERCA DE MONOCHROME");
+
+    int card_w = 920;
+    int card_h = sh - 200;
+    int card_x = (sw - card_w) / 2;
+    int card_y = 90;
+
+    platform_draw_rect(card_x - 3, card_y - 3, card_w + 6, card_h + 6, 0xFFFFFFFF);
+    platform_draw_rect(card_x, card_y, card_w, card_h, 0x00141C2B);
+
+    platform_draw_text(card_x + 35, card_y + 25, "MONOCHROME PS3 CLIENT", 0xFFFFFFFF, 3);
+    platform_draw_text(card_x + 460, card_y + 31, APP_DISPLAY_VERSION, 0x00C83838, 2);
+
+    int y = card_y + 70;
+    platform_draw_text(card_x + 35, y, "Title ID:          MONO00024 (Free NPDRM CEX / CFW / HEN)", 0x00CCCCCC, 2); y += 30;
+    platform_draw_text(card_x + 35, y, "Target Hardware:   Sony PlayStation 3 (Cell B.E. + RSX)", 0x00CCCCCC, 2); y += 30;
+    platform_draw_text(card_x + 35, y, "SDK Toolchain:     PSL1GHT v2 (GCC 7.2.0 PPU / newlib)", 0x00CCCCCC, 2); y += 30;
+    platform_draw_text(card_x + 35, y, "Audio Architecture: GameOS 48.000 Hz Float32 DMA (256 samples/block)", 0x00CCCCCC, 2); y += 30;
+    platform_draw_text(card_x + 35, y, "FLAC Decoding:     dr_flac progressive non-blocking engine", 0x00CCCCCC, 2); y += 30;
+    platform_draw_text(card_x + 35, y, "Resampling:        Exact 147:160 linear interpolation", 0x00CCCCCC, 2); y += 30;
+    platform_draw_text(card_x + 35, y, "Cover Art Engine:  libjpeg (JPEG to RSX Texture)", 0x00CCCCCC, 2); y += 30;
+    platform_draw_text(card_x + 35, y, "Official API:      tracks.monochrome.st (Port 80 HTTP/1.1)", 0x00C83838, 2); y += 40;
+
+    platform_draw_rect(card_x + 35, y, card_w - 70, 35, 0x000F1520);
+    platform_draw_text(card_x + 45, y + 10, "Desarrollado para disfrute de musica libre y audio de alta fidelidad.", 0x00808080, 1);
+
+    render_footer(sw, sh, "L1/R1: Pestañas | [] Buscar | /\\ Cola | START: Menú");
 }
 
 void ui_render(AppState state, long frame)
@@ -908,6 +1401,24 @@ void ui_render(AppState state, long frame)
         case STATE_SEARCH:
             render_search_screen(sw, sh);
             break;
+        case STATE_LIBRARY:
+            render_library_screen(sw, sh);
+            break;
+        case STATE_RECENT:
+            render_recent_screen(sw, sh);
+            break;
+        case STATE_UNRELEASED:
+            render_unreleased_screen(sw, sh);
+            break;
+        case STATE_DONATE:
+            render_donate_screen(sw, sh);
+            break;
+        case STATE_SETTINGS:
+            render_settings_screen(sw, sh);
+            break;
+        case STATE_ABOUT:
+            render_about_screen(sw, sh);
+            break;
         case STATE_PLAYING:
             render_playing_screen(sw, sh, frame);
             break;
@@ -915,6 +1426,7 @@ void ui_render(AppState state, long frame)
             render_queue_screen(sw, sh);
             break;
         default:
+            render_home_screen(sw, sh);
             break;
     }
 
