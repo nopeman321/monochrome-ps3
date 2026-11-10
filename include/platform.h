@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include "monochrome.h"
 
 int  platform_init(void);
@@ -27,10 +28,6 @@ int  platform_draw_text(int x, int y, const char *str, uint32_t color, int scale
 int  platform_draw_text_r(int rx, int y, const char *str, uint32_t color, int scale);
 int  platform_draw_text_clipped(int x, int y, int max_w, const char *str, uint32_t color, int scale);
 
-// Texture drawing (for cover art)
-// texture_data: RGBA8888 pixel data
-// tex_w, tex_h: texture dimensions
-// dst_x, dst_y, dst_w, dst_h: destination rectangle on screen
 void platform_draw_texture(const uint8_t *texture_data, int tex_w, int tex_h,
                            int dst_x, int dst_y, int dst_w, int dst_h);
 

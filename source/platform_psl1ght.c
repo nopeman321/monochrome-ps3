@@ -23,7 +23,7 @@
 #include "rsxutil.h"
 
 #define STAGE_LOG_PATH "/dev_hdd0/tmp/mono_stage6.log"
-#define MAX_BUFFERS 3
+#define MAX_BUFFERS 2
 
 static gcmContextData *s_context = NULL;
 static void *s_host_addr = NULL;
@@ -185,8 +185,8 @@ int platform_init(void)
     platform_log("[PAD] ioPadInit(7) retorno %d", pret);
 
     if (!getResolution(&s_screen_w, &s_screen_h)) {
-        s_screen_w = 1280;
-        s_screen_h = 720;
+        s_screen_w = 1920;
+        s_screen_h = 1080;
     }
     platform_log("[VIDEO] Resolucion nativa: %dx%d", s_screen_w, s_screen_h);
 
@@ -200,6 +200,7 @@ int platform_init(void)
                  MAX_BUFFERS, s_screen_w, s_screen_h, s_screen_w * s_screen_h * 4);
 
     flip(s_context, MAX_BUFFERS - 1);
+    waitFlip();
     s_cur_buffer = 0;
 
     /* Load saved screen scale/offset before first render */
@@ -238,10 +239,71 @@ void platform_shutdown(void)
     platform_log("salida limpia");
 }
 
+void platform_prepare_frame(void)
+{
+}
+
+void platform_flip(void)
+{
+    flip(s_context, s_buffers[s_cur_buffer].id);
+    s_cur_buffer = (s_cur_buffer + 1) % MAX_BUFFERS;
+    waitFlip();
+}
+
+InputAction platform_poll_input(void)
+{
+    padInfo padinfo;
+    padData paddata;
+
+    ioPadGetInfo(&padinfo);
+    for (int i = 0; i < MAX_PADS; i++) {
+        if (padinfo.status[i]) {
+            if (ioPadGetData(i, &paddata) == 0 && paddata.len > 0) {
+                uint16_t cur = 0;
+                if (paddata.BTN_LEFT)     cur |= (1 << 0);
+                if (paddata.BTN_RIGHT)    cur |= (1 << 1);
+                if (paddata.BTN_UP)       cur |= (1 << 2);
+                if (paddata.BTN_DOWN)     cur |= (1 << 3);
+                if (paddata.BTN_CROSS)    cur |= (1 << 4);
+                if (paddata.BTN_CIRCLE)   cur |= (1 << 5);
+                if (paddata.BTN_SQUARE)   cur |= (1 << 6);
+                if (paddata.BTN_TRIANGLE) cur |= (1 << 7);
+                if (paddata.BTN_START)    cur |= (1 << 8);
+                if (paddata.BTN_SELECT)   cur |= (1 << 9);
+                if (paddata.BTN_L1)       cur |= (1 << 10);
+                if (paddata.BTN_R1)       cur |= (1 << 11);
+                if (paddata.BTN_L2)       cur |= (1 << 12);
+                if (paddata.BTN_R2)       cur |= (1 << 13);
+
+                uint16_t pressed = cur & ~s_old_buttons;
+                s_old_buttons = cur;
+
+                if (pressed & (1 << 2))  return ACT_UP;
+                if (pressed & (1 << 3))  return ACT_DOWN;
+                if (pressed & (1 << 0))  return ACT_LEFT;
+                if (pressed & (1 << 1))  return ACT_RIGHT;
+                if (pressed & (1 << 4))  return ACT_CROSS;
+                if (pressed & (1 << 5))  return ACT_CIRCLE;
+                if (pressed & (1 << 6))  return ACT_SQUARE;
+                if (pressed & (1 << 7))  return ACT_TRIANGLE;
+                if (pressed & (1 << 10)) return ACT_L1;
+                if (pressed & (1 << 11)) return ACT_R1;
+                if (pressed & (1 << 12)) return ACT_L2;
+                if (pressed & (1 << 13)) return ACT_R2;
+                if (pressed & (1 << 9))  return ACT_SELECT;
+                if (pressed & (1 << 8))  return ACT_START;
+
+                return ACT_NONE;
+            }
+        }
+    }
+    s_old_buttons = 0;
+    return ACT_NONE;
+}
+
 int platform_get_width(void)  { return (int)s_screen_w; }
 int platform_get_height(void) { return (int)s_screen_h; }
 
-/* Screen adjustment functions */
 void platform_set_screen_adjust(int offset_x, int offset_y, float scale)
 {
     s_screen_offset_x = offset_x;
@@ -257,15 +319,8 @@ void platform_get_screen_adjust(int *offset_x, int *offset_y, float *scale)
     if (scale) *scale = s_screen_scale;
 }
 
-void platform_set_font_scale(float scale)
-{
-    s_font_scale = scale;
-}
-
-float platform_get_font_scale(void)
-{
-    return s_font_scale;
-}
+float platform_get_font_scale(void) { return s_font_scale; }
+void platform_set_font_scale(float scale) { s_font_scale = scale; }
 
 #define SCREEN_CONFIG_PATH "/dev_hdd0/tmp/monochrome/screen_config.txt"
 
@@ -291,12 +346,6 @@ int platform_load_screen_config(void)
     mkdir("/dev_hdd0/tmp/monochrome/cache", 0777);
     mkdir("/dev_hdd0/tmp/monochrome/tracks", 0777);
 
-    if (access(SCREEN_CONFIG_PATH, F_OK) != 0) {
-        platform_log("[SCREEN] Config no existe, creando valores por defecto");
-        platform_save_screen_config();
-        return 0;
-    }
-
     FILE *f = fopen(SCREEN_CONFIG_PATH, "r");
     if (!f) {
         platform_log("[SCREEN] No hay config guardada, creando valores por defecto");
@@ -310,11 +359,11 @@ int platform_load_screen_config(void)
         s_screen_offset_y = oy;
         s_screen_scale = sc;
         s_font_scale = fs;
-        platform_log("[SCREEN] Config cargada: offset=(%d, %d), scale=%.4f, font=%.4f", ox, oy, sc, fs);
+        platform_log("[SCREEN] Config cargada: offset=(%d, %d), scale=%.4f, font=%.4f", 
+                     ox, oy, sc, fs);
         fclose(f);
         return 0;
     }
-    /* backward compat: 3 lines */
     if (fscanf(f, "%d\n%d\n%f\n", &ox, &oy, &sc) == 3) {
         s_screen_offset_x = ox;
         s_screen_offset_y = oy;
@@ -387,10 +436,39 @@ void platform_draw_rect(int x, int y, int w, int h, uint32_t color)
     }
 }
 
-static inline void draw_pixel(rsxBuffer *b, int x, int y, uint32_t color)
+void platform_draw_texture(const uint8_t *texture_data, int tex_w, int tex_h,
+                           int dst_x, int dst_y, int dst_w, int dst_h)
 {
-    if ((unsigned)x < (unsigned)b->width && (unsigned)y < (unsigned)b->height) {
-        b->ptr[y * b->width + x] = color;
+    if (!texture_data || tex_w <= 0 || tex_h <= 0 || dst_w <= 0 || dst_h <= 0) return;
+    
+    rsxBuffer *b = &s_buffers[s_cur_buffer];
+    
+    /* Apply screen adjustment */
+    dst_x = s_screen_offset_x + (int)(dst_x * s_screen_scale);
+    dst_y = s_screen_offset_y + (int)(dst_y * s_screen_scale);
+    dst_w = (int)(dst_w * s_screen_scale);
+    dst_h = (int)(dst_h * s_screen_scale);
+    
+    if (dst_x < 0) { dst_w += dst_x; dst_x = 0; }
+    if (dst_y < 0) { dst_h += dst_y; dst_y = 0; }
+    if (dst_x + dst_w > b->width)  dst_w = b->width - dst_x;
+    if (dst_y + dst_h > b->height) dst_h = b->height - dst_y;
+    if (dst_w <= 0 || dst_h <= 0) return;
+    
+    int bw = b->width;
+
+    for (int dy = 0; dy < dst_h; dy++) {
+        int ty = (dy * tex_h) / dst_h;
+        if (ty >= tex_h) ty = tex_h - 1;
+        const uint8_t *src_scanline = &texture_data[ty * tex_w * 4];
+        uint32_t *dst_row = &b->ptr[(dst_y + dy) * bw + dst_x];
+        
+        for (int dx = 0; dx < dst_w; dx++) {
+            int tx = (dx * tex_w) / dst_w;
+            if (tx >= tex_w) tx = tex_w - 1;
+            const uint8_t *p = &src_scanline[tx * 4];
+            dst_row[dx] = ((uint32_t)p[3] << 24) | ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[2];
+        }
     }
 }
 
@@ -410,7 +488,7 @@ int platform_draw_text(int x, int y, const char *str, uint32_t color, int scale)
     int bh = b->height;
 
     while (*str) {
-        if (cur_x >= bw) break; /* Strict horizontal boundary clipping */
+        if (cur_x >= bw) break;
         unsigned char ch = (unsigned char)*str++;
         if (ch < 0x20 || ch > 0x7E) ch = '?';
         const uint8_t *g = FONT8[ch - 0x20];
@@ -483,139 +561,4 @@ int platform_draw_text_clipped(int x, int y, int max_w, const char *str, uint32_
         buf[copy_len] = '\0';
     }
     return platform_draw_text(x, y, buf, color, scale);
-}
-
-void platform_draw_texture(const uint8_t *texture_data, int tex_w, int tex_h,
-                           int dst_x, int dst_y, int dst_w, int dst_h)
-{
-    if (!texture_data || tex_w <= 0 || tex_h <= 0 || dst_w <= 0 || dst_h <= 0) return;
-    
-    rsxBuffer *b = &s_buffers[s_cur_buffer];
-    
-    /* Apply screen adjustment */
-    dst_x = s_screen_offset_x + (int)(dst_x * s_screen_scale);
-    dst_y = s_screen_offset_y + (int)(dst_y * s_screen_scale);
-    dst_w = (int)(dst_w * s_screen_scale);
-    dst_h = (int)(dst_h * s_screen_scale);
-    
-    // Clip destination rectangle
-    if (dst_x < 0) { dst_w += dst_x; dst_x = 0; }
-    if (dst_y < 0) { dst_h += dst_y; dst_y = 0; }
-    if (dst_x + dst_w > b->width)  dst_w = b->width - dst_x;
-    if (dst_y + dst_h > b->height) dst_h = b->height - dst_y;
-    if (dst_w <= 0 || dst_h <= 0) return;
-    
-    int bw = b->width;
-
-    /* Precompute X coordinate mapping lookup table to eliminate divisions from scanline loop */
-    int tx_lut[1920];
-    int max_w = (dst_w < 1920) ? dst_w : 1920;
-    if (tex_w == dst_w) {
-        for (int x = 0; x < max_w; x++) tx_lut[x] = x;
-    } else {
-        for (int x = 0; x < max_w; x++) {
-            int tx = (x * tex_w) / dst_w;
-            if (tx >= tex_w) tx = tex_w - 1;
-            tx_lut[x] = tx;
-        }
-    }
-
-    for (int dy = 0; dy < dst_h; dy++) {
-        int ty = (dy * tex_h) / dst_h;
-        if (ty >= tex_h) ty = tex_h - 1;
-        const uint8_t *src_scanline = &texture_data[ty * tex_w * 4];
-        uint32_t *dst_row = &b->ptr[(dst_y + dy) * bw + dst_x];
-        
-        int dx = 0;
-        // Align destination row to 8 bytes if needed
-        if (((uintptr_t)dst_row & 7) && dst_w > 0) {
-            int tx = tx_lut[dx];
-            const uint8_t *p = &src_scanline[tx * 4];
-            dst_row[dx] = ((uint32_t)p[3] << 24) | ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[2];
-            dx++;
-        }
-        
-        int w2 = (dst_w - dx) / 2;
-        uint64_t *dst_row64 = (uint64_t *)&dst_row[dx];
-        for (int i = 0; i < w2; i++) {
-            int x0 = dx + i * 2;
-            int x1 = x0 + 1;
-            int tx0 = tx_lut[x0];
-            int tx1 = tx_lut[x1];
-            const uint8_t *p0 = &src_scanline[tx0 * 4];
-            const uint8_t *p1 = &src_scanline[tx1 * 4];
-            uint32_t pix0 = ((uint32_t)p0[3] << 24) | ((uint32_t)p0[0] << 16) | ((uint32_t)p0[1] << 8) | (uint32_t)p0[2];
-            uint32_t pix1 = ((uint32_t)p1[3] << 24) | ((uint32_t)p1[0] << 16) | ((uint32_t)p1[1] << 8) | (uint32_t)p1[2];
-            dst_row64[i] = ((uint64_t)pix0 << 32) | (uint64_t)pix1;
-        }
-        
-        if ((dst_w - dx) & 1) {
-            int last_x = dst_w - 1;
-            int tx = tx_lut[last_x];
-            const uint8_t *p = &src_scanline[tx * 4];
-            dst_row[last_x] = ((uint32_t)p[3] << 24) | ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[2];
-        }
-    }
-}
-
-void platform_prepare_frame(void)
-{
-    waitFlip();
-}
-
-void platform_flip(void)
-{
-    flip(s_context, s_buffers[s_cur_buffer].id);
-    s_cur_buffer = (s_cur_buffer + 1) % MAX_BUFFERS;
-}
-
-InputAction platform_poll_input(void)
-{
-    padInfo padinfo;
-    padData paddata;
-
-    ioPadGetInfo(&padinfo);
-    for (int i = 0; i < MAX_PADS; i++) {
-        if (padinfo.status[i]) {
-            if (ioPadGetData(i, &paddata) == 0 && paddata.len > 0) {
-                uint16_t cur = 0;
-                if (paddata.BTN_LEFT)     cur |= (1 << 0);
-                if (paddata.BTN_RIGHT)    cur |= (1 << 1);
-                if (paddata.BTN_UP)       cur |= (1 << 2);
-                if (paddata.BTN_DOWN)     cur |= (1 << 3);
-                if (paddata.BTN_CROSS)    cur |= (1 << 4);
-                if (paddata.BTN_CIRCLE)   cur |= (1 << 5);
-                if (paddata.BTN_SQUARE)   cur |= (1 << 6);
-                if (paddata.BTN_TRIANGLE) cur |= (1 << 7);
-                if (paddata.BTN_START)    cur |= (1 << 8);
-                if (paddata.BTN_SELECT)   cur |= (1 << 9);
-                if (paddata.BTN_L1)       cur |= (1 << 10);
-                if (paddata.BTN_R1)       cur |= (1 << 11);
-                if (paddata.BTN_L2)       cur |= (1 << 12);
-                if (paddata.BTN_R2)       cur |= (1 << 13);
-
-                uint16_t pressed = cur & ~s_old_buttons;
-                s_old_buttons = cur;
-
-                if (pressed & (1 << 2))  return ACT_UP;
-                if (pressed & (1 << 3))  return ACT_DOWN;
-                if (pressed & (1 << 0))  return ACT_LEFT;
-                if (pressed & (1 << 1))  return ACT_RIGHT;
-                if (pressed & (1 << 4))  return ACT_CROSS;
-                if (pressed & (1 << 5))  return ACT_CIRCLE;
-                if (pressed & (1 << 6))  return ACT_SQUARE;
-                if (pressed & (1 << 7))  return ACT_TRIANGLE;
-                if (pressed & (1 << 10)) return ACT_L1;
-                if (pressed & (1 << 11)) return ACT_R1;
-                if (pressed & (1 << 12)) return ACT_L2;
-                if (pressed & (1 << 13)) return ACT_R2;
-                if (pressed & (1 << 9))  return ACT_SELECT;
-                if (pressed & (1 << 8))  return ACT_START;
-
-                return ACT_NONE;
-            }
-        }
-    }
-    s_old_buttons = 0;
-    return ACT_NONE;
 }

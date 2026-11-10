@@ -8,6 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/process.h>
 
 #include "monochrome.h"
 #include "platform.h"
@@ -129,6 +130,8 @@ int main(int argc, const char *argv[])
 
     audio_engine_shutdown();
     http_net_shutdown();
+    cover_art_shutdown();
     platform_shutdown();
+    sysProcessExit(0);
     return 0;
 }
