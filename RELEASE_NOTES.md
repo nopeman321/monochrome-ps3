@@ -1,5 +1,40 @@
 # Monochrome PS3 — Release Notes
 
+## 🚀 v2.4.0 — Actualización Oficial de Estabilidad y Navegación
+
+**Title ID**: `MONO00024`  
+**Display Version**: `v2.4.0`  
+**Package Format**: Free NPDRM CEX PKG (Signed)  
+**Target Hardware**: Sony PlayStation 3 (Super Slim / Slim / FAT) con PS3HEN v3.x o CFW Evilnat 4.88-4.92+  
+
+---
+
+### 🌟 Novedades y Correcciones Críticas en v2.4.0
+
+1. **Resolución Definitiva de Salida Limpia al XMB (Fix Triple Pitido y Watchdog)**:
+   - Integración nativa del bucle de eventos de GameOS (`sysUtilRegisterCallback` en SLOT0 y `sysUtilCheckCallback` por frame).
+   - Intercepción de `SYSUTIL_EXIT_GAME` (`0x0101`) del botón PS y desacoplamiento mediante bandera atómica latente.
+   - Teardown de audio determinista: corrección del centinela de puerto `0` en `libaudio`, desmontaje de la cola de eventos y llamada a `audioQuit()` para liberar canales IPC del demonio `audiod`.
+   - Eliminación de bloqueos `rsxFinish(1)` y `sysThreadJoin()` en hilos de red, retornando al XMB en menos de 15 ms sin reinicios forzados.
+
+2. **Arranque Inmediato sin Pantalla en Negro (Fix Cabeceras SELF)**:
+   - Declaración de `SYS_PROCESS_PARAM(1001, 0x100000)` para generar la cabecera `PT_SCE_PROC_PARAM` (0x60000001) válida de 0x20 bytes.
+   - Prevención de rechazos del cargador ELF de GameOS al iniciar la app desde el XMB.
+
+3. **Drill-down Completo de Álbumes, Artistas y Playlists**:
+   - Corrección de consultas REST con protocolo forzado `HTTP/1.0` y `Accept-Encoding: identity`, evitando fragmentación *chunked* de Cloudflare que provocaba listas vacías ("0 pistas").
+   - Aislamiento del cursor al abrir álbumes, permitiendo navegar y reproducir álbumes completos ordenados por `trackNumber` (1..N).
+   - Implementación del endpoint `/artists/<id>` para desplegar directamente las canciones más populares del artista (`topTracks`).
+
+4. **Mejoras Ergonómicas de Control y Limpieza Visual**:
+   - Botón **`SELECT`**: Abre y cierra el menú contextual del sistema de forma global.
+   - Botón **`START`**: Actúa exclusivamente como **GO** (ejecutar búsqueda inmediata) en la pantalla de búsqueda OSK.
+   - Botones **`L1 / R1`**: Navegan fluidamente entre las 8 pestañas principales del sistema en todas las pantallas.
+   - Botones **`L2 / R2`**: Conmutan exclusivamente las sub-pestañas de categoría (Tracks, Albums, Artists, Playlists).
+   - Eliminación del número de versión del HUD superior para una interfaz más limpia y minimalista.
+
+---
+
 ## 🚀 v2.3.0 — Versión Final Oficial para PlayStation 3
 
 **Title ID**: `MONO00024`  

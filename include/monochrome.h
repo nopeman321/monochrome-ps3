@@ -10,8 +10,8 @@
 #include <stddef.h>
 
 #define APP_TITLE          "Monochrome"
-#define APP_VERSION        "02.30"
-#define APP_DISPLAY_VERSION "v2.3.0"
+#define APP_VERSION        "02.40"
+#define APP_DISPLAY_VERSION "v2.4.0"
 #define APP_TITLEID        "MONO00024"
 
 #define MAX_SEARCH_RESULTS 20

@@ -303,7 +303,7 @@ static void cover_art_worker(void *arg)
     snprintf(req, sizeof(req),
              "GET %s HTTP/1.1\r\n"
              "Host: %s\r\n"
-             "User-Agent: Monochrome-PS3/2.3.0 (PSL1GHT; CellOS)\r\n"
+             "User-Agent: Monochrome-PS3/2.4.0 (PSL1GHT; CellOS)\r\n"
              "Accept: image/jpeg, image/*, */*\r\n"
              "Connection: close\r\n\r\n",
              path, host);

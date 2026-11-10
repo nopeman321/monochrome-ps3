@@ -1,4 +1,4 @@
-# Monochrome PS3 — Technical Specification (v2.3.0)
+# Monochrome PS3 — Technical Specification (v2.4.0)
 
 <p align="center">
   <img src="docs/banner.png" alt="Monochrome PS3 Splash Screen Banner" width="100%">
