@@ -12,6 +12,8 @@
 #include <sysutil/sysutil.h>
 
 #include "monochrome.h"
+
+SYS_PROCESS_PARAM(1001, 0x100000);
 #include "platform.h"
 #include "ui.h"
 #include "http_client.h"
