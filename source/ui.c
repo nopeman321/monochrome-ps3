@@ -283,7 +283,7 @@ AppState ui_handle_input(AppState current, InputAction act)
                 }
                 break;
             case ACT_CIRCLE:
-            case ACT_START:
+            case ACT_SELECT:
                 /* Close menu */
                 s_menu_open = false;
                 break;
@@ -358,7 +358,7 @@ AppState ui_handle_input(AppState current, InputAction act)
     if (s_show_system_info) {
         switch (act) {
             case ACT_CIRCLE:
-            case ACT_START:
+            case ACT_SELECT:
                 s_show_system_info = false;
                 break;
             default:
@@ -405,7 +405,7 @@ AppState ui_handle_input(AppState current, InputAction act)
                 }
                 break;
             case ACT_CIRCLE:
-            case ACT_START:
+            case ACT_SELECT:
                 s_show_network_settings = false;
                 break;
             default:
@@ -414,8 +414,8 @@ AppState ui_handle_input(AppState current, InputAction act)
         return current;
     }
 
-    /* Open menu with START */
-    if (act == ACT_START) {
+    /* Open menu with SELECT */
+    if (act == ACT_SELECT && !s_screen_adjust_mode) {
         s_menu_open = true;
         s_menu_cursor = 0;
         return current;
@@ -470,6 +470,14 @@ AppState ui_handle_input(AppState current, InputAction act)
             case ACT_R2: /* Cycle search sub-tab right */
                 s_search_active_tab = (SearchTab)((s_search_active_tab + 1) % SEARCH_TAB_COUNT);
                 break;
+            case ACT_START: /* START = GO en busqueda */
+                if (s_search_len > 0) {
+                    s_display_count = 0;
+                    s_cursor = 0;
+                    http_search_async_start(s_search_query);
+                    s_search_status = SEARCH_STATUS_BUSY;
+                }
+                return STATE_HOME;
             case ACT_TRIANGLE: /* Quick delete in OSK */
                 if (s_search_len > 0) {
                     s_search_query[--s_search_len] = '\0';
@@ -1140,7 +1148,7 @@ static void render_home_screen(int sw, int sh)
     }
 
     render_now_playing_mini_bar(sw, sh);
-    render_footer(sw, sh, "D-PAD: Mover | X: Seleccionar/Reproducir | L2/R2: Categoria | []: Buscar | START: Menu");
+    render_footer(sw, sh, "D-PAD: Mover | X: Seleccionar/Reproducir | L2/R2: Categoria | []: Buscar | SELECT: Menu");
 }
 
 static void render_playing_screen(int sw, int sh, long frame)
@@ -1294,7 +1302,7 @@ static void render_search_screen(int sw, int sh)
         }
         subtab_x += tw + 8;
     }
-    platform_draw_text_r(card_x + card_w - 30, subtab_y + 10, "[L1/R1] Filtro", 0x00788898, 1);
+    platform_draw_text_r(card_x + card_w - 30, subtab_y + 10, "[L2/R2] Filtro", 0x00788898, 1);
 
     /* Query Box */
     int qbox_y = card_y + 60;
@@ -1332,8 +1340,8 @@ static void render_search_screen(int sw, int sh)
         }
     }
 
-    platform_draw_text(card_x + 45, card_y + card_h - 38, "D-PAD: Navegar  |  X: Pulsar  |  /\\: Borrar  |  GO: Buscar en vivo  |  O: Cancelar", 0x00A0A0A0, 1);
-    render_footer(sw, sh, "Escribe una palabra o artista y pulsa GO para buscar en la API");
+    platform_draw_text(card_x + 45, card_y + card_h - 38, "D-PAD: Navegar  |  X: Pulsar  |  /\\: Borrar  |  START: Buscar (GO)  |  O: Cancelar", 0x00A0A0A0, 1);
+    render_footer(sw, sh, "Escribe y pulsa START o GO para buscar en la API");
 }
 
 static void render_queue_screen(int sw, int sh)
@@ -1521,7 +1529,7 @@ static void render_unreleased_screen(int sw, int sh)
     }
 
     render_now_playing_mini_bar(sw, sh);
-    render_footer(sw, sh, "D-PAD: Seleccionar | X: Transmitir Sesion | L1/R1: Pestañas | START: Menú");
+    render_footer(sw, sh, "D-PAD: Seleccionar | X: Transmitir Sesion | L1/R1: Pestañas | SELECT: Menú");
 }
 
 /* ── Donate Screen ── */
@@ -1552,7 +1560,7 @@ static void render_donate_screen(int sw, int sh)
     platform_draw_rect(card_x + 40, card_y + 315, card_w - 80, 45, 0x001B2433);
     platform_draw_text(card_x + 55, card_y + 330, "Agradecimientos a la escena homebrew de PS3 y a los desarrolladores de PSL1GHT.", 0x00788898, 1);
 
-    render_footer(sw, sh, "L1/R1: Pestañas | [] Buscar | /\\ Cola | START: Menú de Sistema");
+    render_footer(sw, sh, "L1/R1: Pestañas | [] Buscar | /\\ Cola | SELECT: Menú de Sistema");
 }
 
 /* ── Settings Screen ── */
@@ -1623,7 +1631,7 @@ static void render_about_screen(int sw, int sh)
     platform_draw_rect(card_x + 35, y, card_w - 70, 35, 0x000F1520);
     platform_draw_text(card_x + 45, y + 10, "Desarrollado para disfrute de musica libre y audio de alta fidelidad.", 0x00808080, 1);
 
-    render_footer(sw, sh, "L1/R1: Pestañas | [] Buscar | /\\ Cola | START: Menú");
+    render_footer(sw, sh, "L1/R1: Pestañas | [] Buscar | /\\ Cola | SELECT: Menú");
 }
 
 void ui_render(AppState state, long frame)
@@ -1805,7 +1813,7 @@ void ui_render(AppState state, long frame)
         y_offset += 40;
         
         /* Draw instructions */
-        platform_draw_text(info_x + 20, info_y + info_h - 30, "Press O or START to close", 0x808080, 1);
+        platform_draw_text(info_x + 20, info_y + info_h - 30, "Press O or SELECT to close", 0x808080, 1);
     }
 
     /* Network Settings overlay */
@@ -1843,6 +1851,6 @@ void ui_render(AppState state, long frame)
         
         /* Instructions */
         platform_draw_text(net_x + 20, net_y + net_h - 50, "D-Pad=Navigate & Adjust", 0x808080, 1);
-        platform_draw_text(net_x + 20, net_y + net_h - 30, "Press O or START to save & close", 0x808080, 1);
+        platform_draw_text(net_x + 20, net_y + net_h - 30, "Press O or SELECT to save & close", 0x808080, 1);
     }
 }
