@@ -132,6 +132,7 @@ int main(int argc, const char *argv[])
     http_net_shutdown();
     cover_art_shutdown();
     platform_shutdown();
+    platform_log("[EXIT] Saliendo limpiamente al XMB via sysProcessExit(0)...");
     sysProcessExit(0);
     return 0;
 }

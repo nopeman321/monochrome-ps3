@@ -995,34 +995,29 @@ void audio_engine_shutdown(void)
     stage6_log("[CLEANUP] Cerrando subsistema de audio y streaming...");
 
     s_engine_running = false;
+    s_is_playing = false;
 
-    u64 r1 = 0, r2 = 0;
-    sysThreadJoin(s_stream_thread_id, &r1);
-    sysThreadJoin(s_hw_thread_id, &r2);
-
+    /* Detener de inmediato el puerto de audio hardware para silenciar DMA y frenar la cola de eventos */
     if (s_port_num) {
         audioPortStop(s_port_num);
         if (s_snd_key) {
             audioRemoveNotifyEventQueue(s_snd_key);
             sysEventQueueDestroy(s_snd_queue, 0);
+            s_snd_key = 0;
         }
         audioPortClose(s_port_num);
+        s_port_num = 0;
     }
 
-    if (s_stream_media_buffer) {
-        free(s_stream_media_buffer);
-        s_stream_media_buffer = NULL;
-    }
+    /* NOTA CRITICA: NO bloquear el hilo principal con sysThreadJoin() en hilos trabajadores
+     * de red/streaming, ya que si estan atrapados en recv() o usleep() de reintento,
+     * bloquearian el apagado disparando el watchdog de CellOS VSH (reinicio de emergencia).
+     * sysProcessExit(0) termina todos los hilos PPU/SPU de forma atomica e instantanea. */
 
     stage6_log("[AUDIO RESUMEN FINAL]");
     stage6_log("  - Underruns del Ring Buffer: %u", s_ring_underruns);
     stage6_log("  - Underruns de Hardware DMA: %u", s_hw_underruns);
     stage6_log("[AUDIO] Subsistema cerrado limpiamente");
-
-    if (s_log_mutex_inited) {
-        sysMutexDestroy(s_log_mutex);
-        s_log_mutex_inited = false;
-    }
 }
 
 void audio_engine_play_track(const char *track_id, const char *title)

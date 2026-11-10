@@ -104,17 +104,8 @@ void cover_art_init(void)
 
 void cover_art_shutdown(void)
 {
-    if (s_cover_thread_running) {
-        uint64_t exit_val = 0;
-        sysThreadJoin(s_cover_thread_id, &exit_val);
-        s_cover_thread_running = false;
-    }
-    cover_art_clear();
-    if (s_mutex_initialized) {
-        sysMutexDestroy(s_cover_mutex);
-        s_mutex_initialized = false;
-    }
-    cover_log("[COVER] Sistema de portadas cerrado limpiamente");
+    s_cover_thread_running = false;
+    cover_log("[COVER] Sistema de portadas detenido");
 }
 
 void cover_art_clear(void)

@@ -79,11 +79,8 @@ int http_net_init(void)
 void http_net_shutdown(void)
 {
     if (!s_net_inited) return;
-    stage6_log("[NET] Cerrando subsistema de red...");
-    netDeinitialize();
-    sysModuleUnload(SYSMODULE_NET);
+    stage6_log("[NET] Subsistema de red desmarcado para salida");
     s_net_inited = false;
-    stage6_log("[NET] Red cerrada limpiamente");
 }
 
 /* ── Synchronous HTTP Search ── */

@@ -210,33 +210,19 @@ int platform_init(void)
 
 void platform_shutdown(void)
 {
-    platform_log("[CLEANUP] Liberando recursos de plataforma...");
-
-    if (s_context) {
-        gcmSetWaitFlip(s_context);
-    }
-
-    for (int i = 0; i < MAX_BUFFERS; i++) {
-        if (s_buffers[i].ptr) {
-            rsxFree(s_buffers[i].ptr);
-            s_buffers[i].ptr = NULL;
-        }
-    }
-    platform_log("[CLEANUP] rsxBuffer liberados");
-
-    if (s_context) {
-        rsxFinish(s_context, 1);
-        platform_log("[CLEANUP] rsxFinish OK");
-    }
-
-    if (s_host_addr) {
-        free(s_host_addr);
-        platform_log("[CLEANUP] host_addr liberado");
-    }
+    platform_log("[CLEANUP] Cerrando subsistemas de plataforma...");
 
     ioPadEnd();
     platform_log("[CLEANUP] ioPadEnd OK");
-    platform_log("salida limpia");
+
+    /* NOTA CRITICA ARQUITECTURA PS3 (GameOS):
+     * NO invocar rsxFinish(s_context, 1) ni rsxFree() en los buffers de escaneo activo.
+     * rsxFinish() espera una etiqueta no emitida en bucle infinito (usleep 30) disparando
+     * el watchdog de VSH tras 5-10s (reinicio con triple pitido).
+     * rsxFree() en memoria escaneada por CRTC produce fallo de bus de hardware.
+     * El kernel de GameOS libera VRAM, contexto RSX y memoria host atomicamente en sysProcessExit(0).
+     */
+    platform_log("[CLEANUP] Recursos listos para retorno inmediato al XMB");
 }
 
 void platform_prepare_frame(void)
