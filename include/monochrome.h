@@ -70,6 +70,34 @@ typedef struct TrackMetadata {
     bool     is_hi_res;
 } TrackMetadata;
 
+/* Album / Release metadata */
+typedef struct AlbumMetadata {
+    char     id[64];
+    char     title[128];
+    char     artist[128];
+    char     cover_url[256];
+    char     year[16];
+    char     type[32];
+    uint32_t track_count;
+} AlbumMetadata;
+
+/* Artist metadata */
+typedef struct ArtistMetadata {
+    char id[64];
+    char name[128];
+    char avatar_url[256];
+    char bio[128];
+} ArtistMetadata;
+
+/* Playlist metadata */
+typedef struct PlaylistMetadata {
+    char     id[64];
+    char     title[128];
+    char     curator[64];
+    char     description[128];
+    uint32_t track_count;
+} PlaylistMetadata;
+
 /* ── Controller Input Actions ────────────────────────────────────── */
 typedef enum {
     ACT_NONE = 0,

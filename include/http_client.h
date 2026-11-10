@@ -20,6 +20,10 @@ void http_search_async_start(const char *query);
 SearchStatus http_search_async_poll(TrackMetadata *out_tracks, int *out_count, int max_tracks, int *out_http_code, int *out_errno);
 const char  *http_search_get_active_query(void);
 
+int http_search_get_albums(AlbumMetadata *out_albums, int max_albums);
+int http_search_get_artists(ArtistMetadata *out_artists, int max_artists);
+int http_search_get_playlists(PlaylistMetadata *out_playlists, int max_playlists);
+
 int  http_get_timeout_ms(void);
 void http_set_timeout_ms(int timeout_ms);
 int  http_get_max_retries(void);

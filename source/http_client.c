@@ -30,6 +30,13 @@
 #define API_PORT 80
 #define RECV_BUF_SIZE (256 * 1024)
 
+static AlbumMetadata s_async_albums[MAX_SEARCH_RESULTS];
+static int s_async_album_count = 0;
+static ArtistMetadata s_async_artists[MAX_SEARCH_RESULTS];
+static int s_async_artist_count = 0;
+static PlaylistMetadata s_async_playlists[MAX_SEARCH_RESULTS];
+static int s_async_playlist_count = 0;
+
 static int g_http_timeout_ms = 30000;  /* 30 seconds default */
 static int g_http_max_retries = 8;
 
@@ -236,6 +243,106 @@ int http_search_sync(const char *query, TrackMetadata *out_tracks, int max_track
     if (!j_tracks) j_tracks = cJSON_GetObjectItemCaseSensitive(root, "data");
     if (!j_tracks && cJSON_IsArray(root)) j_tracks = root;
 
+    /* Parse Releases / Albums */
+    s_async_album_count = 0;
+    if (j_releases && cJSON_IsArray(j_releases)) {
+        int n_rel = cJSON_GetArraySize(j_releases);
+        for (int i = 0; i < n_rel && s_async_album_count < MAX_SEARCH_RESULTS; i++) {
+            cJSON *item = cJSON_GetArrayItem(j_releases, i);
+            if (!item) continue;
+            AlbumMetadata *alb = &s_async_albums[s_async_album_count];
+            memset(alb, 0, sizeof(AlbumMetadata));
+
+            cJSON *jid = cJSON_GetObjectItemCaseSensitive(item, "id");
+            if (!jid) jid = cJSON_GetObjectItemCaseSensitive(item, "releaseId");
+            if (jid && cJSON_IsString(jid)) strncpy(alb->id, jid->valuestring, sizeof(alb->id) - 1);
+
+            cJSON *jtitle = cJSON_GetObjectItemCaseSensitive(item, "title");
+            if (jtitle && cJSON_IsString(jtitle)) strncpy(alb->title, jtitle->valuestring, sizeof(alb->title) - 1);
+
+            cJSON *jnames = cJSON_GetObjectItemCaseSensitive(item, "artistNames");
+            if (jnames && cJSON_IsArray(jnames) && cJSON_GetArraySize(jnames) > 0) {
+                cJSON *fa = cJSON_GetArrayItem(jnames, 0);
+                if (fa && cJSON_IsString(fa)) strncpy(alb->artist, fa->valuestring, sizeof(alb->artist) - 1);
+            }
+
+            cJSON *jart = cJSON_GetObjectItemCaseSensitive(item, "artwork");
+            if (jart && cJSON_IsString(jart)) strncpy(alb->cover_url, jart->valuestring, sizeof(alb->cover_url) - 1);
+
+            cJSON *jtype = cJSON_GetObjectItemCaseSensitive(item, "releaseType");
+            if (jtype && cJSON_IsString(jtype)) strncpy(alb->type, jtype->valuestring, sizeof(alb->type) - 1);
+            else strcpy(alb->type, "ALBUM");
+
+            cJSON *jdate = cJSON_GetObjectItemCaseSensitive(item, "releaseDate");
+            if (jdate && cJSON_IsString(jdate) && strlen(jdate->valuestring) >= 4) {
+                strncpy(alb->year, jdate->valuestring, 4);
+                alb->year[4] = '\0';
+            }
+
+            s_async_album_count++;
+        }
+    }
+
+    /* Parse Artists */
+    s_async_artist_count = 0;
+    cJSON *j_artists = cJSON_GetObjectItemCaseSensitive(root, "artists");
+    if (j_artists && cJSON_IsArray(j_artists)) {
+        int n_art = cJSON_GetArraySize(j_artists);
+        for (int i = 0; i < n_art && s_async_artist_count < MAX_SEARCH_RESULTS; i++) {
+            cJSON *item = cJSON_GetArrayItem(j_artists, i);
+            if (!item) continue;
+            ArtistMetadata *art = &s_async_artists[s_async_artist_count];
+            memset(art, 0, sizeof(ArtistMetadata));
+
+            cJSON *jid = cJSON_GetObjectItemCaseSensitive(item, "id");
+            if (!jid) jid = cJSON_GetObjectItemCaseSensitive(item, "artistId");
+            if (jid && cJSON_IsString(jid)) strncpy(art->id, jid->valuestring, sizeof(art->id) - 1);
+
+            cJSON *jname = cJSON_GetObjectItemCaseSensitive(item, "name");
+            if (!jname) jname = cJSON_GetObjectItemCaseSensitive(item, "displayName");
+            if (jname && cJSON_IsString(jname)) strncpy(art->name, jname->valuestring, sizeof(art->name) - 1);
+
+            cJSON *javatar = cJSON_GetObjectItemCaseSensitive(item, "avatar");
+            if (javatar && cJSON_IsString(javatar)) strncpy(art->avatar_url, javatar->valuestring, sizeof(art->avatar_url) - 1);
+
+            cJSON *jbio = cJSON_GetObjectItemCaseSensitive(item, "bio");
+            if (jbio && cJSON_IsString(jbio)) strncpy(art->bio, jbio->valuestring, sizeof(art->bio) - 1);
+
+            s_async_artist_count++;
+        }
+    }
+
+    /* Parse Playlists */
+    s_async_playlist_count = 0;
+    cJSON *j_playlists = cJSON_GetObjectItemCaseSensitive(root, "playlists");
+    if (j_playlists && cJSON_IsArray(j_playlists)) {
+        int n_play = cJSON_GetArraySize(j_playlists);
+        for (int i = 0; i < n_play && s_async_playlist_count < MAX_SEARCH_RESULTS; i++) {
+            cJSON *item = cJSON_GetArrayItem(j_playlists, i);
+            if (!item) continue;
+            PlaylistMetadata *pl = &s_async_playlists[s_async_playlist_count];
+            memset(pl, 0, sizeof(PlaylistMetadata));
+
+            cJSON *jid = cJSON_GetObjectItemCaseSensitive(item, "id");
+            if (!jid) jid = cJSON_GetObjectItemCaseSensitive(item, "playlistId");
+            if (jid && cJSON_IsString(jid)) strncpy(pl->id, jid->valuestring, sizeof(pl->id) - 1);
+
+            cJSON *jtitle = cJSON_GetObjectItemCaseSensitive(item, "title");
+            if (jtitle && cJSON_IsString(jtitle)) strncpy(pl->title, jtitle->valuestring, sizeof(pl->title) - 1);
+
+            cJSON *jowner = cJSON_GetObjectItemCaseSensitive(item, "ownerId");
+            if (jowner && cJSON_IsString(jowner)) strncpy(pl->curator, jowner->valuestring, sizeof(pl->curator) - 1);
+
+            cJSON *jdesc = cJSON_GetObjectItemCaseSensitive(item, "description");
+            if (jdesc && cJSON_IsString(jdesc)) strncpy(pl->description, jdesc->valuestring, sizeof(pl->description) - 1);
+
+            cJSON *jtc = cJSON_GetObjectItemCaseSensitive(item, "trackCount");
+            if (jtc && cJSON_IsNumber(jtc)) pl->track_count = (uint32_t)jtc->valueint;
+
+            s_async_playlist_count++;
+        }
+    }
+
     int parsed_count = 0;
     if (j_tracks && cJSON_IsArray(j_tracks)) {
         int n = cJSON_GetArraySize(j_tracks);
@@ -407,6 +514,27 @@ SearchStatus http_search_async_poll(TrackMetadata *out_tracks, int *out_count, i
 const char *http_search_get_active_query(void)
 {
     return s_async_query;
+}
+
+int http_search_get_albums(AlbumMetadata *out_albums, int max_albums)
+{
+    int n = (s_async_album_count < max_albums) ? s_async_album_count : max_albums;
+    if (out_albums && n > 0) memcpy(out_albums, s_async_albums, n * sizeof(AlbumMetadata));
+    return n;
+}
+
+int http_search_get_artists(ArtistMetadata *out_artists, int max_artists)
+{
+    int n = (s_async_artist_count < max_artists) ? s_async_artist_count : max_artists;
+    if (out_artists && n > 0) memcpy(out_artists, s_async_artists, n * sizeof(ArtistMetadata));
+    return n;
+}
+
+int http_search_get_playlists(PlaylistMetadata *out_playlists, int max_playlists)
+{
+    int n = (s_async_playlist_count < max_playlists) ? s_async_playlist_count : max_playlists;
+    if (out_playlists && n > 0) memcpy(out_playlists, s_async_playlists, n * sizeof(PlaylistMetadata));
+    return n;
 }
 
 int http_get_timeout_ms(void)

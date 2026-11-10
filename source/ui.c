@@ -20,6 +20,12 @@
 /* Real search results directly from tracks.monochrome.st */
 static TrackMetadata s_display_tracks[MAX_SEARCH_RESULTS];
 static int s_display_count = 0;
+static AlbumMetadata s_display_albums[MAX_SEARCH_RESULTS];
+static int s_display_album_count = 0;
+static ArtistMetadata s_display_artists[MAX_SEARCH_RESULTS];
+static int s_display_artist_count = 0;
+static PlaylistMetadata s_display_playlists[MAX_SEARCH_RESULTS];
+static int s_display_playlist_count = 0;
 static int s_cursor = 0;
 
 /* Playback state */
@@ -227,8 +233,8 @@ AppState ui_handle_input(AppState current, InputAction act)
 {
     if (act == ACT_NONE) return current;
 
-    /* Global Nav Tab Cycling with L1 / R1 across main screens */
-    if (current != STATE_PLAYING && !s_screen_adjust_mode && !s_menu_open && !s_show_system_info && !s_show_network_settings) {
+    /* Global Nav Tab Cycling with L1 / R1 across main screens (except search OSK) */
+    if (current != STATE_PLAYING && current != STATE_SEARCH && !s_screen_adjust_mode && !s_menu_open && !s_show_system_info && !s_show_network_settings) {
         for (int i = 0; i < NAV_TABS_COUNT; i++) {
             if (s_nav_tab_states[i] == current) {
                 s_active_nav_tab = i;
@@ -458,9 +464,11 @@ AppState ui_handle_input(AppState current, InputAction act)
                 }
                 break;
             }
+            case ACT_L1:
             case ACT_L2: /* Cycle search sub-tab left */
                 s_search_active_tab = (SearchTab)((s_search_active_tab - 1 + SEARCH_TAB_COUNT) % SEARCH_TAB_COUNT);
                 break;
+            case ACT_R1:
             case ACT_R2: /* Cycle search sub-tab right */
                 s_search_active_tab = (SearchTab)((s_search_active_tab + 1) % SEARCH_TAB_COUNT);
                 break;
@@ -708,26 +716,79 @@ AppState ui_handle_input(AppState current, InputAction act)
 
     /* ── HOME STATE (Default) ── */
     switch (act) {
-        case ACT_UP:
-            if (s_display_count > 0) {
+        case ACT_L2:
+            s_search_active_tab = (SearchTab)((s_search_active_tab - 1 + SEARCH_TAB_COUNT) % SEARCH_TAB_COUNT);
+            s_cursor = 0;
+            break;
+        case ACT_R2:
+            s_search_active_tab = (SearchTab)((s_search_active_tab + 1) % SEARCH_TAB_COUNT);
+            s_cursor = 0;
+            break;
+        case ACT_UP: {
+            int max_c = (s_search_active_tab == SEARCH_TAB_TRACKS) ? s_display_count :
+                        (s_search_active_tab == SEARCH_TAB_ALBUMS) ? s_display_album_count :
+                        (s_search_active_tab == SEARCH_TAB_ARTISTS) ? s_display_artist_count :
+                        (s_search_active_tab == SEARCH_TAB_PLAYLISTS) ? s_display_playlist_count : 0;
+            if (max_c > 0) {
                 if (s_cursor > 0) s_cursor--;
-                else s_cursor = s_display_count - 1;
+                else s_cursor = max_c - 1;
             }
             break;
-        case ACT_DOWN:
-            if (s_display_count > 0) {
-                if (s_cursor + 1 < s_display_count) s_cursor++;
+        }
+        case ACT_DOWN: {
+            int max_c = (s_search_active_tab == SEARCH_TAB_TRACKS) ? s_display_count :
+                        (s_search_active_tab == SEARCH_TAB_ALBUMS) ? s_display_album_count :
+                        (s_search_active_tab == SEARCH_TAB_ARTISTS) ? s_display_artist_count :
+                        (s_search_active_tab == SEARCH_TAB_PLAYLISTS) ? s_display_playlist_count : 0;
+            if (max_c > 0) {
+                if (s_cursor + 1 < max_c) s_cursor++;
                 else s_cursor = 0;
             }
             break;
+        }
         case ACT_CROSS:
-            if (s_display_count > 0 && s_cursor >= 0 && s_cursor < s_display_count) {
-                s_current_track_idx = s_cursor;
-                s_playback_state = PLAYBACK_PLAYING;
-                s_playback_progress = 0.0f;
-                /* Play the EXACT ID selected and load cover */
-                play_track_with_cover(s_current_track_idx);
-                return STATE_PLAYING;
+            if (s_search_active_tab == SEARCH_TAB_TRACKS) {
+                if (s_display_count > 0 && s_cursor >= 0 && s_cursor < s_display_count) {
+                    s_current_track_idx = s_cursor;
+                    s_playback_state = PLAYBACK_PLAYING;
+                    s_playback_progress = 0.0f;
+                    /* Play the EXACT ID selected and load cover */
+                    play_track_with_cover(s_current_track_idx);
+                    return STATE_PLAYING;
+                }
+            } else if (s_search_active_tab == SEARCH_TAB_ALBUMS) {
+                if (s_display_album_count > 0 && s_cursor >= 0 && s_cursor < s_display_album_count) {
+                    /* Drill down into album songs list */
+                    strncpy(s_search_query, s_display_albums[s_cursor].title, sizeof(s_search_query) - 1);
+                    s_search_len = (int)strlen(s_search_query);
+                    s_display_count = 0;
+                    s_cursor = 0;
+                    http_search_async_start(s_search_query);
+                    s_search_status = SEARCH_STATUS_BUSY;
+                    s_search_active_tab = SEARCH_TAB_TRACKS;
+                }
+            } else if (s_search_active_tab == SEARCH_TAB_ARTISTS) {
+                if (s_display_artist_count > 0 && s_cursor >= 0 && s_cursor < s_display_artist_count) {
+                    /* Drill down into artist tracks */
+                    strncpy(s_search_query, s_display_artists[s_cursor].name, sizeof(s_search_query) - 1);
+                    s_search_len = (int)strlen(s_search_query);
+                    s_display_count = 0;
+                    s_cursor = 0;
+                    http_search_async_start(s_search_query);
+                    s_search_status = SEARCH_STATUS_BUSY;
+                    s_search_active_tab = SEARCH_TAB_TRACKS;
+                }
+            } else if (s_search_active_tab == SEARCH_TAB_PLAYLISTS) {
+                if (s_display_playlist_count > 0 && s_cursor >= 0 && s_cursor < s_display_playlist_count) {
+                    /* Drill down into playlist tracks */
+                    strncpy(s_search_query, s_display_playlists[s_cursor].title, sizeof(s_search_query) - 1);
+                    s_search_len = (int)strlen(s_search_query);
+                    s_display_count = 0;
+                    s_cursor = 0;
+                    http_search_async_start(s_search_query);
+                    s_search_status = SEARCH_STATUS_BUSY;
+                    s_search_active_tab = SEARCH_TAB_TRACKS;
+                }
             }
             break;
         case ACT_SQUARE:
@@ -855,84 +916,231 @@ static void render_footer(int sw, int sh, const char *hints)
 
 static void render_home_screen(int sw, int sh)
 {
-    render_header(sw, STATE_HOME, "[X] Reproducir | [] Buscar | /\\ Cola");
+    render_header(sw, STATE_HOME, "[L2/R2] Filtro Categoria | [X] Seleccionar");
 
-    /* Subheader with dynamic search status */
-    platform_draw_rect(0, 95, sw, 34, 0x00141824);
+    /* Search Sub-Tabs Row (Grandes, 36px, fuente escala 2) */
+    int subtab_y = 94;
+    int subtab_h = 36;
+    int subtab_font_scale = (sw >= 1150) ? 2 : 1;
+    platform_draw_rect(0, subtab_y, sw, subtab_h + 4, 0x000E1420);
+    platform_draw_rect(0, subtab_y + subtab_h + 3, sw, 1, 0x002B374A);
+
+    int subtab_x = 25;
+    for (int t = 0; t < SEARCH_TAB_COUNT; t++) {
+        bool is_sub_active = (t == (int)s_search_active_tab);
+        int text_w = (int)strlen(s_search_tab_names[t]) * 8 * subtab_font_scale;
+        int tw = text_w + (subtab_font_scale == 2 ? 26 : 16);
+
+        if (is_sub_active) {
+            platform_draw_rect(subtab_x, subtab_y + 2, tw, subtab_h, 0x00C83838);
+            platform_draw_rect(subtab_x, subtab_y + subtab_h - 2, tw, 4, 0xFFFFFFFF);
+            int tx = subtab_x + (tw - text_w) / 2;
+            int ty = subtab_y + 2 + (subtab_h - (8 * subtab_font_scale)) / 2;
+            platform_draw_text(tx, ty, s_search_tab_names[t], 0xFFFFFFFF, subtab_font_scale);
+        } else {
+            platform_draw_rect(subtab_x, subtab_y + 2, tw, subtab_h, 0x00141C2B);
+            platform_draw_rect(subtab_x, subtab_y + 2, tw, 1, 0x002B374A);
+            int tx = subtab_x + (tw - text_w) / 2;
+            int ty = subtab_y + 2 + (subtab_h - (8 * subtab_font_scale)) / 2;
+            platform_draw_text(tx, ty, s_search_tab_names[t], 0x00A0B0C0, subtab_font_scale);
+        }
+        subtab_x += tw + 10;
+    }
+    platform_draw_text_r(sw - 25, subtab_y + 11, "[L2/R2] Filtro Categoria", 0x00788898, 1);
+
+    /* Dynamic Subheader */
+    int stat_y = 138;
+    platform_draw_rect(0, stat_y, sw, 32, 0x00141824);
 
     if (s_search_status == SEARCH_STATUS_BUSY) {
         char msg[128];
         snprintf(msg, sizeof(msg), "Buscando '%s' en tracks.monochrome.st...", s_search_query);
-        platform_draw_text_clipped(30, 103, sw - 60, msg, 0x00C83838, 2);
+        platform_draw_text_clipped(30, stat_y + 8, sw - 60, msg, 0x00C83838, 2);
     } else if (s_search_status == SEARCH_STATUS_NO_RESULTS) {
         char msg[128];
         snprintf(msg, sizeof(msg), "Sin resultados para '%s' (Pulsa [] para buscar de nuevo)", s_search_query);
-        platform_draw_text_clipped(30, 103, sw - 60, msg, 0x00C83838, 2);
+        platform_draw_text_clipped(30, stat_y + 8, sw - 60, msg, 0x00C83838, 2);
     } else if (s_search_status == SEARCH_STATUS_ERROR) {
         char msg[128];
         snprintf(msg, sizeof(msg), "Error de red al consultar API (HTTP %d, errno %d)", s_last_http_code, s_last_errno);
-        platform_draw_text_clipped(30, 103, sw - 60, msg, 0x00C83838, 2);
+        platform_draw_text_clipped(30, stat_y + 8, sw - 60, msg, 0x00C83838, 2);
     } else {
-        char f_info[128];
-        snprintf(f_info, sizeof(f_info), "Resultados API: \"%s\" (%d temas reales recibidos)", s_search_query, s_display_count);
+        char f_info[160];
+        if (s_search_active_tab == SEARCH_TAB_TRACKS) {
+            snprintf(f_info, sizeof(f_info), "Canciones: \"%s\" (%d temas disponibles) | [X] Reproducir", s_search_query, s_display_count);
+        } else if (s_search_active_tab == SEARCH_TAB_ALBUMS) {
+            snprintf(f_info, sizeof(f_info), "Albumes: \"%s\" (%d albumes disponibles) | [X] Abrir canciones del album", s_search_query, s_display_album_count);
+        } else if (s_search_active_tab == SEARCH_TAB_ARTISTS) {
+            snprintf(f_info, sizeof(f_info), "Artistas: \"%s\" (%d artistas encontrados) | [X] Ver canciones del artista", s_search_query, s_display_artist_count);
+        } else if (s_search_active_tab == SEARCH_TAB_PLAYLISTS) {
+            snprintf(f_info, sizeof(f_info), "Playlists: \"%s\" (%d listas encontradas) | [X] Cargar canciones", s_search_query, s_display_playlist_count);
+        } else {
+            snprintf(f_info, sizeof(f_info), "Podcasts & Sesiones Exclusivas");
+        }
         int online_w = 30 * 8 * 2;
         int max_finfo_w = sw - 30 - online_w - 40;
         if (max_finfo_w < 100) max_finfo_w = 100;
-        platform_draw_text_clipped(30, 103, max_finfo_w, f_info, 0xFFFFFFFF, 2);
-        platform_draw_text_r(sw - 30, 103, "[ONLINE: tracks.monochrome.st]", 0x00C83838, 2);
+        platform_draw_text_clipped(30, stat_y + 8, max_finfo_w, f_info, 0xFFFFFFFF, 2);
+        platform_draw_text_r(sw - 30, stat_y + 8, "[ONLINE: tracks.monochrome.st]", 0x00C83838, 2);
     }
 
-    /* Track list */
-    int list_y = 138;
+    /* List items */
+    int list_y = 176;
     int row_h = 55;
-    int max_rows = (sh - 138 - 100) / row_h;
+    int max_rows = (sh - 176 - 100) / row_h;
 
-    if (s_display_count == 0) {
-        if (s_search_status == SEARCH_STATUS_BUSY) {
-            platform_draw_text(sw / 2 - 200, sh / 2 - 30, "Conectando a Monochrome API...", 0xFFFFFFFF, 3);
-            platform_draw_text(sw / 2 - 180, sh / 2 + 10, "Descargando lista de pistas por HTTP...", 0xFFFFFFFF, 2);
-        } else if (s_search_status == SEARCH_STATUS_NO_RESULTS) {
-            platform_draw_text(sw / 2 - 160, sh / 2, "No se encontraron pistas", 0x00C83838, 3);
-        } else if (s_search_status == SEARCH_STATUS_ERROR) {
-            platform_draw_text(sw / 2 - 180, sh / 2, "Error de conexion con el servidor", 0x00C83838, 3);
+    if (s_search_active_tab == SEARCH_TAB_TRACKS) {
+        if (s_display_count == 0 && s_search_status != SEARCH_STATUS_BUSY) {
+            platform_draw_text(sw / 2 - 180, sh / 2, "No hay canciones para esta busqueda", 0x00808080, 2);
+        } else {
+            for (int i = 0; i < max_rows && i < s_display_count; i++) {
+                int ry = list_y + i * row_h;
+                int is_sel = (i == s_cursor);
+                TrackMetadata *t = &s_display_tracks[i];
+
+                if (is_sel) {
+                    platform_draw_rect(20, ry, sw - 40, row_h - 4, 0x00243450);
+                    platform_draw_rect(20, ry, 6, row_h - 4, 0xFFFFFFFF);
+                    platform_draw_text(36, ry + 16, ">", 0xFFFFFFFF, 3);
+                } else {
+                    platform_draw_rect(20, ry, sw - 40, row_h - 4, (i % 2 == 0) ? 0x00111722 : 0x00161E2C);
+                }
+
+                char num[8];
+                snprintf(num, sizeof(num), "%02d.", i + 1);
+                platform_draw_text(60, ry + 16, num, is_sel ? 0xFFFFFFFF : 0x00707070, 2);
+
+                int max_row_w = sw - 120 - 20 - 110;
+                if (max_row_w < 100) max_row_w = 100;
+                platform_draw_text_clipped(110, ry + 10, max_row_w, t->title, is_sel ? 0xFFFFFFFF : 0x00E0E0E0, 2);
+
+                char subline[384];
+                if (t->album[0]) {
+                    snprintf(subline, sizeof(subline), "%s  |  [Album: %s]", t->artist, t->album);
+                } else {
+                    snprintf(subline, sizeof(subline), "%s  |  [ID: %s]", t->artist, t->id);
+                }
+                platform_draw_text_clipped(110, ry + 32, max_row_w, subline, is_sel ? 0xFFFFFFFF : 0x00808080, 1);
+
+                char dur[16];
+                snprintf(dur, sizeof(dur), "%d:%02d", t->duration_sec / 60, t->duration_sec % 60);
+                platform_draw_text_r(sw - 120, ry + 18, dur, 0x00909090, 2);
+
+                const char *badge = t->is_hi_res ? "HI-RES" : "FLAC";
+                platform_draw_text_r(sw - 40, ry + 18, badge, t->is_hi_res ? 0xFFFFFFFF : 0x00C83838, 2);
+            }
+        }
+    } else if (s_search_active_tab == SEARCH_TAB_ALBUMS) {
+        if (s_display_album_count == 0 && s_search_status != SEARCH_STATUS_BUSY) {
+            platform_draw_text(sw / 2 - 200, sh / 2, "No hay albumes para esta busqueda", 0x00808080, 2);
+        } else {
+            for (int i = 0; i < max_rows && i < s_display_album_count; i++) {
+                int ry = list_y + i * row_h;
+                int is_sel = (i == s_cursor);
+                AlbumMetadata *alb = &s_display_albums[i];
+
+                if (is_sel) {
+                    platform_draw_rect(20, ry, sw - 40, row_h - 4, 0x00243450);
+                    platform_draw_rect(20, ry, 6, row_h - 4, 0xFFFFFFFF);
+                    platform_draw_text(36, ry + 16, ">", 0xFFFFFFFF, 3);
+                } else {
+                    platform_draw_rect(20, ry, sw - 40, row_h - 4, (i % 2 == 0) ? 0x00111722 : 0x00161E2C);
+                }
+
+                char num[8];
+                snprintf(num, sizeof(num), "%02d.", i + 1);
+                platform_draw_text(60, ry + 16, num, is_sel ? 0xFFFFFFFF : 0x00707070, 2);
+
+                int max_row_w = sw - 140 - 20 - 110;
+                if (max_row_w < 100) max_row_w = 100;
+                platform_draw_text_clipped(110, ry + 10, max_row_w, alb->title, is_sel ? 0xFFFFFFFF : 0x00E0E0E0, 2);
+
+                char subline[256];
+                snprintf(subline, sizeof(subline), "%s  |  [ALBUM]  |  Ano: %s  |  [Pulsa X para ver canciones]",
+                         alb->artist[0] ? alb->artist : "Varios Artistas", alb->year[0] ? alb->year : "2024");
+                platform_draw_text_clipped(110, ry + 32, max_row_w, subline, is_sel ? 0xFFFFFFFF : 0x0090A4AE, 1);
+
+                platform_draw_text_r(sw - 40, ry + 18, "[VER ALBUM]", is_sel ? 0xFFFFFFFF : 0x00C83838, 2);
+            }
+        }
+    } else if (s_search_active_tab == SEARCH_TAB_ARTISTS) {
+        if (s_display_artist_count == 0 && s_search_status != SEARCH_STATUS_BUSY) {
+            platform_draw_text(sw / 2 - 200, sh / 2, "No hay artistas para esta busqueda", 0x00808080, 2);
+        } else {
+            for (int i = 0; i < max_rows && i < s_display_artist_count; i++) {
+                int ry = list_y + i * row_h;
+                int is_sel = (i == s_cursor);
+                ArtistMetadata *art = &s_display_artists[i];
+
+                if (is_sel) {
+                    platform_draw_rect(20, ry, sw - 40, row_h - 4, 0x00243450);
+                    platform_draw_rect(20, ry, 6, row_h - 4, 0xFFFFFFFF);
+                    platform_draw_text(36, ry + 16, ">", 0xFFFFFFFF, 3);
+                } else {
+                    platform_draw_rect(20, ry, sw - 40, row_h - 4, (i % 2 == 0) ? 0x00111722 : 0x00161E2C);
+                }
+
+                char num[8];
+                snprintf(num, sizeof(num), "%02d.", i + 1);
+                platform_draw_text(60, ry + 16, num, is_sel ? 0xFFFFFFFF : 0x00707070, 2);
+
+                int max_row_w = sw - 140 - 20 - 110;
+                if (max_row_w < 100) max_row_w = 100;
+                platform_draw_text_clipped(110, ry + 10, max_row_w, art->name, is_sel ? 0xFFFFFFFF : 0x00E0E0E0, 2);
+
+                char subline[256];
+                if (art->bio[0]) {
+                    snprintf(subline, sizeof(subline), "%s  |  [Pulsa X para ver discografia completa]", art->bio);
+                } else {
+                    snprintf(subline, sizeof(subline), "Artista verificado  |  [Pulsa X para ver canciones del artista]");
+                }
+                platform_draw_text_clipped(110, ry + 32, max_row_w, subline, is_sel ? 0xFFFFFFFF : 0x0090A4AE, 1);
+
+                platform_draw_text_r(sw - 40, ry + 18, "[ARTISTA]", is_sel ? 0xFFFFFFFF : 0x00C83838, 2);
+            }
+        }
+    } else if (s_search_active_tab == SEARCH_TAB_PLAYLISTS) {
+        if (s_display_playlist_count == 0 && s_search_status != SEARCH_STATUS_BUSY) {
+            platform_draw_text(sw / 2 - 200, sh / 2, "No hay playlists para esta busqueda", 0x00808080, 2);
+        } else {
+            for (int i = 0; i < max_rows && i < s_display_playlist_count; i++) {
+                int ry = list_y + i * row_h;
+                int is_sel = (i == s_cursor);
+                PlaylistMetadata *pl = &s_display_playlists[i];
+
+                if (is_sel) {
+                    platform_draw_rect(20, ry, sw - 40, row_h - 4, 0x00243450);
+                    platform_draw_rect(20, ry, 6, row_h - 4, 0xFFFFFFFF);
+                    platform_draw_text(36, ry + 16, ">", 0xFFFFFFFF, 3);
+                } else {
+                    platform_draw_rect(20, ry, sw - 40, row_h - 4, (i % 2 == 0) ? 0x00111722 : 0x00161E2C);
+                }
+
+                char num[8];
+                snprintf(num, sizeof(num), "%02d.", i + 1);
+                platform_draw_text(60, ry + 16, num, is_sel ? 0xFFFFFFFF : 0x00707070, 2);
+
+                int max_row_w = sw - 140 - 20 - 110;
+                if (max_row_w < 100) max_row_w = 100;
+                platform_draw_text_clipped(110, ry + 10, max_row_w, pl->title, is_sel ? 0xFFFFFFFF : 0x00E0E0E0, 2);
+
+                char subline[256];
+                snprintf(subline, sizeof(subline), "Curador: %s  |  %s  |  [Pulsa X para cargar canciones]",
+                         pl->curator[0] ? pl->curator : "Monochrome",
+                         pl->description[0] ? pl->description : "Playlist Curada");
+                platform_draw_text_clipped(110, ry + 32, max_row_w, subline, is_sel ? 0xFFFFFFFF : 0x0090A4AE, 1);
+
+                char tc[32];
+                snprintf(tc, sizeof(tc), "[%u TEMAS]", pl->track_count);
+                platform_draw_text_r(sw - 40, ry + 18, tc, is_sel ? 0xFFFFFFFF : 0x00C83838, 2);
+            }
         }
     } else {
-        for (int i = 0; i < max_rows && i < s_display_count; i++) {
-            int ry = list_y + i * row_h;
-            int is_sel = (i == s_cursor);
-            TrackMetadata *t = &s_display_tracks[i];
-
-            if (is_sel) {
-                platform_draw_rect(20, ry, sw - 40, row_h - 4, 0x00243450);
-                platform_draw_rect(20, ry, 6, row_h - 4, 0xFFFFFFFF);
-                platform_draw_text(36, ry + 16, ">", 0xFFFFFFFF, 3);
-            } else {
-                platform_draw_rect(20, ry, sw - 40, row_h - 4, (i % 2 == 0) ? 0x00111722 : 0x00161E2C);
-            }
-
-            char num[8];
-            snprintf(num, sizeof(num), "%02d.", i + 1);
-            platform_draw_text(60, ry + 16, num, is_sel ? 0xFFFFFFFF : 0x00707070, 2);
-
-            int max_row_w = sw - 120 - 20 - 110;
-            if (max_row_w < 100) max_row_w = 100;
-            platform_draw_text_clipped(110, ry + 10, max_row_w, t->title, is_sel ? 0xFFFFFFFF : 0x00E0E0E0, 2);
-
-            char subline[256];
-            snprintf(subline, sizeof(subline), "%s  |  [ID: %s]", t->artist, t->id);
-            platform_draw_text_clipped(110, ry + 32, max_row_w, subline, is_sel ? 0xFFFFFFFF : 0x00808080, 1);
-
-            char dur[16];
-            snprintf(dur, sizeof(dur), "%d:%02d", t->duration_sec / 60, t->duration_sec % 60);
-            platform_draw_text_r(sw - 120, ry + 18, dur, 0x00909090, 2);
-
-            const char *badge = t->is_hi_res ? "HI-RES" : "FLAC";
-            platform_draw_text_r(sw - 40, ry + 18, badge, t->is_hi_res ? 0xFFFFFFFF : 0x00C83838, 2);
-        }
+        platform_draw_text(sw / 2 - 200, sh / 2, "Transmisiones y Podcasts Lossless disponibles proximamente", 0x00808080, 2);
     }
 
     render_now_playing_mini_bar(sw, sh);
-    render_footer(sw, sh, "D-PAD: Mover  |  X: Reproducir Stream  |  []: Buscar  |  /\\: Cola  |  START: Salir");
+    render_footer(sw, sh, "D-PAD: Mover | X: Seleccionar/Reproducir | L2/R2: Categoria | []: Buscar | START: Menu");
 }
 
 static void render_playing_screen(int sw, int sh, long frame)
@@ -1054,47 +1262,58 @@ static void render_search_screen(int sw, int sh)
 {
     render_header(sw, STATE_SEARCH, "[L1/R1] Filtro | [GO] Buscar");
 
-    int card_w = 800;
-    int card_h = 480;
+    int card_w = 860;
+    int card_h = 510;
     int card_x = (sw - card_w) / 2;
-    int card_y = 80;
+    int card_y = 70;
 
     platform_draw_rect(card_x - 3, card_y - 3, card_w + 6, card_h + 6, 0xFFFFFFFF);
     platform_draw_rect(card_x, card_y, card_w, card_h, 0x00141C2B);
 
-    /* Search Sub-Tabs (Tracks, Albums, Artists, Playlists, Podcasts) */
+    /* Search Sub-Tabs (Tracks, Albums, Artists, Playlists, Podcasts): Grandes y adaptables (36px, scale 2) */
+    int subtab_h = 36;
+    int subtab_font_scale = 2;
     int subtab_x = card_x + 30;
+    int subtab_y = card_y + 16;
     for (int t = 0; t < SEARCH_TAB_COUNT; t++) {
         bool is_sub_active = (t == (int)s_search_active_tab);
-        int tw = (int)strlen(s_search_tab_names[t]) * 8 * 1 + 18;
+        int text_w = (int)strlen(s_search_tab_names[t]) * 8 * subtab_font_scale;
+        int tw = text_w + 22;
         if (is_sub_active) {
-            platform_draw_rect(subtab_x, card_y + 2, tw, 20, 0x00C83838);
-            platform_draw_text(subtab_x + 9, card_y + 6, s_search_tab_names[t], 0xFFFFFFFF, 1);
+            platform_draw_rect(subtab_x, subtab_y, tw, subtab_h, 0x00C83838);
+            platform_draw_rect(subtab_x, subtab_y + subtab_h - 4, tw, 4, 0xFFFFFFFF);
+            int tx = subtab_x + (tw - text_w) / 2;
+            int ty = subtab_y + (subtab_h - (8 * subtab_font_scale)) / 2;
+            platform_draw_text(tx, ty, s_search_tab_names[t], 0xFFFFFFFF, subtab_font_scale);
         } else {
-            platform_draw_rect(subtab_x, card_y + 2, tw, 20, 0x001B2433);
-            platform_draw_text(subtab_x + 9, card_y + 6, s_search_tab_names[t], 0x00788898, 1);
+            platform_draw_rect(subtab_x, subtab_y, tw, subtab_h, 0x00141C2B);
+            platform_draw_rect(subtab_x, subtab_y, tw, 1, 0x002B374A);
+            int tx = subtab_x + (tw - text_w) / 2;
+            int ty = subtab_y + (subtab_h - (8 * subtab_font_scale)) / 2;
+            platform_draw_text(tx, ty, s_search_tab_names[t], 0x00A0B0C0, subtab_font_scale);
         }
         subtab_x += tw + 8;
     }
-    platform_draw_text_r(card_x + card_w - 30, card_y + 6, "[L2/R2] Filtro", 0x00667788, 1);
+    platform_draw_text_r(card_x + card_w - 30, subtab_y + 10, "[L1/R1] Filtro", 0x00788898, 1);
 
     /* Query Box */
-    platform_draw_rect(card_x + 30, card_y + 28, card_w - 60, 48, 0x000F1520);
-    platform_draw_rect(card_x + 30, card_y + 25, card_w - 60, 1, 0xFFFFFFFF);
+    int qbox_y = card_y + 60;
+    platform_draw_rect(card_x + 30, qbox_y, card_w - 60, 48, 0x000F1520);
+    platform_draw_rect(card_x + 30, qbox_y, card_w - 60, 1, 0xFFFFFFFF);
 
     char q_display[80];
     snprintf(q_display, sizeof(q_display), "Buscar en Monochrome: %s_", s_search_query);
-    platform_draw_text_clipped(card_x + 45, card_y + 38, card_w - 90, q_display, 0xFFFFFFFF, 2);
+    platform_draw_text_clipped(card_x + 45, qbox_y + 12, card_w - 90, q_display, 0xFFFFFFFF, 2);
 
     /* OSK Grid */
-    int key_w = 64;
+    int key_w = 68;
     int key_h = 55;
     int grid_x = card_x + 45;
-    int grid_y = card_y + 100;
+    int grid_y = card_y + 122;
 
     for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 10; c++) {
-            int kx = grid_x + c * (key_w + 8);
+            int kx = grid_x + c * (key_w + 10);
             int ky = grid_y + r * (key_h + 10);
             bool is_sel = (r == s_osk_row && c == s_osk_col);
 
@@ -1108,12 +1327,12 @@ static void render_search_screen(int sw, int sh)
 
             const char *label = s_osk[r][c];
             int text_scale = (strlen(label) > 1) ? 2 : 3;
-            int text_offset_x = (strlen(label) == 3) ? 10 : (strlen(label) == 2) ? 16 : 22;
+            int text_offset_x = (strlen(label) == 3) ? 12 : (strlen(label) == 2) ? 18 : 24;
             platform_draw_text(kx + text_offset_x, ky + 16, label, fg, text_scale);
         }
     }
 
-    platform_draw_text(card_x + 45, card_y + card_h - 40, "D-PAD: Navegar  |  X: Pulsar  |  /\\: Borrar  |  GO: Buscar en vivo  |  O: Cancelar", 0x00A0A0A0, 1);
+    platform_draw_text(card_x + 45, card_y + card_h - 38, "D-PAD: Navegar  |  X: Pulsar  |  /\\: Borrar  |  GO: Buscar en vivo  |  O: Cancelar", 0x00A0A0A0, 1);
     render_footer(sw, sh, "Escribe una palabra o artista y pulsa GO para buscar en la API");
 }
 
@@ -1414,6 +1633,9 @@ void ui_render(AppState state, long frame)
     SearchStatus st = http_search_async_poll(s_display_tracks, &count, MAX_SEARCH_RESULTS, &hcode, &herrn);
     if (st == SEARCH_STATUS_OK) {
         s_display_count = count;
+        s_display_album_count = http_search_get_albums(s_display_albums, MAX_SEARCH_RESULTS);
+        s_display_artist_count = http_search_get_artists(s_display_artists, MAX_SEARCH_RESULTS);
+        s_display_playlist_count = http_search_get_playlists(s_display_playlists, MAX_SEARCH_RESULTS);
         s_search_status = SEARCH_STATUS_OK;
         s_last_http_code = hcode;
         s_cursor = 0;
@@ -1425,10 +1647,16 @@ void ui_render(AppState state, long frame)
         }
     } else if (st == SEARCH_STATUS_NO_RESULTS) {
         s_display_count = 0;
+        s_display_album_count = 0;
+        s_display_artist_count = 0;
+        s_display_playlist_count = 0;
         s_search_status = SEARCH_STATUS_NO_RESULTS;
         s_last_http_code = hcode;
     } else if (st == SEARCH_STATUS_ERROR) {
         s_display_count = 0;
+        s_display_album_count = 0;
+        s_display_artist_count = 0;
+        s_display_playlist_count = 0;
         s_search_status = SEARCH_STATUS_ERROR;
         s_last_http_code = hcode;
         s_last_errno = herrn;
