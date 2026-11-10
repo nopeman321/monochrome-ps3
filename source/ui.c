@@ -80,7 +80,7 @@ static void add_recent_track(const TrackMetadata *t)
 }
 
 /* Search state */
-static char s_search_query[64] = "daft";
+static char s_search_query[160] = "daft";
 static int  s_search_len = 4;
 static int  s_osk_row = 1;
 static int  s_osk_col = 0;
@@ -758,12 +758,12 @@ AppState ui_handle_input(AppState current, InputAction act)
                 }
             } else if (s_search_active_tab == SEARCH_TAB_ALBUMS) {
                 if (s_display_album_count > 0 && s_cursor >= 0 && s_cursor < s_display_album_count) {
-                    /* Drill down into album songs list */
-                    strncpy(s_search_query, s_display_albums[s_cursor].title, sizeof(s_search_query) - 1);
+                    /* Drill down into album songs list directly via /releases/<id> */
+                    snprintf(s_search_query, sizeof(s_search_query), "Album: %s", s_display_albums[s_cursor].title);
                     s_search_len = (int)strlen(s_search_query);
                     s_display_count = 0;
                     s_cursor = 0;
-                    http_search_async_start(s_search_query);
+                    http_fetch_album_async_start(s_display_albums[s_cursor].id, s_display_albums[s_cursor].title);
                     s_search_status = SEARCH_STATUS_BUSY;
                     s_search_active_tab = SEARCH_TAB_TRACKS;
                 }

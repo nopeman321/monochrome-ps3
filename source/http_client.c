@@ -443,6 +443,13 @@ int http_search_sync(const char *query, TrackMetadata *out_tracks, int max_track
 static sys_ppu_thread_t s_search_thread_id;
 static volatile bool s_search_thread_active = false;
 
+static enum {
+    ASYNC_REQ_SEARCH = 0,
+    ASYNC_REQ_ALBUM
+} s_async_req_type = ASYNC_REQ_SEARCH;
+static char s_async_release_id[64] = "";
+static char s_async_album_title[128] = "";
+
 static char s_async_query[128] = "";
 static TrackMetadata s_async_results[MAX_SEARCH_RESULTS];
 static int s_async_result_count = 0;
@@ -450,11 +457,203 @@ static int s_async_http_code = 0;
 static int s_async_errno = 0;
 static volatile SearchStatus s_async_status = SEARCH_STATUS_IDLE;
 
+/* ── Fetch Album Tracks by Release ID (ordered 1..N) ── */
+int http_fetch_album_tracks_sync(const char *release_id, const char *album_title,
+                                TrackMetadata *out_tracks, int max_tracks,
+                                int *out_http_code, int *out_errno)
+{
+    if (out_http_code) *out_http_code = 0;
+    if (out_errno) *out_errno = 0;
+    if (!release_id || release_id[0] == '\0') return -1;
+
+    stage6_log("[ALBUM INICIO] Release ID: '%s', Titulo: '%s'", release_id, album_title ? album_title : "");
+
+    /* 1. DNS Resolution */
+    struct hostent *he = gethostbyname(API_HOST);
+    if (!he || !he->h_addr_list || !he->h_addr_list[0]) {
+        if (out_errno) *out_errno = errno;
+        stage6_log("[ERROR] DNS fallo para %s (errno: %d)", API_HOST, errno);
+        return -1;
+    }
+
+    struct in_addr api_ip;
+    memcpy(&api_ip, he->h_addr_list[0], sizeof(struct in_addr));
+
+    /* 2. Create Socket */
+    int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock < 0) {
+        if (out_errno) *out_errno = errno;
+        stage6_log("[ERROR] socket() fallo (errno: %d)", errno);
+        return -1;
+    }
+
+    struct timeval tv;
+    tv.tv_sec = g_http_timeout_ms / 1000;
+    tv.tv_usec = (g_http_timeout_ms % 1000) * 1000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    /* 3. Connect */
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(API_PORT);
+    addr.sin_addr = api_ip;
+
+    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        if (out_errno) *out_errno = errno;
+        stage6_log("[ERROR] connect() fallo a %s:%d (errno: %d)", API_HOST, API_PORT, errno);
+        close(sock);
+        return -1;
+    }
+
+    /* 4. Send GET /releases/<id> */
+    char req[512];
+    snprintf(req, sizeof(req),
+             "GET /releases/%s HTTP/1.1\r\n"
+             "Host: %s\r\n"
+             "User-Agent: Monochrome-PS3/1.0 (PSL1GHT; CellOS)\r\n"
+             "Accept: application/json\r\n"
+             "Connection: close\r\n\r\n",
+             release_id, API_HOST);
+
+    if (send(sock, req, strlen(req), 0) <= 0) {
+        if (out_errno) *out_errno = errno;
+        stage6_log("[ERROR] send() fallo (errno: %d)", errno);
+        close(sock);
+        return -1;
+    }
+
+    /* 5. Receive HTTP Response */
+    char *resp_buf = (char *)malloc(RECV_BUF_SIZE);
+    if (!resp_buf) {
+        close(sock);
+        return -1;
+    }
+
+    size_t total_recv = 0;
+    while (total_recv + 1 < RECV_BUF_SIZE) {
+        ssize_t n = recv(sock, resp_buf + total_recv, RECV_BUF_SIZE - total_recv - 1, 0);
+        if (n > 0) {
+            total_recv += (size_t)n;
+        } else if (n == 0) {
+            break;
+        } else {
+            if (errno == EAGAIN || errno == EINTR) continue;
+            break;
+        }
+    }
+    resp_buf[total_recv] = '\0';
+    close(sock);
+
+    /* 6. Parse HTTP status */
+    int http_code = 0;
+    if (sscanf(resp_buf, "HTTP/%*s %d", &http_code) == 1) {
+        if (out_http_code) *out_http_code = http_code;
+    }
+    if (http_code != 200) {
+        free(resp_buf);
+        return -1;
+    }
+
+    /* 7. Locate JSON Body */
+    char *body = strstr(resp_buf, "\r\n\r\n");
+    if (!body) body = strstr(resp_buf, "\n\n");
+    if (body) {
+        body = (body[1] == '\n') ? body + 2 : body + 4;
+    } else {
+        body = resp_buf;
+    }
+
+    cJSON *root = cJSON_Parse(body);
+    if (!root) {
+        free(resp_buf);
+        return -1;
+    }
+
+    char album_art[256] = "";
+    cJSON *j_art = cJSON_GetObjectItemCaseSensitive(root, "artwork");
+    if (j_art && cJSON_IsString(j_art)) {
+        strncpy(album_art, j_art->valuestring, sizeof(album_art) - 1);
+    }
+
+    char default_album_title[128] = "";
+    cJSON *j_atitle = cJSON_GetObjectItemCaseSensitive(root, "title");
+    if (j_atitle && cJSON_IsString(j_atitle)) {
+        strncpy(default_album_title, j_atitle->valuestring, sizeof(default_album_title) - 1);
+    } else if (album_title && album_title[0]) {
+        strncpy(default_album_title, album_title, sizeof(default_album_title) - 1);
+    }
+
+    cJSON *j_tracks = cJSON_GetObjectItemCaseSensitive(root, "tracks");
+    int parsed_count = 0;
+    if (j_tracks && cJSON_IsArray(j_tracks)) {
+        int n = cJSON_GetArraySize(j_tracks);
+        for (int i = 0; i < n && parsed_count < max_tracks; i++) {
+            cJSON *item = cJSON_GetArrayItem(j_tracks, i);
+            if (!item) continue;
+            TrackMetadata *t = &out_tracks[parsed_count];
+            memset(t, 0, sizeof(TrackMetadata));
+
+            cJSON *jid = cJSON_GetObjectItemCaseSensitive(item, "trackId");
+            if (!jid) jid = cJSON_GetObjectItemCaseSensitive(item, "id");
+            if (jid && cJSON_IsString(jid)) strncpy(t->id, jid->valuestring, sizeof(t->id) - 1);
+
+            cJSON *jtitle = cJSON_GetObjectItemCaseSensitive(item, "title");
+            if (jtitle && cJSON_IsString(jtitle)) strncpy(t->title, jtitle->valuestring, sizeof(t->title) - 1);
+
+            cJSON *jartists = cJSON_GetObjectItemCaseSensitive(item, "artists");
+            if (jartists && cJSON_IsArray(jartists) && cJSON_GetArraySize(jartists) > 0) {
+                cJSON *fa = cJSON_GetArrayItem(jartists, 0);
+                cJSON *faname = cJSON_GetObjectItemCaseSensitive(fa, "name");
+                if (faname && cJSON_IsString(faname)) strncpy(t->artist, faname->valuestring, sizeof(t->artist) - 1);
+            }
+
+            strncpy(t->album, default_album_title, sizeof(t->album) - 1);
+
+            cJSON *jdur = cJSON_GetObjectItemCaseSensitive(item, "duration");
+            if (jdur && cJSON_IsNumber(jdur)) {
+                t->duration_sec = (uint32_t)(jdur->valuedouble / 1000.0);
+                if (t->duration_sec == 0) t->duration_sec = (uint32_t)(jdur->valueint / 1000);
+            } else {
+                t->duration_sec = 210;
+            }
+
+            cJSON *jtart = cJSON_GetObjectItemCaseSensitive(item, "artwork");
+            if (jtart && cJSON_IsString(jtart) && jtart->valuestring[0]) {
+                strncpy(t->cover_url, jtart->valuestring, sizeof(t->cover_url) - 1);
+            } else if (album_art[0]) {
+                strncpy(t->cover_url, album_art, sizeof(t->cover_url) - 1);
+            }
+
+            t->sample_rate = 44100;
+            t->bit_depth = 16;
+            t->is_hi_res = false;
+
+            parsed_count++;
+        }
+    }
+
+    cJSON_Delete(root);
+    free(resp_buf);
+
+    stage6_log("[ALBUM RESULTADO] Release ID: %s | Titulo: \"%s\" | Pistas ordenadas: %d",
+               release_id, default_album_title, parsed_count);
+
+    return parsed_count;
+}
+
 static void search_worker_func(void *arg)
 {
     (void)arg;
     int code = 0, err = 0;
-    int count = http_search_sync(s_async_query, s_async_results, MAX_SEARCH_RESULTS, &code, &err);
+    int count = 0;
+
+    if (s_async_req_type == ASYNC_REQ_ALBUM) {
+        count = http_fetch_album_tracks_sync(s_async_release_id, s_async_album_title, s_async_results, MAX_SEARCH_RESULTS, &code, &err);
+    } else {
+        count = http_search_sync(s_async_query, s_async_results, MAX_SEARCH_RESULTS, &code, &err);
+    }
 
     s_async_http_code = code;
     s_async_errno = err;
@@ -480,7 +679,32 @@ void http_search_async_start(const char *query)
         return; /* Already busy */
     }
 
+    s_async_req_type = ASYNC_REQ_SEARCH;
     strncpy(s_async_query, query ? query : "daft", sizeof(s_async_query) - 1);
+    s_async_status = SEARCH_STATUS_BUSY;
+    s_search_thread_active = true;
+
+    int ret = sysThreadCreate(&s_search_thread_id, search_worker_func, NULL, 1500,
+                              0x20000, THREAD_JOINABLE, "mono_search");
+    if (ret != 0) {
+        stage6_log("[ERROR] sysThreadCreate(mono_search) fallo: %d", ret);
+        s_search_thread_active = false;
+        s_async_status = SEARCH_STATUS_ERROR;
+    }
+}
+
+void http_fetch_album_async_start(const char *release_id, const char *album_title)
+{
+    if (s_search_thread_active) {
+        return; /* Already busy */
+    }
+
+    s_async_req_type = ASYNC_REQ_ALBUM;
+    strncpy(s_async_release_id, release_id ? release_id : "", sizeof(s_async_release_id) - 1);
+    s_async_release_id[sizeof(s_async_release_id) - 1] = '\0';
+    strncpy(s_async_album_title, album_title ? album_title : "", sizeof(s_async_album_title) - 1);
+    s_async_album_title[sizeof(s_async_album_title) - 1] = '\0';
+
     s_async_status = SEARCH_STATUS_BUSY;
     s_search_thread_active = true;
 
