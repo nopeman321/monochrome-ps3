@@ -23,7 +23,7 @@
 #include "rsxutil.h"
 
 #define STAGE_LOG_PATH "/dev_hdd0/tmp/mono_stage6.log"
-#define MAX_BUFFERS 2
+#define MAX_BUFFERS 3
 
 static gcmContextData *s_context = NULL;
 static void *s_host_addr = NULL;
@@ -196,8 +196,8 @@ int platform_init(void)
             return -1;
         }
     }
-    platform_log("[BUFFER] 2 buffers asignados en RSX (%dx%d, %d bytes c/u)",
-                 s_screen_w, s_screen_h, s_screen_w * s_screen_h * 4);
+    platform_log("[BUFFER] %d buffers asignados en RSX (%dx%d, %d bytes c/u)",
+                 MAX_BUFFERS, s_screen_w, s_screen_h, s_screen_w * s_screen_h * 4);
 
     flip(s_context, MAX_BUFFERS - 1);
     s_cur_buffer = 0;
@@ -558,11 +558,15 @@ void platform_draw_texture(const uint8_t *texture_data, int tex_w, int tex_h,
     }
 }
 
+void platform_prepare_frame(void)
+{
+    waitFlip();
+}
+
 void platform_flip(void)
 {
     flip(s_context, s_buffers[s_cur_buffer].id);
     s_cur_buffer = (s_cur_buffer + 1) % MAX_BUFFERS;
-    waitFlip();
 }
 
 InputAction platform_poll_input(void)

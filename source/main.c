@@ -99,7 +99,8 @@ int main(int argc, const char *argv[])
             break;
         }
 
-        /* 3. Render and flip current frame */
+        /* 3. Wait for hardware VSync flip, then render and flip */
+        platform_prepare_frame();
         ui_render(state, frame);
         platform_flip();
 

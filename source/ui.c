@@ -758,36 +758,51 @@ static void render_ascii_metalheart_background(int sw, int sh)
 
 static void render_header(int sw, AppState current_state, const char *right_hint)
 {
-    platform_draw_rect(0, 0, sw, 64, 0x000B0E14);
-    platform_draw_rect(0, 64, sw, 2, 0x002B3444);
+    int header_h = 90;
+    platform_draw_rect(0, 0, sw, header_h, 0x000B0E14);
+    platform_draw_rect(0, header_h, sw, 3, 0x00C83838);
 
     /* Brand logo & version */
     platform_draw_text(25, 10, "MONOCHROME", 0xFFFFFFFF, 3);
-    platform_draw_text(245, 16, APP_DISPLAY_VERSION, 0x00707070, 2);
+    platform_draw_text(250, 16, APP_DISPLAY_VERSION, 0x00758595, 2);
 
     /* Top right status/hint */
     if (right_hint) {
         int hint_len = (int)strlen(right_hint);
-        int hint_scale = (hint_len * 16 > sw - 360) ? 1 : 2;
+        int hint_scale = (hint_len * 16 > sw - 380) ? 1 : 2;
         int hint_y = (hint_scale == 1) ? 18 : 14;
         platform_draw_text_r(sw - 25, hint_y, right_hint, 0x0090A4AE, hint_scale);
     }
 
-    /* 8 Navigation tabs row */
+    /* 8 Navigation tabs row: Grandes, legibles y adaptables a escala */
+    int tab_y = 44;
+    int tab_h = 36;
+    int tab_font_scale = (sw >= 1150) ? 2 : 1;
+
     int tab_x = 25;
     for (int i = 0; i < NAV_TABS_COUNT; i++) {
         bool is_active = (s_nav_tab_states[i] == current_state);
-        int tw = (int)strlen(s_nav_tab_names[i]) * 8 * 1 + 16;
+        int text_w = (int)strlen(s_nav_tab_names[i]) * 8 * tab_font_scale;
+        int tw = text_w + (tab_font_scale == 2 ? 24 : 16);
+
         if (is_active) {
-            platform_draw_rect(tab_x, 38, tw, 22, 0x00C83838);
-            platform_draw_text(tab_x + 8, 43, s_nav_tab_names[i], 0xFFFFFFFF, 1);
+            /* Pestaña activa: fondo rojo brillante y realce inferior blanco */
+            platform_draw_rect(tab_x, tab_y, tw, tab_h, 0x00C83838);
+            platform_draw_rect(tab_x, tab_y + tab_h - 4, tw, 4, 0xFFFFFFFF);
+            int tx = tab_x + (tw - text_w) / 2;
+            int ty = tab_y + (tab_h - (8 * tab_font_scale)) / 2;
+            platform_draw_text(tx, ty, s_nav_tab_names[i], 0xFFFFFFFF, tab_font_scale);
         } else {
-            platform_draw_rect(tab_x, 38, tw, 22, 0x00131B26);
-            platform_draw_text(tab_x + 8, 43, s_nav_tab_names[i], 0x00788898, 1);
+            /* Pestaña inactiva: fondo oscuro estilizado con borde */
+            platform_draw_rect(tab_x, tab_y, tw, tab_h, 0x00141C2B);
+            platform_draw_rect(tab_x, tab_y, tw, 1, 0x002B374A);
+            int tx = tab_x + (tw - text_w) / 2;
+            int ty = tab_y + (tab_h - (8 * tab_font_scale)) / 2;
+            platform_draw_text(tx, ty, s_nav_tab_names[i], 0x00A0B0C0, tab_font_scale);
         }
-        tab_x += tw + 6;
+        tab_x += tw + 8;
     }
-    platform_draw_text_r(sw - 25, 43, "[L1/R1] Tabs | [] Search", 0x00556677, 1);
+    platform_draw_text_r(sw - 25, tab_y + 10, "[L1/R1] Pestañas | [] Buscar", 0x00667788, 1);
 }
 
 static void render_now_playing_mini_bar(int sw, int sh)
@@ -843,34 +858,34 @@ static void render_home_screen(int sw, int sh)
     render_header(sw, STATE_HOME, "[X] Reproducir | [] Buscar | /\\ Cola");
 
     /* Subheader with dynamic search status */
-    platform_draw_rect(0, 52, sw, 32, 0x00141824);
+    platform_draw_rect(0, 95, sw, 34, 0x00141824);
 
     if (s_search_status == SEARCH_STATUS_BUSY) {
         char msg[128];
         snprintf(msg, sizeof(msg), "Buscando '%s' en tracks.monochrome.st...", s_search_query);
-        platform_draw_text_clipped(30, 58, sw - 60, msg, 0x00C83838, 2);
+        platform_draw_text_clipped(30, 103, sw - 60, msg, 0x00C83838, 2);
     } else if (s_search_status == SEARCH_STATUS_NO_RESULTS) {
         char msg[128];
         snprintf(msg, sizeof(msg), "Sin resultados para '%s' (Pulsa [] para buscar de nuevo)", s_search_query);
-        platform_draw_text_clipped(30, 58, sw - 60, msg, 0x00C83838, 2);
+        platform_draw_text_clipped(30, 103, sw - 60, msg, 0x00C83838, 2);
     } else if (s_search_status == SEARCH_STATUS_ERROR) {
         char msg[128];
         snprintf(msg, sizeof(msg), "Error de red al consultar API (HTTP %d, errno %d)", s_last_http_code, s_last_errno);
-        platform_draw_text_clipped(30, 58, sw - 60, msg, 0x00C83838, 2);
+        platform_draw_text_clipped(30, 103, sw - 60, msg, 0x00C83838, 2);
     } else {
         char f_info[128];
         snprintf(f_info, sizeof(f_info), "Resultados API: \"%s\" (%d temas reales recibidos)", s_search_query, s_display_count);
         int online_w = 30 * 8 * 2;
         int max_finfo_w = sw - 30 - online_w - 40;
         if (max_finfo_w < 100) max_finfo_w = 100;
-        platform_draw_text_clipped(30, 58, max_finfo_w, f_info, 0xFFFFFFFF, 2);
-        platform_draw_text_r(sw - 30, 58, "[ONLINE: tracks.monochrome.st]", 0x00C83838, 2);
+        platform_draw_text_clipped(30, 103, max_finfo_w, f_info, 0xFFFFFFFF, 2);
+        platform_draw_text_r(sw - 30, 103, "[ONLINE: tracks.monochrome.st]", 0x00C83838, 2);
     }
 
     /* Track list */
-    int list_y = 90;
+    int list_y = 138;
     int row_h = 55;
-    int max_rows = (sh - 90 - 100) / row_h;
+    int max_rows = (sh - 138 - 100) / row_h;
 
     if (s_display_count == 0) {
         if (s_search_status == SEARCH_STATUS_BUSY) {
@@ -934,7 +949,7 @@ static void render_playing_screen(int sw, int sh, long frame)
 
     /* Card Left: Cover Art Box */
     int cover_x = 80;
-    int cover_y = 100;
+    int cover_y = 106;
     int cover_size = 320;
     platform_draw_rect(cover_x - 3, cover_y - 3, cover_size + 6, cover_size + 6, 0xFFFFFFFF);
     platform_draw_rect(cover_x, cover_y, cover_size, cover_size, 0x001A2436);
@@ -1106,7 +1121,7 @@ static void render_queue_screen(int sw, int sh)
 {
     render_header(sw, STATE_QUEUE, "COLA DE REPRODUCCION (QUEUE)");
 
-    platform_draw_rect(0, 52, sw, 32, 0x00141824);
+    platform_draw_rect(0, 95, sw, 34, 0x00141824);
     platform_draw_text(30, 58, "Pistas en cola de streaming:", 0xFFFFFFFF, 2);
 
     int list_y = 95;
@@ -1149,14 +1164,14 @@ static void render_library_screen(int sw, int sh)
 {
     render_header(sw, STATE_LIBRARY, "BIBLIOTECA & COLECCIONES");
 
-    platform_draw_rect(0, 66, sw, 32, 0x00141824);
-    platform_draw_text(30, 72, "+ TUS COLECCIONES, PLAYLISTS & DESCARGAS LOCALES +", 0xFFFFFFFF, 2);
+    platform_draw_rect(0, 95, sw, 34, 0x00141824);
+    platform_draw_text(30, 103, "+ TUS COLECCIONES, PLAYLISTS & DESCARGAS LOCALES +", 0xFFFFFFFF, 2);
 
     int card_w = (sw - 80) / 2;
-    int card_h = sh - 210;
+    int card_h = sh - 245;
 
     /* Card 1: Playlists & Stations */
-    platform_draw_rect(30, 110, card_w, card_h, 0x00141C2B);
+    platform_draw_rect(30, 138, card_w, card_h, 0x00141C2B);
     platform_draw_rect(30, 110, card_w, 2, 0xFFFFFFFF);
     platform_draw_text(45, 125, "PLAYLISTS Y RADIOS DINAMICAS", 0x00C83838, 2);
 
@@ -1181,7 +1196,7 @@ static void render_library_screen(int sw, int sh)
 
     /* Card 2: Offline Cache & HDD Storage */
     int card2_x = 30 + card_w + 20;
-    platform_draw_rect(card2_x, 110, card_w, card_h, 0x00141C2B);
+    platform_draw_rect(card2_x, 138, card_w, card_h, 0x00141C2B);
     platform_draw_rect(card2_x, 110, card_w, 2, 0xFFFFFFFF);
     platform_draw_text(card2_x + 15, 125, "CACHE PERSISTENTE /dev_hdd0", 0x00C83838, 2);
 
@@ -1201,12 +1216,12 @@ static void render_recent_screen(int sw, int sh)
 {
     render_header(sw, STATE_RECENT, "HISTORIAL RECIENTE");
 
-    platform_draw_rect(0, 66, sw, 32, 0x00141824);
-    platform_draw_text(30, 72, "+ PISTAS ESCUCHADAS RECIENTEMENTE +", 0xFFFFFFFF, 2);
+    platform_draw_rect(0, 95, sw, 34, 0x00141824);
+    platform_draw_text(30, 103, "+ PISTAS ESCUCHADAS RECIENTEMENTE +", 0xFFFFFFFF, 2);
 
-    int list_y = 110;
+    int list_y = 138;
     int row_h = 55;
-    int max_rows = (sh - 110 - 100) / row_h;
+    int max_rows = (sh - 138 - 100) / row_h;
 
     if (s_recent_count == 0) {
         platform_draw_text(sw / 2 - 200, sh / 2, "Aun no has reproducido ninguna pista", 0x00808080, 2);
@@ -1253,8 +1268,8 @@ static void render_unreleased_screen(int sw, int sh)
 {
     render_header(sw, STATE_UNRELEASED, "PROYECTOS EXCLUSIVOS");
 
-    platform_draw_rect(0, 66, sw, 32, 0x00141824);
-    platform_draw_text(30, 72, ":: ARCHIVO EXCLUSIVO & SESIONES EN VIVO LOSSLESS ::", 0x00C83838, 2);
+    platform_draw_rect(0, 95, sw, 34, 0x00141824);
+    platform_draw_text(30, 103, ":: ARCHIVO EXCLUSIVO & SESIONES EN VIVO LOSSLESS ::", 0x00C83838, 2);
 
     const char *unreleased_items[][3] = {
         { "Alive 2007 (Soundboard 48kHz Master Direct Feed)", "Daft Punk", "84:12" },
@@ -1264,7 +1279,7 @@ static void render_unreleased_screen(int sw, int sh)
         { "Monochrome Community Mixtape #01 (Lossless)", "Various Artists", "63:20" }
     };
 
-    int list_y = 110;
+    int list_y = 138;
     int row_h = 60;
     for (int i = 0; i < 5; i++) {
         int ry = list_y + i * row_h;
@@ -1298,7 +1313,7 @@ static void render_donate_screen(int sw, int sh)
     int card_w = 900;
     int card_h = sh - 200;
     int card_x = (sw - card_w) / 2;
-    int card_y = 90;
+    int card_y = 104;
 
     platform_draw_rect(card_x - 3, card_y - 3, card_w + 6, card_h + 6, 0x00C83838);
     platform_draw_rect(card_x, card_y, card_w, card_h, 0x00121722);
@@ -1326,8 +1341,8 @@ static void render_settings_screen(int sw, int sh)
 {
     render_header(sw, STATE_SETTINGS, "CONFIGURACION DEL SISTEMA");
 
-    platform_draw_rect(0, 66, sw, 32, 0x00141824);
-    platform_draw_text(30, 72, "+ AJUSTES DE AUDIO, PANTALLA Y RED +", 0xFFFFFFFF, 2);
+    platform_draw_rect(0, 95, sw, 34, 0x00141824);
+    platform_draw_text(30, 103, "+ AJUSTES DE AUDIO, PANTALLA Y RED +", 0xFFFFFFFF, 2);
 
     const char *settings_items[] = {
         "1. Calibracion de Pantalla (Overscan, Offset X/Y y Escala)",
@@ -1337,9 +1352,9 @@ static void render_settings_screen(int sw, int sh)
     };
 
     int card_w = 940;
-    int card_h = sh - 210;
+    int card_h = sh - 250;
     int card_x = (sw - card_w) / 2;
-    int card_y = 110;
+    int card_y = 140;
 
     platform_draw_rect(card_x, card_y, card_w, card_h, 0x00141C2B);
     platform_draw_rect(card_x, card_y, card_w, 2, 0xFFFFFFFF);
@@ -1368,7 +1383,7 @@ static void render_about_screen(int sw, int sh)
     int card_w = 920;
     int card_h = sh - 200;
     int card_x = (sw - card_w) / 2;
-    int card_y = 90;
+    int card_y = 104;
 
     platform_draw_rect(card_x - 3, card_y - 3, card_w + 6, card_h + 6, 0xFFFFFFFF);
     platform_draw_rect(card_x, card_y, card_w, card_h, 0x00141C2B);

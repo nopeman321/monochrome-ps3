@@ -34,6 +34,7 @@ int  platform_draw_text_clipped(int x, int y, int max_w, const char *str, uint32
 void platform_draw_texture(const uint8_t *texture_data, int tex_w, int tex_h,
                            int dst_x, int dst_y, int dst_w, int dst_h);
 
+void platform_prepare_frame(void);
 void platform_flip(void);
 void platform_log(const char *fmt, ...);
 
