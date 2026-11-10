@@ -233,8 +233,8 @@ AppState ui_handle_input(AppState current, InputAction act)
 {
     if (act == ACT_NONE) return current;
 
-    /* Global Nav Tab Cycling with L1 / R1 across main screens (except search OSK) */
-    if (current != STATE_PLAYING && current != STATE_SEARCH && !s_screen_adjust_mode && !s_menu_open && !s_show_system_info && !s_show_network_settings) {
+    /* Global Nav Tab Cycling with L1 / R1 across main screens */
+    if (current != STATE_PLAYING && !s_screen_adjust_mode && !s_menu_open && !s_show_system_info && !s_show_network_settings) {
         for (int i = 0; i < NAV_TABS_COUNT; i++) {
             if (s_nav_tab_states[i] == current) {
                 s_active_nav_tab = i;
@@ -464,11 +464,9 @@ AppState ui_handle_input(AppState current, InputAction act)
                 }
                 break;
             }
-            case ACT_L1:
             case ACT_L2: /* Cycle search sub-tab left */
                 s_search_active_tab = (SearchTab)((s_search_active_tab - 1 + SEARCH_TAB_COUNT) % SEARCH_TAB_COUNT);
                 break;
-            case ACT_R1:
             case ACT_R2: /* Cycle search sub-tab right */
                 s_search_active_tab = (SearchTab)((s_search_active_tab + 1) % SEARCH_TAB_COUNT);
                 break;
@@ -826,9 +824,8 @@ static void render_header(int sw, AppState current_state, const char *right_hint
     platform_draw_rect(0, 0, sw, header_h, 0x000B0E14);
     platform_draw_rect(0, header_h, sw, 3, 0x00C83838);
 
-    /* Brand logo & version */
+    /* Brand logo */
     platform_draw_text(25, 10, "MONOCHROME", 0xFFFFFFFF, 3);
-    platform_draw_text(250, 16, APP_DISPLAY_VERSION, 0x00758595, 2);
 
     /* Top right status/hint */
     if (right_hint) {
