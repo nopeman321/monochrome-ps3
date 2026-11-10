@@ -759,29 +759,32 @@ AppState ui_handle_input(AppState current, InputAction act)
             } else if (s_search_active_tab == SEARCH_TAB_ALBUMS) {
                 if (s_display_album_count > 0 && s_cursor >= 0 && s_cursor < s_display_album_count) {
                     /* Drill down into album songs list directly via /releases/<id> */
-                    snprintf(s_search_query, sizeof(s_search_query), "Album: %s", s_display_albums[s_cursor].title);
+                    int sel = s_cursor;
+                    snprintf(s_search_query, sizeof(s_search_query), "Album: %s", s_display_albums[sel].title);
                     s_search_len = (int)strlen(s_search_query);
                     s_display_count = 0;
                     s_cursor = 0;
-                    http_fetch_album_async_start(s_display_albums[s_cursor].id, s_display_albums[s_cursor].title);
+                    http_fetch_album_async_start(s_display_albums[sel].id, s_display_albums[sel].title);
                     s_search_status = SEARCH_STATUS_BUSY;
                     s_search_active_tab = SEARCH_TAB_TRACKS;
                 }
             } else if (s_search_active_tab == SEARCH_TAB_ARTISTS) {
                 if (s_display_artist_count > 0 && s_cursor >= 0 && s_cursor < s_display_artist_count) {
-                    /* Drill down into artist tracks */
-                    strncpy(s_search_query, s_display_artists[s_cursor].name, sizeof(s_search_query) - 1);
+                    /* Drill down into artist top tracks via /artists/<id> */
+                    int sel = s_cursor;
+                    snprintf(s_search_query, sizeof(s_search_query), "Artista: %s", s_display_artists[sel].name);
                     s_search_len = (int)strlen(s_search_query);
                     s_display_count = 0;
                     s_cursor = 0;
-                    http_search_async_start(s_search_query);
+                    http_fetch_artist_async_start(s_display_artists[sel].id, s_display_artists[sel].name);
                     s_search_status = SEARCH_STATUS_BUSY;
                     s_search_active_tab = SEARCH_TAB_TRACKS;
                 }
             } else if (s_search_active_tab == SEARCH_TAB_PLAYLISTS) {
                 if (s_display_playlist_count > 0 && s_cursor >= 0 && s_cursor < s_display_playlist_count) {
                     /* Drill down into playlist tracks */
-                    strncpy(s_search_query, s_display_playlists[s_cursor].title, sizeof(s_search_query) - 1);
+                    int sel = s_cursor;
+                    strncpy(s_search_query, s_display_playlists[sel].title, sizeof(s_search_query) - 1);
                     s_search_len = (int)strlen(s_search_query);
                     s_display_count = 0;
                     s_cursor = 0;
