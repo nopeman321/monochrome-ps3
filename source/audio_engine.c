@@ -124,6 +124,10 @@ static sys_ipc_key_t s_snd_key = 0;
 static sys_ppu_thread_t s_hw_thread_id;
 static sys_ppu_thread_t s_stream_thread_id;
 
+static bool s_audio_inited = false;
+static bool s_audio_port_opened = false;
+static bool s_audio_port_started = false;
+
 static volatile bool s_engine_running = false;
 static volatile bool s_is_playing = true;
 static volatile float s_volume = 0.85f;
@@ -951,6 +955,7 @@ int audio_engine_init(void)
     int ret = audioInit();
     stage6_log("[AUDIO] audioInit() -> %d", ret);
     if (ret != 0) return -1;
+    s_audio_inited = true;
 
     audioPortParam params;
     memset(&params, 0, sizeof(params));
@@ -962,6 +967,7 @@ int audio_engine_init(void)
     ret = audioPortOpen(&params, &s_port_num);
     stage6_log("[AUDIO] audioPortOpen -> %d, portNum: %u", ret, s_port_num);
     if (ret != 0) return -1;
+    s_audio_port_opened = true;
 
     ret = audioGetPortConfig(s_port_num, &s_config);
     stage6_log("[AUDIO] audioGetPortConfig -> %d (portSize: %d B)", ret, s_config.portSize);
@@ -974,6 +980,7 @@ int audio_engine_init(void)
 
     ret = audioPortStart(s_port_num);
     stage6_log("[AUDIO] audioPortStart -> %d", ret);
+    if (ret == 0) s_audio_port_started = true;
 
     s_engine_running = true;
 
@@ -998,21 +1005,29 @@ void audio_engine_shutdown(void)
     s_is_playing = false;
 
     /* Detener de inmediato el puerto de audio hardware para silenciar DMA y frenar la cola de eventos */
-    if (s_port_num) {
+    if (s_audio_port_started) {
         audioPortStop(s_port_num);
-        if (s_snd_key) {
-            audioRemoveNotifyEventQueue(s_snd_key);
-            sysEventQueueDestroy(s_snd_queue, 0);
-            s_snd_key = 0;
-        }
-        audioPortClose(s_port_num);
-        s_port_num = 0;
+        s_audio_port_started = false;
+        stage6_log("[AUDIO] audioPortStop(%u) ejecutado", s_port_num);
     }
 
-    /* NOTA CRITICA: NO bloquear el hilo principal con sysThreadJoin() en hilos trabajadores
-     * de red/streaming, ya que si estan atrapados en recv() o usleep() de reintento,
-     * bloquearian el apagado disparando el watchdog de CellOS VSH (reinicio de emergencia).
-     * sysProcessExit(0) termina todos los hilos PPU/SPU de forma atomica e instantanea. */
+    if (s_snd_key) {
+        audioRemoveNotifyEventQueue(s_snd_key);
+        sysEventQueueDestroy(s_snd_queue, 0);
+        s_snd_key = 0;
+    }
+
+    if (s_audio_port_opened) {
+        audioPortClose(s_port_num);
+        s_audio_port_opened = false;
+        stage6_log("[AUDIO] audioPortClose(%u) ejecutado", s_port_num);
+    }
+
+    if (s_audio_inited) {
+        audioQuit();
+        s_audio_inited = false;
+        stage6_log("[AUDIO] audioQuit() ejecutado");
+    }
 
     stage6_log("[AUDIO RESUMEN FINAL]");
     stage6_log("  - Underruns del Ring Buffer: %u", s_ring_underruns);

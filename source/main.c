@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/process.h>
+#include <sysutil/sysutil.h>
 
 #include "monochrome.h"
 #include "platform.h"
@@ -82,6 +83,14 @@ int main(int argc, const char *argv[])
 
     while (1) {
         uint64_t t0 = platform_get_time_usec();
+
+        /* 0. Pump GameOS System Event Callback (PS Button / XMB overlay intercept) */
+        sysUtilCheckCallback();
+        if (platform_should_exit() || ui_should_exit()) {
+            platform_log("[EXIT] Salida detectada (sysutil=%d, menu=%d) -> Retorno inmediato al XMB",
+                         platform_should_exit(), ui_should_exit());
+            break;
+        }
 
         /* 1. Poll input actions */
         InputAction act = platform_poll_input();

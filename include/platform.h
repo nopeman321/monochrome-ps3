@@ -8,6 +8,9 @@
 
 int  platform_init(void);
 void platform_shutdown(void);
+bool platform_should_exit(void);
+void platform_set_exit_requested(bool req);
+bool platform_is_overlay_open(void);
 
 int  platform_get_width(void);
 int  platform_get_height(void);

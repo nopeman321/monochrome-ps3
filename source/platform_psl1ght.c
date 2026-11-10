@@ -15,6 +15,8 @@
 #include <sys/stat.h>
 
 #include <sysutil/video.h>
+#include <sysutil/sysutil.h>
+#include <sysmodule/sysmodule.h>
 #include <rsx/gcm_sys.h>
 #include <rsx/rsx.h>
 #include <io/pad.h>
@@ -31,6 +33,52 @@ static rsxBuffer s_buffers[MAX_BUFFERS];
 static int s_cur_buffer = 0;
 static u16 s_screen_w = 0;
 static u16 s_screen_h = 0;
+
+/* GameOS System Event Handling & XMB Overlay State */
+static volatile bool s_platform_exit_requested = false;
+static volatile bool s_platform_overlay_open = false;
+
+static void sysutil_event_callback(u64 status, u64 param, void *usrdata)
+{
+    (void)param;
+    (void)usrdata;
+    switch (status) {
+        case SYSUTIL_EXIT_GAME:
+            platform_log("[SYSUTIL] SYSUTIL_EXIT_GAME recibido (0x%llx) -> Salida al XMB solicitada por VSH", (unsigned long long)status);
+            s_platform_exit_requested = true;
+            break;
+        case SYSUTIL_MENU_OPEN:
+            platform_log("[SYSUTIL] SYSUTIL_MENU_OPEN recibido -> Overlay XMB abierto");
+            s_platform_overlay_open = true;
+            break;
+        case SYSUTIL_MENU_CLOSE:
+            platform_log("[SYSUTIL] SYSUTIL_MENU_CLOSE recibido -> Overlay XMB cerrado");
+            s_platform_overlay_open = false;
+            break;
+        case SYSUTIL_DRAW_BEGIN:
+        case SYSUTIL_DRAW_END:
+            /* VSH renderiza el overlay sobre la pantalla */
+            break;
+        default:
+            platform_log("[SYSUTIL] Evento recibido: status=0x%llx, param=0x%llx", (unsigned long long)status, (unsigned long long)param);
+            break;
+    }
+}
+
+bool platform_should_exit(void)
+{
+    return s_platform_exit_requested;
+}
+
+void platform_set_exit_requested(bool req)
+{
+    s_platform_exit_requested = req;
+}
+
+bool platform_is_overlay_open(void)
+{
+    return s_platform_overlay_open;
+}
 
 /* Screen adjustment for overscan compensation */
 static int s_screen_offset_x = 0;
@@ -184,6 +232,9 @@ int platform_init(void)
     int pret = ioPadInit(7);
     platform_log("[PAD] ioPadInit(7) retorno %d", pret);
 
+    int sret = sysUtilRegisterCallback(SYSUTIL_EVENT_SLOT0, sysutil_event_callback, NULL);
+    platform_log("[SYSUTIL] sysUtilRegisterCallback(SLOT0) retorno %d", sret);
+
     if (!getResolution(&s_screen_w, &s_screen_h)) {
         s_screen_w = 1920;
         s_screen_h = 1080;
@@ -212,6 +263,9 @@ void platform_shutdown(void)
 {
     platform_log("[CLEANUP] Cerrando subsistemas de plataforma...");
 
+    sysUtilUnregisterCallback(SYSUTIL_EVENT_SLOT0);
+    platform_log("[SYSUTIL] sysUtilUnregisterCallback OK");
+
     ioPadEnd();
     platform_log("[CLEANUP] ioPadEnd OK");
 
@@ -238,6 +292,10 @@ void platform_flip(void)
 
 InputAction platform_poll_input(void)
 {
+    if (s_platform_overlay_open) {
+        return ACT_NONE;
+    }
+
     padInfo padinfo;
     padData paddata;
 
