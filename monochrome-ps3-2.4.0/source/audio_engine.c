@@ -43,7 +43,7 @@
 #define API_PORT 80
 
 #define STREAM_BUFFER_CAPACITY (48 * 1024 * 1024) /* 48 MB XDR buffer */
-#define PREBUFFER_THRESHOLD    (4 * 1024 * 1024)  /* 4 MB needed before playback starts for jitter-free Hi-Res FLAC */
+#define PREBUFFER_THRESHOLD    (128 * 1024)       /* 128 KB suficiente para cabeceras y frames iniciales FLAC */
 
 #define RING_BUFFER_FRAMES 576000                 /* 12.0s at 48kHz stereo float = 4.5 MB (increased from 8s) */
 #define RING_PREFILL_FRAMES 48000                 /* 1.0s de PCM 48 kHz prellenado antes de reproducir */
@@ -63,6 +63,7 @@ typedef struct {
     char     title[128];
     char     cache_path[256];
     bool     is_cached;
+    volatile int sock;
 } StreamContext;
 
 /* Reference table from PC analysis for Big-Endian verification */
@@ -220,9 +221,29 @@ static float s_resample_boundary[2] = { 0.0f, 0.0f };
 static size_t flac_stream_read(void *pUserData, void *pBufferOut, size_t bytesToRead)
 {
     StreamContext *ctx = (StreamContext *)pUserData;
-    while (ctx->cursor == ctx->received) {
+    while (ctx->cursor >= ctx->received) {
         if (ctx->download_complete || ctx->abort || !s_engine_running) return 0;
-        usleep(5000); /* 5 ms wait for network buffer */
+        if (ctx->sock >= 0) {
+            size_t to_read = ctx->capacity - ctx->received;
+            if (to_read > 32768) to_read = 32768;
+            if (to_read == 0) return 0;
+            ssize_t n = recv(ctx->sock, ctx->data + ctx->received, to_read, 0);
+            if (n > 0) {
+                ctx->received += (size_t)n;
+                break;
+            } else if (n == 0) {
+                ctx->download_complete = true;
+                return 0;
+            } else {
+                if (errno == EAGAIN || errno == EINTR) {
+                    usleep(5000);
+                    continue;
+                }
+                return 0;
+            }
+        } else {
+            usleep(5000);
+        }
     }
 
     size_t avail = ctx->received - ctx->cursor;
@@ -248,7 +269,23 @@ static drflac_bool32 flac_stream_seek(void *pUserData, int offset, drflac_seek_o
 
     while (new_pos > ctx->received) {
         if (ctx->download_complete || ctx->abort || !s_engine_running) return DRFLAC_FALSE;
-        usleep(5000);
+        if (ctx->sock >= 0) {
+            size_t to_read = ctx->capacity - ctx->received;
+            if (to_read > 32768) to_read = 32768;
+            if (to_read == 0) return DRFLAC_FALSE;
+            ssize_t n = recv(ctx->sock, ctx->data + ctx->received, to_read, 0);
+            if (n > 0) {
+                ctx->received += (size_t)n;
+            } else if (n == 0) {
+                ctx->download_complete = true;
+                break;
+            } else {
+                if (errno != EAGAIN && errno != EINTR) return DRFLAC_FALSE;
+                usleep(5000);
+            }
+        } else {
+            usleep(5000);
+        }
     }
 
     ctx->cursor = new_pos;
@@ -361,6 +398,7 @@ static void stream_pipeline_worker_func(void *arg)
 
         /* Reset stream context */
         memset(&s_stream_ctx, 0, sizeof(StreamContext));
+        s_stream_ctx.sock = -1;
         s_stream_ctx.data = s_stream_media_buffer;
         s_stream_ctx.capacity = STREAM_BUFFER_CAPACITY;
         strncpy(s_stream_ctx.track_id, s_pending_track_id, sizeof(s_stream_ctx.track_id) - 1);
@@ -500,6 +538,7 @@ static void stream_pipeline_worker_func(void *arg)
 
                 stage6_log("[STREAM HTTP] Peticion enviada: GET /track/%s (%d bytes)",
                            s_stream_ctx.track_id, (int)s_ret);
+                s_stream_ctx.sock = sock;
 
                 /* Read HTTP Header in chunks */
                 head_len = 0;
@@ -612,17 +651,25 @@ static void stream_pipeline_worker_func(void *arg)
             }
         }
 
-        /* 3. Pre-buffer loop with 10-second timeout and detailed recv instrumentation */
+        /* 3. Pre-buffer loop with network inactivity timeout (15s stalled timeout) */
         uint64_t t_down_start = get_time_usec();
+        uint64_t last_recv_time = t_down_start;
         uint64_t last_log_time = t_down_start;
         size_t last_logged_bytes = s_stream_ctx.received;
         bool prebuffer_timeout = false;
 
-        snprintf(s_status_message, sizeof(s_status_message), "Descargando prebuffer (512 KB)...");
+        snprintf(s_status_message, sizeof(s_status_message), "Descargando prebuffer (128 KB)...");
 
         while (s_stream_ctx.received < PREBUFFER_THRESHOLD && !s_stream_ctx.download_complete && !s_new_track_requested && s_engine_running) {
             uint64_t now = get_time_usec();
-            if (now - t_down_start > 10 * 1000000ULL) {
+            /* Timeout ONLY if network has stalled (no bytes for 15s) OR total time > 30s */
+            if (now - last_recv_time > 15 * 1000000ULL || (now - t_down_start > 30 * 1000000ULL)) {
+                /* If we already have at least 64 KB and FLAC magic, proceed rather than aborting */
+                if (s_stream_ctx.received >= 64 * 1024 && memcmp(s_stream_ctx.data, "fLaC", 4) == 0) {
+                    stage6_log("[STREAM PREBUFFER] Tiempo limite alcanzado pero FLAC valido (>=64 KB, %lu bytes); iniciando reproduccion",
+                               (unsigned long)s_stream_ctx.received);
+                    break;
+                }
                 prebuffer_timeout = true;
                 break;
             }
@@ -635,6 +682,7 @@ static void stream_pipeline_worker_func(void *arg)
                 if (n > 0) {
                     s_stream_ctx.received += (size_t)n;
                     now = get_time_usec();
+                    last_recv_time = now;
                     double dt_s = (double)(now - last_log_time) / 1000000.0;
                     if (dt_s >= 0.5 || s_stream_ctx.received >= PREBUFFER_THRESHOLD) {
                         double kb = (double)(s_stream_ctx.received - last_logged_bytes) / 1024.0;
@@ -651,6 +699,7 @@ static void stream_pipeline_worker_func(void *arg)
                     s_stream_ctx.download_complete = true;
                     close(sock);
                     sock = -1;
+                    s_stream_ctx.sock = -1;
                     break;
                 } else {
                     if (errno == EAGAIN || errno == EINTR) {
@@ -666,11 +715,11 @@ static void stream_pipeline_worker_func(void *arg)
         }
 
         if (prebuffer_timeout) {
-            stage6_log("[STREAM TIMEOUT] 10 segundos transcurridos sin alcanzar 512 KB prebuffer (recibidos: %lu bytes)",
+            stage6_log("[STREAM TIMEOUT] 15 segundos sin datos o tiempo excedido sin alcanzar prebuffer (recibidos: %lu bytes)",
                        (unsigned long)s_stream_ctx.received);
             snprintf(s_status_message, sizeof(s_status_message), "Error de red (Timeout)");
             s_has_error = true;
-            if (sock >= 0) { close(sock); sock = -1; }
+            if (sock >= 0) { close(sock); sock = -1; s_stream_ctx.sock = -1; }
             continue; /* Do NOT call drflac_open_relaxed */
         }
 
@@ -785,6 +834,7 @@ static void stream_pipeline_worker_func(void *arg)
                         s_stream_ctx.download_complete = true;
                         close(sock);
                         sock = -1;
+                        s_stream_ctx.sock = -1;
                         uint64_t t_down_end = get_time_usec();
                         double down_s = (double)(t_down_end - t_down_start) / 1000000.0;
                         double mb = (double)s_stream_ctx.received / (1024.0 * 1024.0);
@@ -954,6 +1004,7 @@ static void stream_pipeline_worker_func(void *arg)
 
         drflac_close(pFlac);
         if (sock >= 0) { close(sock); sock = -1; }
+        s_stream_ctx.sock = -1;
         stage6_log("[STREAM FIN] Fin de reproduccion para '%s'", s_stream_ctx.title);
     }
 
