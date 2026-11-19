@@ -12,6 +12,9 @@
 
 #include "monochrome.h"
 #include "platform.h"
+#include "platform_gfx.h"
+#include "gfx_engine.h"
+#include "app_state.h"
 #include "ui.h"
 #include "http_client.h"
 #include "audio_engine.h"
@@ -27,6 +30,9 @@ static int s_display_artist_count = 0;
 static PlaylistMetadata s_display_playlists[MAX_SEARCH_RESULTS];
 static int s_display_playlist_count = 0;
 static int s_cursor = 0;
+
+/* URL de la carátula actualmente en caché (para renderizado) */
+static char s_current_cover_url[512] = "";
 
 /* Playback state */
 static int s_current_track_idx = -1;
@@ -159,12 +165,15 @@ static void play_track_with_cover(int track_idx)
 
     /* Start audio playback */
     audio_engine_play_track(t->id, t->title);
-    
+
     /* Load cover art asynchronously (non-blocking) */
     if (t->cover_url[0] != '\0') {
-        cover_art_load(t->cover_url);
+        cover_art_load(t->cover_url, g_app_state.cover_mode);
+        strncpy(s_current_cover_url, t->cover_url, sizeof(s_current_cover_url) - 1);
+        s_current_cover_url[sizeof(s_current_cover_url) - 1] = '\0';
     } else {
-        cover_art_clear();
+        cover_art_clear(s_current_cover_url);
+        s_current_cover_url[0] = '\0';
     }
 }
 
@@ -622,9 +631,14 @@ AppState ui_handle_input(AppState current, InputAction act)
                 if (s_recent_count > 0 && s_recent_cursor >= 0 && s_recent_cursor < s_recent_count) {
                     audio_engine_play_track(s_recent_tracks[s_recent_cursor].id, s_recent_tracks[s_recent_cursor].title);
                     if (s_recent_tracks[s_recent_cursor].cover_url[0] != '\0') {
-                        cover_art_load(s_recent_tracks[s_recent_cursor].cover_url);
+                        cover_art_load(s_recent_tracks[s_recent_cursor].cover_url,
+                                       g_app_state.cover_mode);
+                        strncpy(s_current_cover_url, s_recent_tracks[s_recent_cursor].cover_url,
+                                sizeof(s_current_cover_url) - 1);
+                        s_current_cover_url[sizeof(s_current_cover_url) - 1] = '\0';
                     } else {
-                        cover_art_clear();
+                        cover_art_clear(s_current_cover_url);
+                        s_current_cover_url[0] = '\0';
                     }
                     s_playback_state = PLAYBACK_PLAYING;
                     s_playback_progress = 0.0f;
@@ -1171,10 +1185,13 @@ static void render_playing_screen(int sw, int sh, long frame)
     platform_draw_rect(cover_x, cover_y, cover_size, cover_size, 0x001A2436);
 
     /* Draw cover art if loaded, otherwise show placeholder */
-    if (cover_art_is_ready()) {
-        platform_draw_texture(cover_art_get_texture(), 
-                             cover_art_get_width(), cover_art_get_height(),
-                             cover_x, cover_y, cover_size, cover_size);
+    if (s_current_cover_url[0] != '\0' && cover_art_is_cached(s_current_cover_url)) {
+        GfxTexture tex;
+        if (cover_art_get_texture(s_current_cover_url, &tex)) {
+            gfx_draw_sprite(&tex, (float)cover_x, (float)cover_y,
+                            (float)cover_size, (float)cover_size,
+                            0.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFF);
+        }
     } else {
         platform_draw_rect(cover_x + 30, cover_y + 30, cover_size - 60, cover_size - 60, 0x000F1520);
         platform_draw_text(cover_x + 60, cover_y + 130, "MONOCHROME", 0xFFFFFFFF, 3);

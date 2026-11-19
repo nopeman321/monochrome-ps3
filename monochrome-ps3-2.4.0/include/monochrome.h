@@ -14,8 +14,51 @@
 #define APP_DISPLAY_VERSION "v2.4.0"
 #define APP_TITLEID        "MONO00024"
 
+#ifndef APP_BUILD_SHA
+#define APP_BUILD_SHA      "nogit"
+#endif
+
+#ifndef APP_BUILD_TIME
+#define APP_BUILD_TIME     "unknown"
+#endif
+
 #define MAX_SEARCH_RESULTS 20
 #define VIS_BANDS          16
+
+/* ── Cover art render modes ──────────────────────────────────────── */
+typedef enum {
+    COVER_MODE_1BIT_DITHER = 0,
+    COVER_MODE_ORIGINAL    = 1,
+} CoverArtMode;
+
+/* ── Focus zones (input navigation) ──────────────────────────────── */
+typedef enum {
+    ZONE_LEFT_RAIL,
+    ZONE_TOP_TABS,
+    ZONE_MAIN_CONTENT,
+    ZONE_RIGHT_DRAWER,
+    ZONE_PLAYER_DOCK,
+    ZONE_OSK,
+} FocusZone;
+
+/* ── Main application sections ───────────────────────────────────── */
+typedef enum {
+    SEC_SEARCH,
+    SEC_HOME,
+    SEC_LIBRARY,
+    SEC_PLAYLISTS,
+    SEC_INSTANCES,
+    SEC_SETTINGS,
+} MainSection;
+
+/* ── Top filter tabs ─────────────────────────────────────────────── */
+typedef enum {
+    TAB_ALL,
+    TAB_ALBUMS,
+    TAB_ARTISTS,
+    TAB_PLAYLISTS,
+    TAB_TRACKS,
+} TopFilterTab;
 
 /* ── Application states ──────────────────────────────────────────── */
 typedef enum {

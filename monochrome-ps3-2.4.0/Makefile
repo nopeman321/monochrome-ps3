@@ -14,7 +14,7 @@ include $(PSL1GHT)/ppu_rules
 # BUILD is the directory where object files & intermediate files will be placed
 DATA		:=	data
 #---------------------------------------------------------------------------------
-TARGET		:=	$(notdir $(CURDIR))
+TARGET		:=	monochrome_ps3
 BUILD		:=	build
 SOURCES		:=	source
 INCLUDES	:=	include
@@ -30,7 +30,11 @@ PKGFILES	:=	$(CURDIR)/pkgfiles
 # options for code generation
 #---------------------------------------------------------------------------------
 
-CFLAGS		=	-Wall -mcpu=cell $(MACHDEP) $(INCLUDE) -I$(PORTLIBS)/include
+BUILD_GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo nogit)
+BUILD_TIME := $(shell date -u +"%Y-%m-%d_%H:%M:%SZ")
+
+CFLAGS		=	-Wall -mcpu=cell $(MACHDEP) $(INCLUDE) -I$(PORTLIBS)/include \
+				-DAPP_BUILD_SHA=\"$(BUILD_GIT_SHA)\" -DAPP_BUILD_TIME=\"$(BUILD_TIME)\"
 CXXFLAGS	=	$(CFLAGS)
 
 LDFLAGS		=	$(MACHDEP) -Wl,-Map,$(notdir $@).map
@@ -38,7 +42,7 @@ LDFLAGS		=	$(MACHDEP) -Wl,-Map,$(notdir $@).map
 #---------------------------------------------------------------------------------
 # any extra libraries we wish to link with the project
 #---------------------------------------------------------------------------------
-LIBS	:=	-lrsx -lgcm_sys -laudio -lnet -lsysmodule -lio -lsysutil -lrt -llv2 -lm -ljpeg
+LIBS	:=	-lfreetype -lpng -lz -lrsx -lgcm_sys -laudio -lnet -lsysmodule -lio -lsysutil -lrt -llv2 -lm -ljpeg
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
@@ -109,7 +113,7 @@ $(BUILD):
 #---------------------------------------------------------------------------------
 clean:
 	@echo clean ...
-	@rm -fr $(BUILD) $(OUTPUT).elf $(OUTPUT).self
+	@rm -fr $(BUILD) $(OUTPUT).elf $(OUTPUT).self $(OUTPUT).pkg *.elf *.self *.pkg *.gnpdrm.pkg pkg/
 
 #---------------------------------------------------------------------------------
 run:
@@ -117,6 +121,7 @@ run:
 
 #---------------------------------------------------------------------------------
 pkg:	$(BUILD) $(OUTPUT).pkg
+	@rm -f $(OUTPUT).gnpdrm.pkg *.gnpdrm.pkg
 
 #---------------------------------------------------------------------------------
 else

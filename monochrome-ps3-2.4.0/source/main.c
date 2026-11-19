@@ -16,6 +16,7 @@
 SYS_PROCESS_PARAM(1001, 0x100000);
 #include "platform.h"
 #include "ui.h"
+#include "app_state.h"
 #include "http_client.h"
 #include "audio_engine.h"
 #include "cover_art.h"
@@ -29,6 +30,15 @@ int main(int argc, const char *argv[])
         platform_log("[FATAL] platform_init fallo; abortando");
         return -1;
     }
+
+    platform_log("[BUILD] Monochrome PS3 %s | SHA: %s | Built: %s",
+                 APP_DISPLAY_VERSION, APP_BUILD_SHA, APP_BUILD_TIME);
+
+    /* Initialize application state (Phase 1) */
+    app_state_init();
+    app_state_load_config();
+    platform_log("[APP STATE] Initializado (seccion=%d, cover_mode=%d)",
+                 g_app_state.active_section, (int)g_app_state.cover_mode);
 
     /* Load screen adjustment config if saved */
     if (platform_load_screen_config() == 0) {

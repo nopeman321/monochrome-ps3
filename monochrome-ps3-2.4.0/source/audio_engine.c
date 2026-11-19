@@ -46,6 +46,8 @@
 #define PREBUFFER_THRESHOLD    (4 * 1024 * 1024)  /* 4 MB needed before playback starts for jitter-free Hi-Res FLAC */
 
 #define RING_BUFFER_FRAMES 576000                 /* 12.0s at 48kHz stereo float = 4.5 MB (increased from 8s) */
+#define RING_PREFILL_FRAMES 48000                 /* 1.0s de PCM 48 kHz prellenado antes de reproducir */
+#define RING_REBUFFER_FRAMES 24000                /* 0.5s para reanudar tras underrun real (histeresis) */
 #define CHUNK_OUT_FRAMES 1280                     /* Multiple of 160: 26.67 ms */
 #define CHUNK_IN_44K 1176                         /* 1280 * 147 / 160 = 1176 frames at 44.1 kHz */
 
@@ -129,7 +131,8 @@ static bool s_audio_port_opened = false;
 static bool s_audio_port_started = false;
 
 static volatile bool s_engine_running = false;
-static volatile bool s_is_playing = true;
+static volatile bool s_is_playing = false;
+static volatile bool s_ring_primed = false;
 static volatile float s_volume = 0.85f;
 static volatile uint32_t s_hw_underruns = 0;
 static volatile uint32_t s_ring_underruns = 0;
@@ -183,6 +186,7 @@ static void ring_write_frames(const float *src, size_t count)
         s_ring_buffer[w * 2 + 1] = src[i * 2 + 1];
         w = (w + 1) % RING_BUFFER_FRAMES;
     }
+    __asm__ volatile("lwsync" ::: "memory");
     s_ring_write_pos = w;
 }
 
@@ -194,6 +198,7 @@ static void ring_read_frames(float *dst, size_t count)
         dst[i * 2 + 1] = s_ring_buffer[r * 2 + 1];
         r = (r + 1) % RING_BUFFER_FRAMES;
     }
+    __asm__ volatile("lwsync" ::: "memory");
     s_ring_read_pos = r;
 }
 
@@ -262,7 +267,6 @@ static drflac_bool32 flac_stream_tell(void *pUserData, drflac_int64 *pCursor)
 static void audio_hw_thread_func(void *arg)
 {
     (void)arg;
-    stage6_log("[AUDIO HW THREAD] Consumidor de hardware iniciado (256 samples/block, DMA synced)");
 
     float temp_block[AUDIO_BLOCK_SAMPLES * 2];
 
@@ -283,7 +287,11 @@ static void audio_hw_thread_func(void *arg)
         u32 write_block = s_write_block;
         float *dest = (float *)((u64)s_config.audioDataStart) + (NUM_CHANNELS * AUDIO_BLOCK_SAMPLES * write_block);
 
-        if (!s_is_playing) {
+        /* Solo consumimos del ring buffer (y contamos underruns) cuando estamos
+           reproduciendo de verdad y el ring buffer ya esta prellenado. En cualquier
+           otro estado (IDLE, PAUSED, BUFFERING) escribimos silencio sin contabilizar
+           underruns ni emitir logs, para evitar ráfagas falsas al arrancar. */
+        if (!s_is_playing || !s_ring_primed) {
             memset(dest, 0, AUDIO_BLOCK_SAMPLES * NUM_CHANNELS * sizeof(float));
             for (int b = 0; b < VIS_BANDS; b++) s_vis_bands[b] *= 0.85f;
             continue;
@@ -291,12 +299,11 @@ static void audio_hw_thread_func(void *arg)
 
         size_t avail = ring_frames_available();
         if (avail < AUDIO_BLOCK_SAMPLES) {
+            /* Underrun real durante reproduccion activa: activar histeresis de
+               rebuffering para que el productor vuelva a juntar audio antes de
+               reanudar, evitando ráfagas de miles de underruns consecutivos. */
+            s_ring_primed = false;
             s_ring_underruns++;
-            /* Log every 100 underruns for diagnostics */
-            if ((s_ring_underruns % 100) == 1) {
-                stage6_log("[RING UNDERRUN #%u] avail=%lu, need=%d, buffer_low", 
-                           s_ring_underruns, (unsigned long)avail, AUDIO_BLOCK_SAMPLES);
-            }
             memset(dest, 0, AUDIO_BLOCK_SAMPLES * NUM_CHANNELS * sizeof(float));
             for (int b = 0; b < VIS_BANDS; b++) s_vis_bands[b] *= 0.85f;
             continue;
@@ -330,7 +337,6 @@ static void audio_hw_thread_func(void *arg)
         }
     }
 
-    stage6_log("[AUDIO HW THREAD] Finalizado");
     sysThreadExit(0);
 }
 
@@ -786,12 +792,20 @@ static void stream_pipeline_worker_func(void *arg)
                         stage6_log("[STREAM COMPLETO] Descargados %.2f MB en %.2f s (Velocidad: %.2f MB/s)",
                                    mb, down_s, speed_mb_s);
 
-                        /* Save to persistent disk cache */
+                        /* Save to persistent disk cache in small 64 KB blocks so the
+                           FLAC decode loop is never paused by a large synchronous write. */
                         FILE *fc = fopen(s_stream_ctx.cache_path, "wb");
                         if (fc) {
-                            fwrite(s_stream_ctx.data, 1, s_stream_ctx.received, fc);
+                            const size_t cache_block = 64 * 1024;
+                            size_t written = 0;
+                            while (written < s_stream_ctx.received) {
+                                size_t to_write = s_stream_ctx.received - written;
+                                if (to_write > cache_block) to_write = cache_block;
+                                fwrite(s_stream_ctx.data + written, 1, to_write, fc);
+                                written += to_write;
+                            }
                             fclose(fc);
-                            stage6_log("[CACHE GUARDADO] %lu bytes en %s", 
+                            stage6_log("[CACHE GUARDADO] %lu bytes en %s (bloques de 64 KB)", 
                                        (unsigned long)s_stream_ctx.received, s_stream_ctx.cache_path);
                         }
                     } else if (n < 0 && (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
@@ -904,6 +918,21 @@ static void stream_pipeline_worker_func(void *arg)
                 ring_write_frames(out_chunk_48k, CHUNK_OUT_FRAMES);
             }
 
+            /* Ring buffer priming / rebuffering hysteresis:
+               El consumidor DMA solo lee del ring y cuenta underruns cuando
+               s_is_playing && s_ring_primed. El productor activa el priming
+               solo cuando hay >= RING_PREFILL_FRAMES (1s) decodificado, o cuando
+               la descarga completo y se decodifico todo el archivo (track < 1s).
+               Tras un underrun real (el hw thread desactiva s_ring_primed), se
+               requiere volver a juntar >= RING_PREFILL_FRAMES antes de reanudar. */
+            if (!s_ring_primed) {
+                if (s_stream_ctx.download_complete && s_current_pcm_frame >= s_total_pcm_frames) {
+                    s_ring_primed = true;
+                } else if (ring_frames_available() >= RING_PREFILL_FRAMES) {
+                    s_ring_primed = true;
+                }
+            }
+
             uint64_t t1 = get_time_usec();
             total_dec_time_usec += (t1 - t0);
             frames_dec_48k += CHUNK_OUT_FRAMES;
@@ -989,8 +1018,8 @@ int audio_engine_init(void)
                           0x10000, THREAD_JOINABLE, "mono_hw");
     stage6_log("[THREAD] sysThreadCreate(mono_hw) -> %d (prio 100)", ret);
 
-    /* 2. Launch Progressive Stream & Decoder Thread (prio 1000, 128KB stack) */
-    ret = sysThreadCreate(&s_stream_thread_id, stream_pipeline_worker_func, NULL, 1000,
+    /* 2. Launch Progressive Stream & Decoder Thread (prio 500, 128KB stack) */
+    ret = sysThreadCreate(&s_stream_thread_id, stream_pipeline_worker_func, NULL, 500,
                           0x20000, THREAD_JOINABLE, "mono_stream");
     stage6_log("[THREAD] sysThreadCreate(mono_stream) -> %d (prio 1000)", ret);
 
@@ -1041,6 +1070,13 @@ void audio_engine_play_track(const char *track_id, const char *title)
 
     strncpy(s_pending_track_id, track_id, sizeof(s_pending_track_id) - 1);
     strncpy(s_pending_track_title, title ? title : "", sizeof(s_pending_track_title) - 1);
+    /* Nuevo track: desactivar priming (el productor volvera a llenar 1s de PCM
+       antes de que el consumidor DMA lea del ring), reiniciar contadores y
+       limpiar indices del ring buffer de forma segura. */
+    s_ring_primed = false;
+    s_ring_underruns = 0;
+    s_ring_read_pos = 0;
+    s_ring_write_pos = 0;
     s_is_playing = true;
     s_new_track_requested = true;
 }
