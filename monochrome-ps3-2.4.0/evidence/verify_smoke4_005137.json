@@ -1,0 +1,18 @@
+﻿{
+    "tag":  "smoke4",
+    "started":  "2026-10-20T00:51:37",
+    "build_mtime":  "2026-10-20T00:23:42",
+    "fps":  [
+
+            ],
+    "shots":  [
+
+              ],
+    "tty":  [
+
+            ],
+    "errors":  [
+                   "EXCEPTION: No se encuentra el tipo [VR]."
+               ],
+    "title":  ""
+}

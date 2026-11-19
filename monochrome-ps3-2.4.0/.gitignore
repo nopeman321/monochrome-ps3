@@ -1,0 +1,51 @@
+# Build outputs & Runtime Caches
+build/
+bin/
+cache/
+*.o
+*.elf
+*.bin
+*.pkg
+pkg_build/USRDIR/EBOOT.BIN
+build_eboot.elf
+
+# Third-party tools & SDK binaries
+tools/zig/
+tools/zlib/
+tools/scetool/data/
+tools/scetool_fork/
+tools/scetool/*.o
+tools/scetool/*.exe
+
+# Emulator virtual HDDs and logs
+emulator/
+*.log
+*.log.gz
+*.buf
+*.txt
+
+# Upstream reference clone
+original_monochrome/
+upstream/
+tools/norsx/
+test_*
+entry_stub.s
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS and Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Evidencia pesada (los PNG y los .md si se versionan)
+evidence/*.raw
+monochrome_pc.exe
+
+restore_point_backup/
+
+# Salida de distribucion (se genera con build_homebrew.bat)
+dist/
