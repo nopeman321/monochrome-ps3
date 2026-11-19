@@ -13,6 +13,7 @@
 #include "ui_theme.h"
 #include "gfx_engine.h"
 #include "app_state.h"
+#include "ui_search.h"
 #include "platform.h"
 
 /* ── Estado del shell ────────────────────────────────────────────── */
@@ -226,8 +227,9 @@ void shell_handle_input(InputAction act)
         return;
     }
 
-    /* D-Pad Left desde borde izquierdo -> foco al Left Rail */
-    if (act == ACT_LEFT && g_app_state.focus_zone == ZONE_MAIN_CONTENT) {
+    /* D-Pad Left desde borde izquierdo -> foco al Left Rail (excepto teclado de busqueda abierto) */
+    if (act == ACT_LEFT && g_app_state.focus_zone == ZONE_MAIN_CONTENT &&
+        !(g_app_state.active_section == SEC_SEARCH && ui_search_is_keyboard_open())) {
         app_state_set_focus_zone(ZONE_LEFT_RAIL);
         g_app_state.left_rail_expanded = true;
         return;

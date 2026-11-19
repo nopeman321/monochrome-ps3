@@ -88,7 +88,7 @@ void track_row_render(float x, float y, float w, float h,
     /* Artista / Álbum */
     char sub[256];
     if (track) {
-        snprintf(sub, sizeof(sub), "%s  •  %s", track->artist, track->album);
+        snprintf(sub, sizeof(sub), "%s - %s", track->artist, track->album);
     } else {
         sub[0] = 0;
     }

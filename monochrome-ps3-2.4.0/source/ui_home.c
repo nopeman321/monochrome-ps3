@@ -78,14 +78,8 @@ static void render_lanes(int x, int y, int w, int h) {
         AppTrack *t = NULL;
         if (idx < (int)g_app_state.track_count) t = &g_app_state.tracks[idx];
         else if (idx < (int)g_app_state.album_count) t = &g_app_state.albums[idx];
-        if (t && t->cover_url[0]) {
+        if (t && t->cover_url[0] && i == 0) {
             cover_art_load(t->cover_url, g_app_state.cover_mode);
-            if (i + 2 < visible) {
-                int nidx = start + i + 2;
-                AppTrack *nt = NULL;
-                if (nidx < (int)g_app_state.track_count) nt = &g_app_state.tracks[nidx];
-                if (nt && nt->cover_url[0]) cover_art_load(nt->cover_url, g_app_state.cover_mode);
-            }
         }
         UiComponentState st = UI_COMPONENT_STATE_DEFAULT;
         if (i == 0) st = UI_COMPONENT_STATE_FOCUSED;
@@ -137,10 +131,15 @@ void ui_home_handle_input(InputAction act) {
             if (s_lane_cursor < (int)g_app_state.track_count) t = &g_app_state.tracks[s_lane_cursor];
             else if (s_lane_cursor < (int)g_app_state.album_count) t = &g_app_state.albums[s_lane_cursor];
             if (t) {
-                audio_engine_play_track(t->id, t->title);
-                memcpy(&g_app_state.current_track, t, sizeof(AppTrack));
-                g_app_state.has_current_track = true;
-                if (t->cover_url[0]) cover_art_load(t->cover_url, g_app_state.cover_mode);
+                if (g_app_state.has_current_track && strcmp(g_app_state.current_track.id, t->id) == 0) {
+                    if (audio_engine_is_playing()) audio_engine_pause();
+                    else audio_engine_resume();
+                } else {
+                    audio_engine_play_track(t->id, t->title);
+                    memcpy(&g_app_state.current_track, t, sizeof(AppTrack));
+                    g_app_state.has_current_track = true;
+                    if (t->cover_url[0]) cover_art_load(t->cover_url, g_app_state.cover_mode);
+                }
             }
             break;
         }

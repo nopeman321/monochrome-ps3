@@ -24,32 +24,27 @@
 #include "ui_shell.h"
 #include "ui_player_dock.h"
 #include "ui_home.h"
+#include "ui_search.h"
+#include "ui_settings.h"
+#include "ui_library.h"
 
 /* ── Estado de UI v3 ─────────────────────────────────────────────── */
 static bool s_exit_requested = false;
 static long s_frame = 0;
 
-/* Datos de búsqueda desde la API (vista simplificada) */
-static TrackMetadata s_search_tracks[MAX_SEARCH_RESULTS];
-static int s_search_count = 0;
-static int s_search_cursor = 0;
-static char s_search_query[128] = "daft";
-static bool s_search_busy = false;
-
 /* ── ui_init ─────────────────────────────────────────────────────── */
 void ui_init(void)
 {
-    memset(s_search_tracks, 0, sizeof(s_search_tracks));
-    s_search_count = 0;
-    s_search_cursor = 0;
     s_exit_requested = false;
     s_frame = 0;
 
-    /* Inicializar red y lanzar búsqueda inicial */
+    ui_home_init();
+    ui_search_init();
+    ui_library_init();
+    ui_settings_init();
+
+    /* Inicializar red */
     http_net_init();
-    strncpy(s_search_query, "daft", sizeof(s_search_query) - 1);
-    http_search_async_start(s_search_query);
-    s_search_busy = true;
 
     platform_log("[UI V3] Shell inicializado (Left Rail + Top Tabs + Bottom Dock)");
 }
@@ -105,41 +100,21 @@ AppState ui_handle_input(AppState current, InputAction act)
         return current;
     }
 
+    /* Si teclado de busqueda abierto, delegar todo a ui_search antes del shell */
+    if (g_app_state.active_section == SEC_SEARCH && g_app_state.focus_zone == ZONE_MAIN_CONTENT && ui_search_is_keyboard_open()) {
+        ui_search_handle_input(act);
+        return current;
+    }
+
     /* Delegar navegación por zonas al shell */
     shell_handle_input(act);
 
-    /* Delegar input a ui_home solo cuando el foco está en contenido */
-    if ((g_app_state.active_section == SEC_HOME || g_app_state.active_section == SEC_LIBRARY || g_app_state.active_section == SEC_PLAYLISTS) &&
-        g_app_state.focus_zone == ZONE_MAIN_CONTENT) {
-        ui_home_handle_input(act);
-    }
-
-    /* Navegación dentro del contenido principal */
+    /* Delegar input a las vistas de contenido solo con foco en MAIN_CONTENT */
     if (g_app_state.focus_zone == ZONE_MAIN_CONTENT) {
-        switch (act) {
-            case ACT_CROSS:
-                if (s_search_count > 0 && s_search_cursor >= 0 &&
-                    s_search_cursor < s_search_count) {
-                    TrackMetadata *t = &s_search_tracks[s_search_cursor];
-                    audio_engine_play_track(t->id, t->title);
-                    memcpy(&g_app_state.current_track, t, sizeof(AppTrack));
-                    g_app_state.has_current_track = true;
-                    if (t->cover_url[0] != '\0') {
-                        cover_art_load(t->cover_url, g_app_state.cover_mode);
-                    }
-                    return STATE_PLAYING;
-                }
-                break;
-            case ACT_UP:
-                if (s_search_cursor > 0) s_search_cursor--;
-                break;
-            case ACT_DOWN:
-                if (s_search_cursor + 1 < s_search_count) s_search_cursor++;
-                break;
-            case ACT_SQUARE:
-                return STATE_SEARCH;
-            default: break;
-        }
+        if (g_app_state.active_section == SEC_HOME) ui_home_handle_input(act);
+        else if (g_app_state.active_section == SEC_SEARCH) ui_search_handle_input(act);
+        else if (g_app_state.active_section == SEC_SETTINGS) ui_settings_handle_input(act);
+        else if (g_app_state.active_section == SEC_LIBRARY || g_app_state.active_section == SEC_PLAYLISTS || g_app_state.active_section == SEC_INSTANCES) ui_library_handle_input(act);
     }
 
     return current;
@@ -162,52 +137,15 @@ static void render_main_content(int sw, int sh, long frame)
             break;
         case SEC_LIBRARY:
         case SEC_PLAYLISTS:
-            ui_home_render();
+        case SEC_INSTANCES:
+            ui_library_render();
             break;
         case SEC_SEARCH: {
-            gfx_draw_text(cx, cy, "BUSQUEDA EN MONOCHROME", 16.0f, TH_TEXT);
-            cy += 30;
-
-            /* Query box */
-            gfx_draw_rect(cx, cy, mw - 60, 40, TH_SURFACE_2);
-            gfx_draw_rect_outline(cx, cy, mw - 60, 40, TH_BORDER, 1);
-            char qbuf[256];
-            snprintf(qbuf, sizeof(qbuf), "> %s_", s_search_query);
-            gfx_draw_text(cx + 15, cy + 12, qbuf, 16.0f, TH_TEXT);
-            cy += 60;
-
-            /* Resultados */
-            if (s_search_busy) {
-                gfx_draw_text(cx, cy, "Buscando en tracks.monochrome.st...", 8.0f, TH_ACCENT);
-            } else if (s_search_count == 0) {
-                gfx_draw_text(cx, cy, "Sin resultados. Usa L1/R1 para cambiar pestaña.", 8.0f, TH_TEXT_DIM);
-            } else {
-                int row_y = cy;
-                for (int i = 0; i < s_search_count && i < 8; i++) {
-                    bool is_sel = (i == s_search_cursor);
-                    TrackMetadata *t = &s_search_tracks[i];
-                    int ry = row_y + i * 44;
-                    if (is_sel) {
-                        gfx_draw_rect(cx - 10, ry - 2, mw - 40, 40, TH_ACTIVE_BG);
-                        gfx_draw_rect(cx - 10, ry - 2, 6, 40, TH_ACTIVE_TEXT);
-                    }
-                    char line[256];
-                    snprintf(line, sizeof(line), "%02d  %s - %s", i + 1,
-                             t->artist, t->title);
-                    gfx_draw_text(cx, ry, line, 16.0f, is_sel ? TH_ACTIVE_TEXT : TH_TEXT);
-                }
-            }
+            ui_search_render();
             break;
         }
-        case SEC_INSTANCES:
-            gfx_draw_text(cx, cy, "INSTANCES", 16.0f, TH_TEXT);
-            cy += 30;
-            gfx_draw_text(cx, cy, "Sesiones exclusivas (Fase 4)", 8.0f, TH_TEXT_DIM);
-            break;
         case SEC_SETTINGS:
-            gfx_draw_text(cx, cy, "AJUSTES", 16.0f, TH_TEXT);
-            cy += 30;
-            gfx_draw_text(cx, cy, "Configuración del sistema (Fase 4)", 8.0f, TH_TEXT_DIM);
+            ui_settings_render();
             break;
         default:
             gfx_draw_text(cx, cy, "Pantalla no disponible", 8.0f, TH_TEXT_DIM);
@@ -221,22 +159,6 @@ void ui_render(AppState state, long frame)
     s_frame = frame;
     int sw = VIRT_W;
     int sh = VIRT_H;
-
-    /* Poll búsqueda asíncrona */
-    int count = 0, hcode = 0, herrn = 0;
-    SearchStatus st = http_search_async_poll(s_search_tracks, &count,
-                                              MAX_SEARCH_RESULTS, &hcode, &herrn);
-    if (st == SEARCH_STATUS_OK) {
-        s_search_count = count;
-        s_search_busy = false;
-        if (s_search_cursor >= s_search_count) s_search_cursor = 0;
-    } else if (st == SEARCH_STATUS_NO_RESULTS) {
-        s_search_count = 0;
-        s_search_busy = false;
-    } else if (st == SEARCH_STATUS_ERROR) {
-        s_search_count = 0;
-        s_search_busy = false;
-    }
 
     /* Render shell (fondo + top bar + left rail + área central limpia) */
     shell_render(sw, sh, frame);
