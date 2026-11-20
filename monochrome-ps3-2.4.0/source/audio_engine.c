@@ -76,7 +76,7 @@ typedef struct {
     uint64_t total_frames;
 } PcTrackReference;
 
-static const PcTrackReference s_pc_refs[5] = {
+static const PcTrackReference s_pc_refs[5] __attribute__((unused)) = {
     { "155142491052445696", "Instant Crush",               44100, 2, 16, 14886396ULL },
     { "192484768301232128", "Blinding Lights",             48000, 2, 24,  7600825ULL },
     { "159468426658455552", "Around the World",            44100, 2, 16,  9130166ULL },
@@ -126,6 +126,8 @@ static sys_event_queue_t s_snd_queue;
 static sys_ipc_key_t s_snd_key = 0;
 static sys_ppu_thread_t s_hw_thread_id;
 static sys_ppu_thread_t s_stream_thread_id;
+static sys_ppu_thread_t s_download_thread_id;
+static volatile uint32_t s_track_sequence = 0;
 
 static bool s_audio_inited = false;
 static bool s_audio_port_opened = false;
@@ -217,32 +219,18 @@ static volatile uint64_t s_current_pcm_frame = 0;
 /* Resampler boundary */
 static float s_resample_boundary[2] = { 0.0f, 0.0f };
 
-/* ── dr_flac Non-Blocking Progressive Stream Callbacks ── */
+/* ── dr_flac Progressive In-Memory Stream Callbacks ── */
 static size_t flac_stream_read(void *pUserData, void *pBufferOut, size_t bytesToRead)
 {
     StreamContext *ctx = (StreamContext *)pUserData;
+    int wait_ms = 0;
     while (ctx->cursor >= ctx->received) {
-        if (ctx->download_complete || ctx->abort || !s_engine_running) return 0;
-        if (ctx->sock >= 0) {
-            size_t to_read = ctx->capacity - ctx->received;
-            if (to_read > 32768) to_read = 32768;
-            if (to_read == 0) return 0;
-            ssize_t n = recv(ctx->sock, ctx->data + ctx->received, to_read, 0);
-            if (n > 0) {
-                ctx->received += (size_t)n;
-                break;
-            } else if (n == 0) {
-                ctx->download_complete = true;
-                return 0;
-            } else {
-                if (errno == EAGAIN || errno == EINTR) {
-                    usleep(5000);
-                    continue;
-                }
-                return 0;
-            }
-        } else {
-            usleep(5000);
+        if (ctx->download_complete || ctx->abort || !s_engine_running || s_new_track_requested) return 0;
+        usleep(5000);
+        wait_ms += 5;
+        if (wait_ms > 20000) {
+            stage6_log("[STREAM TIMEOUT] 20s sin nuevos datos recibidos en flac_stream_read");
+            return 0;
         }
     }
 
@@ -267,25 +255,12 @@ static drflac_bool32 flac_stream_seek(void *pUserData, int offset, drflac_seek_o
         return DRFLAC_FALSE;
     }
 
+    int wait_ms = 0;
     while (new_pos > ctx->received) {
-        if (ctx->download_complete || ctx->abort || !s_engine_running) return DRFLAC_FALSE;
-        if (ctx->sock >= 0) {
-            size_t to_read = ctx->capacity - ctx->received;
-            if (to_read > 32768) to_read = 32768;
-            if (to_read == 0) return DRFLAC_FALSE;
-            ssize_t n = recv(ctx->sock, ctx->data + ctx->received, to_read, 0);
-            if (n > 0) {
-                ctx->received += (size_t)n;
-            } else if (n == 0) {
-                ctx->download_complete = true;
-                break;
-            } else {
-                if (errno != EAGAIN && errno != EINTR) return DRFLAC_FALSE;
-                usleep(5000);
-            }
-        } else {
-            usleep(5000);
-        }
+        if (ctx->download_complete || ctx->abort || !s_engine_running || s_new_track_requested) return DRFLAC_FALSE;
+        usleep(5000);
+        wait_ms += 5;
+        if (wait_ms > 20000) return DRFLAC_FALSE;
     }
 
     ctx->cursor = new_pos;
@@ -377,24 +352,187 @@ static void audio_hw_thread_func(void *arg)
     sysThreadExit(0);
 }
 
-/* ── Streaming Pipeline Worker Thread (Download + Decode + Resample) ── */
-static void stream_pipeline_worker_func(void *arg)
+/* ── HTTP Connection Helper (Supports Initial GET & HTTP Range Resumption) ── */
+static int stream_connect_http(const char *track_id, size_t offset, size_t *out_content_length, char *out_content_type, size_t ct_size)
+{
+    if (out_content_length) *out_content_length = 0;
+    if (out_content_type && ct_size > 0) out_content_type[0] = '\0';
+
+    int max_retries = http_get_max_retries();
+    if (max_retries < 1) max_retries = 3;
+
+    for (int attempt = 0; attempt < max_retries && s_engine_running && !s_new_track_requested; attempt++) {
+        if (attempt > 0) {
+            int delay_sec = 2 * (1 << (attempt - 1));
+            if (delay_sec > 15) delay_sec = 15;
+            stage6_log("[STREAM RETRY] Intento %d/%d (espera %ds)...", attempt + 1, max_retries, delay_sec);
+            usleep(delay_sec * 1000000);
+        }
+
+        struct hostent *he = gethostbyname(API_HOST);
+        if (!he || !he->h_addr_list || !he->h_addr_list[0]) {
+            stage6_log("[ERROR] DNS lookup fallo para %s (errno: %d)", API_HOST, errno);
+            continue;
+        }
+
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) {
+            stage6_log("[ERROR] socket(AF_INET) fallo (errno: %d)", errno);
+            continue;
+        }
+
+        int rcvbuf = 256 * 1024;
+        setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+
+        struct sockaddr_in saddr;
+        memset(&saddr, 0, sizeof(saddr));
+        saddr.sin_family = AF_INET;
+        saddr.sin_port = htons(API_PORT);
+        memcpy(&saddr.sin_addr, he->h_addr_list[0], sizeof(struct in_addr));
+
+        if (connect(sock, (struct sockaddr *)&saddr, sizeof(saddr)) != 0) {
+            stage6_log("[ERROR] connect a %s:80 fallo (errno: %d)", API_HOST, errno);
+            close(sock);
+            continue;
+        }
+
+        char req[1024];
+        if (offset > 0) {
+            snprintf(req, sizeof(req),
+                     "GET /track/%s HTTP/1.1\r\n"
+                     "Host: %s\r\n"
+                     "Range: bytes=%lu-\r\n"
+                     "User-Agent: Mozilla/5.0 (PlayStation 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
+                     "Accept: application/octet-stream, audio/flac, */*\r\n"
+                     "Referer: https://monochrome.st/\r\n"
+                     "Origin: https://monochrome.st\r\n"
+                     "Connection: keep-alive\r\n\r\n",
+                     track_id, API_HOST, (unsigned long)offset);
+        } else {
+            snprintf(req, sizeof(req),
+                     "GET /track/%s HTTP/1.1\r\n"
+                     "Host: %s\r\n"
+                     "User-Agent: Mozilla/5.0 (PlayStation 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
+                     "Accept: application/octet-stream, audio/flac, */*\r\n"
+                     "Referer: https://monochrome.st/\r\n"
+                     "Origin: https://monochrome.st\r\n"
+                     "Connection: keep-alive\r\n\r\n",
+                     track_id, API_HOST);
+        }
+
+        ssize_t s_ret = send(sock, req, strlen(req), 0);
+        if (s_ret <= 0) {
+            stage6_log("[ERROR] send HTTP fallo (ret: %d, errno: %d)", (int)s_ret, errno);
+            close(sock);
+            continue;
+        }
+
+        /* Read headers */
+        char head_buf[4096];
+        size_t head_len = 0;
+        char *body_start = NULL;
+
+        while (head_len < sizeof(head_buf) - 1) {
+            ssize_t n = recv(sock, head_buf + head_len, sizeof(head_buf) - head_len - 1, 0);
+            if (n <= 0) break;
+            head_len += (size_t)n;
+            head_buf[head_len] = '\0';
+            body_start = strstr(head_buf, "\r\n\r\n");
+            if (body_start) {
+                body_start += 4;
+                break;
+            }
+        }
+
+        if (!body_start) {
+            stage6_log("[ERROR] Cabecera HTTP incompleta");
+            close(sock);
+            continue;
+        }
+
+        int http_code = 0;
+        sscanf(head_buf, "HTTP/1.1 %d", &http_code);
+        if (http_code == 0) sscanf(head_buf, "HTTP/1.0 %d", &http_code);
+
+        if (http_code == 429) {
+            stage6_log("[HTTP 429] Rate limited, reintentando...");
+            close(sock);
+            continue;
+        }
+
+        if (http_code != 200 && http_code != 206) {
+            stage6_log("[ERROR] HTTP codigo %d no esperado", http_code);
+            close(sock);
+            continue;
+        }
+
+        /* Parse Content-Length */
+        size_t clen = 0;
+        char *cl_ptr = strstr(head_buf, "Content-Length:");
+        if (!cl_ptr) cl_ptr = strstr(head_buf, "content-length:");
+        if (cl_ptr) {
+            unsigned long cl_tmp = 0;
+            sscanf(cl_ptr + 15, " %lu", &cl_tmp);
+            clen = (size_t)cl_tmp;
+        }
+
+        /* If Range (206), check Content-Range for total length */
+        if (http_code == 206) {
+            char *cr_ptr = strstr(head_buf, "Content-Range:");
+            if (!cr_ptr) cr_ptr = strstr(head_buf, "content-range:");
+            if (cr_ptr) {
+                char *slash = strchr(cr_ptr, '/');
+                if (slash) {
+                    unsigned long total_tmp = 0;
+                    if (sscanf(slash + 1, "%lu", &total_tmp) == 1 && total_tmp > 0) {
+                        clen = (size_t)total_tmp;
+                    }
+                }
+            }
+        }
+
+        if (out_content_length) *out_content_length = clen;
+
+        /* Parse Content-Type */
+        if (out_content_type && ct_size > 0) {
+            char *ct_ptr = strstr(head_buf, "Content-Type:");
+            if (!ct_ptr) ct_ptr = strstr(head_buf, "content-type:");
+            if (ct_ptr) {
+                sscanf(ct_ptr + 13, " %63s", out_content_type);
+            }
+        }
+
+        stage6_log("[STREAM HTTP] Conectado: Codigo %d | Content-Length: %lu bytes", http_code, (unsigned long)clen);
+
+        /* Copy any excess body bytes into stream buffer */
+        size_t header_consumed = body_start - head_buf;
+        size_t initial_body_bytes = head_len - header_consumed;
+        if (initial_body_bytes > 0 && s_stream_ctx.received + initial_body_bytes <= s_stream_ctx.capacity) {
+            memcpy(s_stream_ctx.data + s_stream_ctx.received, body_start, initial_body_bytes);
+            s_stream_ctx.received += initial_body_bytes;
+        }
+
+        return sock;
+    }
+
+    return -1;
+}
+
+/* ── Dedicated HTTP Streaming Download Worker Thread (PPU prio 1000) ── */
+static void stream_download_worker_func(void *arg)
 {
     (void)arg;
-    stage6_log("[STREAM PIPELINE] Pipeline de streaming activo (PPU prio 1500)");
+    stage6_log("[NET WORKER] Hilo de descarga iniciado (PPU prio 1000)");
 
-    float in_chunk_44k[(CHUNK_IN_44K + 1) * 2];
-    float out_chunk_48k[CHUNK_OUT_FRAMES * 2];
+    uint32_t current_seq = 0;
 
     while (s_engine_running) {
-        if (!s_new_track_requested) {
+        if (current_seq == s_track_sequence) {
             usleep(10000);
             continue;
         }
 
-        s_new_track_requested = false;
-        s_has_error = false;
-        snprintf(s_status_message, sizeof(s_status_message), "Iniciando conexion...");
+        current_seq = s_track_sequence;
 
         /* Reset stream context */
         memset(&s_stream_ctx, 0, sizeof(StreamContext));
@@ -404,18 +542,10 @@ static void stream_pipeline_worker_func(void *arg)
         strncpy(s_stream_ctx.track_id, s_pending_track_id, sizeof(s_stream_ctx.track_id) - 1);
         strncpy(s_stream_ctx.title, s_pending_track_title, sizeof(s_stream_ctx.title) - 1);
 
-        /* Flush ring buffer */
-        s_ring_read_pos = 0;
-        s_ring_write_pos = 0;
-        s_resample_boundary[0] = 0.0f;
-        s_resample_boundary[1] = 0.0f;
-        s_total_pcm_frames = 0;
-        s_current_pcm_frame = 0;
-
         stage6_log("==================================================");
         stage6_log("[PISTA ELEGIDA] '%s' [ID: %s]", s_stream_ctx.title, s_stream_ctx.track_id);
 
-        /* 1. Check local disk cache first (/dev_hdd0/tmp/monochrome/cache/ or /tracks/) */
+        /* 1. Check local disk cache first */
         char c_path[256];
         snprintf(c_path, sizeof(c_path), "/dev_hdd0/tmp/monochrome/cache/%s.flac", s_stream_ctx.track_id);
         strncpy(s_stream_ctx.cache_path, c_path, sizeof(s_stream_ctx.cache_path) - 1);
@@ -447,314 +577,174 @@ static void stream_pipeline_worker_func(void *arg)
                 }
             }
             fclose(f_cache);
+            continue; /* Done downloading cached track */
         }
 
-        /* 2. If not cached, connect to Monochrome API over HTTP and stream live */
-        int sock = -1;
+        /* 2. Connect to HTTP API and download */
         size_t content_length = 0;
         char content_type[64] = "desconocido";
-        char head_buf[4096];
-        size_t head_len = 0;
-        char *body_start = NULL;
-        int http_code = 0;
-
-        if (!s_stream_ctx.is_cached) {
-            /* Retry loop for HTTP 429 (rate limiting) - configurable attempts with exponential backoff */
-            int max_retries = http_get_max_retries();
-            int attempt;
-            bool got_valid_response = false;
-
-            for (attempt = 0; attempt < max_retries && !got_valid_response; attempt++) {
-                if (attempt > 0) {
-                    /* Exponential backoff: 3s, 6s, 12s, 24s, 48s, 60s, 60s */
-                    int delay_sec;
-                    if (attempt <= 5) {
-                        delay_sec = 3 * (1 << (attempt - 1));  /* 3, 6, 12, 24, 48 */
-                    } else {
-                        delay_sec = 60;  /* Cap at 60s for last attempts */
-                    }
-                    stage6_log("[STREAM RETRY] Intento %d/%d despues de HTTP 429 (esperando %ds)...", 
-                               attempt + 1, max_retries, delay_sec);
-                    snprintf(s_status_message, sizeof(s_status_message), 
-                             "Servidor ocupado, reintentando (%d/%d, %ds)...", attempt + 1, max_retries, delay_sec);
-                    usleep(delay_sec * 1000000);  /* Exponential backoff */
-                }
-
-                snprintf(s_status_message, sizeof(s_status_message), "Conectando a API...");
-                stage6_log("[STREAM NETWORK] Conectando a %s:80 para streaming...", API_HOST);
-
-                struct hostent *he = gethostbyname(API_HOST);
-                if (!he || !he->h_addr_list || !he->h_addr_list[0]) {
-                    stage6_log("[ERROR] DNS lookup fallo para %s (errno: %d)", API_HOST, errno);
-                    snprintf(s_status_message, sizeof(s_status_message), "Error DNS: %d", errno);
-                    s_has_error = true;
-                    break;
-                }
-
-                sock = socket(AF_INET, SOCK_STREAM, 0);
-                if (sock < 0) {
-                    stage6_log("[ERROR] socket(AF_INET) fallo (errno: %d)", errno);
-                    snprintf(s_status_message, sizeof(s_status_message), "Error socket: %d", errno);
-                    s_has_error = true;
-                    break;
-                }
-
-                int rcvbuf = 512 * 1024;
-                setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
-
-                struct sockaddr_in saddr;
-                memset(&saddr, 0, sizeof(saddr));
-                saddr.sin_family = AF_INET;
-                saddr.sin_port = htons(API_PORT);
-                memcpy(&saddr.sin_addr, he->h_addr_list[0], sizeof(struct in_addr));
-
-                if (connect(sock, (struct sockaddr *)&saddr, sizeof(saddr)) != 0) {
-                    stage6_log("[ERROR] connect a %s:80 fallo (errno: %d)", API_HOST, errno);
-                    snprintf(s_status_message, sizeof(s_status_message), "Error connect: %d", errno);
-                    s_has_error = true;
-                    close(sock);
-                    sock = -1;
-                    break;
-                }
-
-                char req[512];
-                snprintf(req, sizeof(req),
-                         "GET /track/%s HTTP/1.1\r\n"
-                         "Host: %s\r\n"
-                         "User-Agent: Monochrome-PS3/1.0 (PSL1GHT; Lossless FLAC Streamer)\r\n"
-                         "Accept: application/octet-stream, audio/flac, */*\r\n"
-                         "Connection: close\r\n\r\n",
-                         s_stream_ctx.track_id, API_HOST);
-
-                ssize_t s_ret = send(sock, req, strlen(req), 0);
-                if (s_ret <= 0) {
-                    stage6_log("[ERROR] send HTTP request fallo (ret: %d, errno: %d)", (int)s_ret, errno);
-                    snprintf(s_status_message, sizeof(s_status_message), "Error send: %d", errno);
-                    s_has_error = true;
-                    close(sock);
-                    sock = -1;
-                    break;
-                }
-
-                stage6_log("[STREAM HTTP] Peticion enviada: GET /track/%s (%d bytes)",
-                           s_stream_ctx.track_id, (int)s_ret);
-                s_stream_ctx.sock = sock;
-
-                /* Read HTTP Header in chunks */
-                head_len = 0;
-                body_start = NULL;
-
-                while (head_len < sizeof(head_buf) - 1) {
-                    size_t to_read = sizeof(head_buf) - head_len - 1;
-                    if (to_read > 1024) to_read = 1024;
-                    
-                    ssize_t n = recv(sock, head_buf + head_len, to_read, 0);
-                    if (n <= 0) break;
-                    head_len += (size_t)n;
-                    head_buf[head_len] = '\0';
-                    
-                    body_start = strstr(head_buf, "\r\n\r\n");
-                    if (body_start) {
-                        body_start += 4;
-                        break;
-                    }
-                }
-
-                http_code = 0;
-                sscanf(head_buf, "HTTP/1.1 %d", &http_code);
-                if (http_code == 0) sscanf(head_buf, "HTTP/1.0 %d", &http_code);
-
-                /* Parse Content-Length (use %lu - PS3 newlib lacks %zu) */
-                content_length = 0;
-                char *cl_ptr = strstr(head_buf, "Content-Length:");
-                if (!cl_ptr) cl_ptr = strstr(head_buf, "content-length:");
-                if (cl_ptr) {
-                    unsigned long cl_tmp = 0;
-                    sscanf(cl_ptr + 15, " %lu", &cl_tmp);
-                    content_length = (size_t)cl_tmp;
-                }
-
-                /* Parse Content-Type */
-                content_type[0] = '\0';
-                char *ct_ptr = strstr(head_buf, "Content-Type:");
-                if (!ct_ptr) ct_ptr = strstr(head_buf, "content-type:");
-                if (ct_ptr) {
-                    sscanf(ct_ptr + 13, " %63s", content_type);
-                }
-
-                stage6_log("[STREAM HTTP] Codigo: %d | Content-Type: %s | Content-Length: %lu bytes (%.2f MB)",
-                           http_code, content_type, (unsigned long)content_length, (double)content_length / (1024.0 * 1024.0));
-
-                if (http_code == 429) {
-                    stage6_log("[HTTP 429] Rate limited, reintentando...");
-                    close(sock);
-                    sock = -1;
-                    continue;  /* Retry */
-                }
-
-                got_valid_response = true;  /* Got a non-429 response */
-            }
-
-            /* If we exhausted retries or had a fatal error */
-            if (!got_valid_response && !s_has_error) {
-                stage6_log("[ERROR] Endpoint devolvio HTTP %d despues de %d intentos", http_code, max_retries);
-                if (http_code == 429) {
-                    snprintf(s_status_message, sizeof(s_status_message), "Error: Servidor saturado (429). Intenta mas tarde.");
-                } else {
-                    snprintf(s_status_message, sizeof(s_status_message), "HTTP Error: %d", http_code);
-                }
-                s_has_error = true;
-                if (sock >= 0) { close(sock); sock = -1; }
-                continue;
-            }
-
-            if (s_has_error) {
-                continue;
-            }
-
-            if (http_code != 200) {
-                stage6_log("[ERROR] Endpoint devolvio HTTP %d", http_code);
-                snprintf(s_status_message, sizeof(s_status_message), "HTTP Error: %d", http_code);
-                s_has_error = true;
-                close(sock);
-                sock = -1;
-                continue;
-            }
-
-            /* Early Content-Type validation - reject non-FLAC formats immediately */
-            if (content_type[0] != '\0' && 
-                strstr(content_type, "flac") == NULL && 
-                strstr(content_type, "FLAC") == NULL &&
-                strstr(content_type, "octet-stream") == NULL) {
-                stage6_log("[ERROR] Formato no soportado detectado temprano: Content-Type=%s", content_type);
-                snprintf(s_status_message, sizeof(s_status_message), 
-                         "Track no disponible en FLAC (formato: %s). Prueba otro track.", content_type);
-                s_has_error = true;
-                close(sock);
-                sock = -1;
-                continue;
-            }
-
-            if (content_length > STREAM_BUFFER_CAPACITY) {
-                stage6_log("[WARN] Content-Length (%lu MB) excede buffer (%d MB). Se truncara.",
-                           (unsigned long)(content_length / (1024 * 1024)), STREAM_BUFFER_CAPACITY / (1024 * 1024));
-            }
-
-            /* Copy remainder of buffer after header into media stream buffer */
-            if (body_start) {
-                size_t header_consumed = body_start - head_buf;
-                size_t initial_body_bytes = head_len - header_consumed;
-                if (initial_body_bytes > 0) {
-                    memcpy(s_stream_ctx.data, body_start, initial_body_bytes);
-                    s_stream_ctx.received = initial_body_bytes;
-                }
-            }
+        int sock = stream_connect_http(s_stream_ctx.track_id, 0, &content_length, content_type, sizeof(content_type));
+        if (sock < 0) {
+            stage6_log("[STREAM ERROR] No se pudo conectar a la API para la pista %s", s_stream_ctx.track_id);
+            snprintf(s_status_message, sizeof(s_status_message), "Error de conexion");
+            s_has_error = true;
+            continue;
         }
 
-        /* 3. Pre-buffer loop with network inactivity timeout (15s stalled timeout) */
+        s_stream_ctx.sock = sock;
         uint64_t t_down_start = get_time_usec();
-        uint64_t last_recv_time = t_down_start;
         uint64_t last_log_time = t_down_start;
         size_t last_logged_bytes = s_stream_ctx.received;
-        bool prebuffer_timeout = false;
 
-        snprintf(s_status_message, sizeof(s_status_message), "Descargando prebuffer (128 KB)...");
+        snprintf(s_status_message, sizeof(s_status_message), "Descargando stream...");
 
-        while (s_stream_ctx.received < PREBUFFER_THRESHOLD && !s_stream_ctx.download_complete && !s_new_track_requested && s_engine_running) {
-            uint64_t now = get_time_usec();
-            /* Timeout ONLY if network has stalled (no bytes for 15s) OR total time > 30s */
-            if (now - last_recv_time > 15 * 1000000ULL || (now - t_down_start > 30 * 1000000ULL)) {
-                /* If we already have at least 64 KB and FLAC magic, proceed rather than aborting */
-                if (s_stream_ctx.received >= 64 * 1024 && memcmp(s_stream_ctx.data, "fLaC", 4) == 0) {
-                    stage6_log("[STREAM PREBUFFER] Tiempo limite alcanzado pero FLAC valido (>=64 KB, %lu bytes); iniciando reproduccion",
-                               (unsigned long)s_stream_ctx.received);
+        while (s_engine_running && current_seq == s_track_sequence && !s_stream_ctx.download_complete) {
+            if (sock < 0) {
+                /* Try Range resume if disconnected prematurely */
+                if (content_length > 0 && s_stream_ctx.received < content_length) {
+                    stage6_log("[STREAM RESUME] Reconectando via Range (recibidos: %lu / %lu bytes)...",
+                               (unsigned long)s_stream_ctx.received, (unsigned long)content_length);
+                    sock = stream_connect_http(s_stream_ctx.track_id, s_stream_ctx.received, NULL, NULL, 0);
+                    if (sock < 0) {
+                        usleep(1000000); /* 1s backoff */
+                        continue;
+                    }
+                    s_stream_ctx.sock = sock;
+                } else {
                     break;
                 }
-                prebuffer_timeout = true;
-                break;
             }
 
-            if (sock >= 0) {
-                size_t to_read = STREAM_BUFFER_CAPACITY - s_stream_ctx.received;
-                if (to_read > 32768) to_read = 32768;
+            size_t to_read = s_stream_ctx.capacity - s_stream_ctx.received;
+            if (to_read > 65536) to_read = 65536;
+            if (to_read == 0) break;
 
-                ssize_t n = recv(sock, s_stream_ctx.data + s_stream_ctx.received, to_read, 0);
-                if (n > 0) {
-                    s_stream_ctx.received += (size_t)n;
-                    now = get_time_usec();
-                    last_recv_time = now;
-                    double dt_s = (double)(now - last_log_time) / 1000000.0;
-                    if (dt_s >= 0.5 || s_stream_ctx.received >= PREBUFFER_THRESHOLD) {
-                        double kb = (double)(s_stream_ctx.received - last_logged_bytes) / 1024.0;
-                        double speed_kb_s = (dt_s > 0.0) ? (kb / dt_s) : 0.0;
-                        stage6_log("[STREAM RECV PREBUFFER] recv -> %d bytes (errno: %d) | Total: %lu / %lu bytes (%.1f%%) | %.1f KB/s",
-                                   (int)n, errno, (unsigned long)s_stream_ctx.received, 
-                                   (unsigned long)(content_length ? content_length : s_stream_ctx.received),
-                                   content_length ? ((double)s_stream_ctx.received * 100.0 / (double)content_length) : 100.0,
-                                   speed_kb_s);
-                        last_logged_bytes = s_stream_ctx.received;
-                        last_log_time = now;
-                    }
-                } else if (n == 0) {
+            ssize_t n = recv(sock, s_stream_ctx.data + s_stream_ctx.received, to_read, 0);
+            if (n > 0) {
+                s_stream_ctx.received += (size_t)n;
+                __asm__ volatile("lwsync" ::: "memory");
+
+                uint64_t now = get_time_usec();
+                double dt_s = (double)(now - last_log_time) / 1000000.0;
+                if (dt_s >= 1.0 || s_stream_ctx.received >= last_logged_bytes + 524288) {
+                    double kb = (double)(s_stream_ctx.received - last_logged_bytes) / 1024.0;
+                    double speed_kb_s = (dt_s > 0.0) ? (kb / dt_s) : 0.0;
+                    stage6_log("[STREAM RECV] Descarga: %lu / %lu bytes (%.1f%%) | %.1f KB/s",
+                               (unsigned long)s_stream_ctx.received,
+                               (unsigned long)(content_length ? content_length : s_stream_ctx.received),
+                               content_length ? ((double)s_stream_ctx.received * 100.0 / (double)content_length) : 100.0,
+                               speed_kb_s);
+                    last_logged_bytes = s_stream_ctx.received;
+                    last_log_time = now;
+                }
+
+                if (content_length > 0 && s_stream_ctx.received >= content_length) {
                     s_stream_ctx.download_complete = true;
                     close(sock);
                     sock = -1;
                     s_stream_ctx.sock = -1;
-                    break;
-                } else {
-                    if (errno == EAGAIN || errno == EINTR) {
-                        usleep(5000);
-                        continue;
+                    uint64_t t_down_end = get_time_usec();
+                    double down_s = (double)(t_down_end - t_down_start) / 1000000.0;
+                    double mb = (double)s_stream_ctx.received / (1024.0 * 1024.0);
+                    double speed_mb_s = (down_s > 0.0) ? (mb / down_s) : 0.0;
+                    stage6_log("[STREAM COMPLETO] Descargados %.2f MB en %.2f s (Velocidad: %.2f MB/s)",
+                               mb, down_s, speed_mb_s);
+
+                    /* Save to disk cache */
+                    FILE *fc = fopen(s_stream_ctx.cache_path, "wb");
+                    if (fc) {
+                        fwrite(s_stream_ctx.data, 1, s_stream_ctx.received, fc);
+                        fclose(fc);
+                        stage6_log("[CACHE GUARDADO] %lu bytes en %s", 
+                                   (unsigned long)s_stream_ctx.received, s_stream_ctx.cache_path);
                     }
-                    stage6_log("[STREAM RECV ERROR] recv retorno %d (errno: %d)", (int)n, errno);
+                    break;
+                }
+            } else if (n == 0) {
+                close(sock);
+                sock = -1;
+                s_stream_ctx.sock = -1;
+                if (content_length > 0 && s_stream_ctx.received < content_length) {
+                    stage6_log("[STREAM DISCONNECT] Servidor cerro conexion a los %lu / %lu bytes. Reanudando...",
+                               (unsigned long)s_stream_ctx.received, (unsigned long)content_length);
+                    continue;
+                } else {
+                    s_stream_ctx.download_complete = true;
+                    stage6_log("[STREAM COMPLETO] Fin de stream recibido (EOF, %lu bytes)", (unsigned long)s_stream_ctx.received);
                     break;
                 }
             } else {
-                break;
+                if (errno == EINTR) continue;
+                stage6_log("[STREAM ERROR] recv error (ret: %d, errno: %d)", (int)n, errno);
+                close(sock);
+                sock = -1;
+                s_stream_ctx.sock = -1;
+                usleep(500000);
             }
         }
 
-        if (prebuffer_timeout) {
-            stage6_log("[STREAM TIMEOUT] 15 segundos sin datos o tiempo excedido sin alcanzar prebuffer (recibidos: %lu bytes)",
-                       (unsigned long)s_stream_ctx.received);
-            snprintf(s_status_message, sizeof(s_status_message), "Error de red (Timeout)");
-            s_has_error = true;
-            if (sock >= 0) { close(sock); sock = -1; s_stream_ctx.sock = -1; }
-            continue; /* Do NOT call drflac_open_relaxed */
+        if (sock >= 0) {
+            close(sock);
+            sock = -1;
+            s_stream_ctx.sock = -1;
         }
+    }
 
-        if (s_stream_ctx.received < 4) {
-            stage6_log("[STREAM ERROR] Datos insuficientes recibidos (%lu bytes)", (unsigned long)s_stream_ctx.received);
-            snprintf(s_status_message, sizeof(s_status_message), "Error: Sin datos de audio");
-            s_has_error = true;
-            if (sock >= 0) { close(sock); sock = -1; }
+    stage6_log("[NET WORKER] Hilo de descarga finalizado");
+    sysThreadExit(0);
+}
+
+/* ── Progressive FLAC Decoder & Audio Pipeline Worker Thread (PPU prio 500) ── */
+static void stream_decode_worker_func(void *arg)
+{
+    (void)arg;
+    stage6_log("[DECODE WORKER] Hilo de decodificacion FLAC iniciado (PPU prio 500)");
+
+    float in_chunk_44k[(CHUNK_IN_44K + 1) * 2];
+    float out_chunk_48k[CHUNK_OUT_FRAMES * 2];
+    uint32_t current_seq = 0;
+
+    while (s_engine_running) {
+        if (current_seq == s_track_sequence) {
+            usleep(10000);
             continue;
         }
 
-        /* 4. Magic Header Check (Must be 'fLaC') */
-        if (memcmp(s_stream_ctx.data, "fLaC", 4) != 0) {
-            char m[5] = {0};
-            memcpy(m, s_stream_ctx.data, 4);
-            stage6_log("[STREAM ERROR] Formato no soportado (magic: '%c%c%c%c' / 0x%02x%02x%02x%02x, Content-Type: %s)",
-                       s_stream_ctx.data[0], s_stream_ctx.data[1], s_stream_ctx.data[2], s_stream_ctx.data[3],
-                       s_stream_ctx.data[0], s_stream_ctx.data[1], s_stream_ctx.data[2], s_stream_ctx.data[3],
-                       content_type);
-            snprintf(s_status_message, sizeof(s_status_message), 
-                     "Track no disponible en FLAC (es %s). Monochrome solo soporta tracks nativos FLAC.", content_type);
-            s_has_error = true;
-            if (sock >= 0) { close(sock); sock = -1; }
+        current_seq = s_track_sequence;
+
+        /* Flush ring buffer */
+        s_ring_read_pos = 0;
+        s_ring_write_pos = 0;
+        s_resample_boundary[0] = 0.0f;
+        s_resample_boundary[1] = 0.0f;
+        s_total_pcm_frames = 0;
+        s_current_pcm_frame = 0;
+
+        /* Wait for prebuffer: 128 KB or download_complete */
+        uint64_t wait_start = get_time_usec();
+        while (s_engine_running && current_seq == s_track_sequence) {
+            if (s_stream_ctx.download_complete || s_stream_ctx.received >= PREBUFFER_THRESHOLD) {
+                break;
+            }
+            if (get_time_usec() - wait_start > 15 * 1000000ULL) {
+                stage6_log("[STREAM TIMEOUT] 15s esperando prebuffer");
+                break;
+            }
+            usleep(5000);
+        }
+
+        if (current_seq != s_track_sequence || !s_engine_running) continue;
+
+        if (s_stream_ctx.received < 4 || memcmp(s_stream_ctx.data, "fLaC", 4) != 0) {
+            stage6_log("[DECODE ERROR] Datos recibidos invalidos (magic no es fLaC)");
             continue;
         }
 
-        /* 5. Open FLAC stream using non-blocking progressive stream callbacks */
+        s_stream_ctx.cursor = 0;
         drflac *pFlac = drflac_open_relaxed(flac_stream_read, flac_stream_seek, flac_stream_tell,
                                             drflac_container_native, &s_stream_ctx, NULL);
         if (!pFlac) {
-            stage6_log("[ERROR] drflac_open_relaxed fallo para la pista %s (recv: %lu bytes)",
-                       s_stream_ctx.track_id, (unsigned long)s_stream_ctx.received);
-            snprintf(s_status_message, sizeof(s_status_message), "Error decodificador dr_flac");
-            s_has_error = true;
-            if (sock >= 0) { close(sock); sock = -1; }
+            stage6_log("[DECODE ERROR] drflac_open_relaxed fallo para %s", s_stream_ctx.track_id);
             continue;
         }
 
@@ -763,113 +753,24 @@ static void stream_pipeline_worker_func(void *arg)
         uint32_t chans = pFlac->channels;
         uint32_t bps   = pFlac->bitsPerSample;
 
-        stage6_log("[STREAMINFO REAL] Metadatos leidos del FLAC:");
-        stage6_log("  - Sample Rate real: %u Hz", srate);
-        stage6_log("  - Canales: %u", chans);
-        stage6_log("  - Bits por muestra: %u-bit", bps);
+        stage6_log("[STREAMINFO REAL] Metadatos FLAC decodificados:");
+        stage6_log("  - Sample Rate: %u Hz | Canales: %u | Bits: %u-bit", srate, chans, bps);
         stage6_log("  - Total frames PCM: %llu (Duracion: %u:%02u)",
                    (unsigned long long)s_total_pcm_frames,
                    (uint32_t)(s_total_pcm_frames / (srate ? srate : 44100)) / 60,
                    (uint32_t)(s_total_pcm_frames / (srate ? srate : 44100)) % 60);
 
-        /* Verify Supported Sample Rate */
-        if (srate != 44100 && srate != 48000 && srate != 88200 && srate != 96000) {
-            stage6_log("[STREAM ERROR] Frecuencia de muestreo %u Hz no soportada", srate);
-            snprintf(s_status_message, sizeof(s_status_message), "Formato no soportado (%u Hz)", srate);
-            s_has_error = true;
-            drflac_close(pFlac);
-            if (sock >= 0) { close(sock); sock = -1; }
-            continue;
-        }
-
-        snprintf(s_status_message, sizeof(s_status_message), "Streaming FLAC (%u Hz %d-bit)", srate, bps);
-
-        /* Big-Endian PPC Verification Check */
-        const PcTrackReference *ref = NULL;
-        for (int r = 0; r < 5; r++) {
-            if (strcmp(s_pc_refs[r].id, s_stream_ctx.track_id) == 0) {
-                ref = &s_pc_refs[r];
-                break;
-            }
-        }
-        if (ref) {
-            bool match = (srate == ref->sample_rate && chans == ref->channels &&
-                          bps == ref->bits_per_sample && s_total_pcm_frames == ref->total_frames);
-            stage6_log("[PPC BIG-ENDIAN CHECK] Comparacion contra analisis de PC:");
-            stage6_log("  - SampleRate:  PS3=%u Hz  |  PC=%u Hz", srate, ref->sample_rate);
-            stage6_log("  - Bits/sample: PS3=%u     |  PC=%u", bps, ref->bits_per_sample);
-            stage6_log("  - TotalFrames: PS3=%llu | PC=%llu",
-                       (unsigned long long)s_total_pcm_frames, (unsigned long long)ref->total_frames);
-            stage6_log("  - Veredicto Endianness: %s", match ? "PASS - dr_flac Big-Endian PPC 100% CORRECTO" : "VERIFICADO");
-        }
-
-        /* 6. Progressive Decoding & Streaming Loop */
         uint64_t total_dec_time_usec = 0;
         uint64_t frames_dec_48k = 0;
         uint64_t last_stat_frames = 0;
 
-        while (s_engine_running && !s_new_track_requested) {
-            /* Concurrently continue network download if stream is still downloading */
-            if (sock >= 0 && !s_stream_ctx.download_complete) {
-                size_t to_read = STREAM_BUFFER_CAPACITY - s_stream_ctx.received;
-                if (to_read > 65536) to_read = 65536;
-                if (to_read > 0) {
-                    ssize_t n = recv(sock, s_stream_ctx.data + s_stream_ctx.received, to_read, MSG_DONTWAIT);
-                    if (n > 0) {
-                        s_stream_ctx.received += (size_t)n;
-                        uint64_t now = get_time_usec();
-                        double dt_s = (double)(now - last_log_time) / 1000000.0;
-                        if (dt_s >= 1.0 || s_stream_ctx.received >= last_logged_bytes + 262144) {
-                            double kb = (double)(s_stream_ctx.received - last_logged_bytes) / 1024.0;
-                            double speed_kb_s = (dt_s > 0.0) ? (kb / dt_s) : 0.0;
-                            stage6_log("[STREAM RECV PROGRESO] recv -> %d bytes (errno: %d) | Total: %lu / %lu bytes (%.1f%%) | %.1f KB/s",
-                                       (int)n, errno, (unsigned long)s_stream_ctx.received, 
-                                       (unsigned long)(content_length ? content_length : s_stream_ctx.received),
-                                       content_length ? ((double)s_stream_ctx.received * 100.0 / (double)content_length) : 100.0,
-                                       speed_kb_s);
-                            last_logged_bytes = s_stream_ctx.received;
-                            last_log_time = now;
-                        }
-                    } else if (n == 0) {
-                        s_stream_ctx.download_complete = true;
-                        close(sock);
-                        sock = -1;
-                        s_stream_ctx.sock = -1;
-                        uint64_t t_down_end = get_time_usec();
-                        double down_s = (double)(t_down_end - t_down_start) / 1000000.0;
-                        double mb = (double)s_stream_ctx.received / (1024.0 * 1024.0);
-                        double speed_mb_s = (down_s > 0.0) ? (mb / down_s) : 0.0;
-                        stage6_log("[STREAM COMPLETO] Descargados %.2f MB en %.2f s (Velocidad: %.2f MB/s)",
-                                   mb, down_s, speed_mb_s);
-
-                        /* Save to persistent disk cache in small 64 KB blocks so the
-                           FLAC decode loop is never paused by a large synchronous write. */
-                        FILE *fc = fopen(s_stream_ctx.cache_path, "wb");
-                        if (fc) {
-                            const size_t cache_block = 64 * 1024;
-                            size_t written = 0;
-                            while (written < s_stream_ctx.received) {
-                                size_t to_write = s_stream_ctx.received - written;
-                                if (to_write > cache_block) to_write = cache_block;
-                                fwrite(s_stream_ctx.data + written, 1, to_write, fc);
-                                written += to_write;
-                            }
-                            fclose(fc);
-                            stage6_log("[CACHE GUARDADO] %lu bytes en %s (bloques de 64 KB)", 
-                                       (unsigned long)s_stream_ctx.received, s_stream_ctx.cache_path);
-                        }
-                    } else if (n < 0 && (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
-                        stage6_log("[STREAM RECV ERROR] recv fallo (errno: %d)", errno);
-                    }
-                }
-            }
-
+        while (s_engine_running && current_seq == s_track_sequence) {
             if (!s_is_playing) {
                 usleep(10000);
                 continue;
             }
 
-            /* Wait until ring buffer has space for CHUNK_OUT_FRAMES */
+            /* Wait until ring buffer has space */
             if (ring_space_available() < CHUNK_OUT_FRAMES) {
                 usleep(4000);
                 continue;
@@ -877,104 +778,71 @@ static void stream_pipeline_worker_func(void *arg)
 
             uint64_t t0 = get_time_usec();
 
-            if (srate == 48000) {
-                /* Direct 48kHz decode */
-                drflac_uint64 read_frames = drflac_read_pcm_frames_f32(pFlac, CHUNK_OUT_FRAMES, out_chunk_48k);
-                if (read_frames < CHUNK_OUT_FRAMES) {
-                    if (s_stream_ctx.download_complete) {
-                        drflac_seek_to_pcm_frame(pFlac, 0);
-                        s_current_pcm_frame = 0;
-                    }
-                } else {
-                    s_current_pcm_frame += CHUNK_OUT_FRAMES;
-                }
-                ring_write_frames(out_chunk_48k, CHUNK_OUT_FRAMES);
-            } else if (srate == 44100) {
-                /* 44.1 kHz -> 48.0 kHz Exact Integer Linear Resampler (147:160) */
+            if (srate == 44100) {
                 in_chunk_44k[0] = s_resample_boundary[0];
                 in_chunk_44k[1] = s_resample_boundary[1];
 
                 drflac_uint64 read_frames = drflac_read_pcm_frames_f32(pFlac, CHUNK_IN_44K, in_chunk_44k + 2);
-                if (read_frames < CHUNK_IN_44K) {
+                if (read_frames == 0) {
                     if (s_stream_ctx.download_complete) {
-                        drflac_seek_to_pcm_frame(pFlac, 0);
-                        s_current_pcm_frame = 0;
+                        stage6_log("[TRACK FINISHED] Cancion '%s' completada normalmente (%llu frames).",
+                                   s_stream_ctx.title, (unsigned long long)s_current_pcm_frame);
+                        s_is_playing = false;
+                        break;
                     }
-                } else {
-                    s_current_pcm_frame += CHUNK_IN_44K;
+                    usleep(5000);
+                    continue;
                 }
 
-                s_resample_boundary[0] = in_chunk_44k[CHUNK_IN_44K * 2 + 0];
-                s_resample_boundary[1] = in_chunk_44k[CHUNK_IN_44K * 2 + 1];
+                s_current_pcm_frame += read_frames;
+                s_resample_boundary[0] = in_chunk_44k[read_frames * 2 + 0];
+                s_resample_boundary[1] = in_chunk_44k[read_frames * 2 + 1];
 
                 for (int k = 0; k < CHUNK_OUT_FRAMES; k++) {
                     float in_pos = (float)k * (147.0f / 160.0f);
                     int idx = (int)in_pos;
                     float frac = in_pos - (float)idx;
+                    if (idx + 1 >= (int)read_frames + 1) idx = (int)read_frames - 1;
+                    if (idx < 0) idx = 0;
 
-                    float l = (1.0f - frac) * in_chunk_44k[idx * 2 + 0] + frac * in_chunk_44k[(idx + 1) * 2 + 0];
-                    float r = (1.0f - frac) * in_chunk_44k[idx * 2 + 1] + frac * in_chunk_44k[(idx + 1) * 2 + 1];
-
-                    out_chunk_48k[k * 2 + 0] = l;
-                    out_chunk_48k[k * 2 + 1] = r;
+                    out_chunk_48k[k * 2 + 0] = (1.0f - frac) * in_chunk_44k[idx * 2 + 0] + frac * in_chunk_44k[(idx + 1) * 2 + 0];
+                    out_chunk_48k[k * 2 + 1] = (1.0f - frac) * in_chunk_44k[idx * 2 + 1] + frac * in_chunk_44k[(idx + 1) * 2 + 1];
                 }
 
                 ring_write_frames(out_chunk_48k, CHUNK_OUT_FRAMES);
+            } else if (srate == 48000) {
+                drflac_uint64 read_frames = drflac_read_pcm_frames_f32(pFlac, CHUNK_OUT_FRAMES, out_chunk_48k);
+                if (read_frames == 0) {
+                    if (s_stream_ctx.download_complete) {
+                        stage6_log("[TRACK FINISHED] Cancion '%s' completada normalmente.", s_stream_ctx.title);
+                        s_is_playing = false;
+                        break;
+                    }
+                    usleep(5000);
+                    continue;
+                }
+                s_current_pcm_frame += read_frames;
+                ring_write_frames(out_chunk_48k, (size_t)read_frames);
             } else if (srate == 96000) {
-                /* 96.0 kHz -> 48.0 kHz 2:1 Decimation */
                 float in_chunk_96k[CHUNK_OUT_FRAMES * 2 * 2];
                 drflac_uint64 read_frames = drflac_read_pcm_frames_f32(pFlac, CHUNK_OUT_FRAMES * 2, in_chunk_96k);
-                if (read_frames < CHUNK_OUT_FRAMES * 2) {
+                if (read_frames == 0) {
                     if (s_stream_ctx.download_complete) {
-                        drflac_seek_to_pcm_frame(pFlac, 0);
-                        s_current_pcm_frame = 0;
+                        s_is_playing = false;
+                        break;
                     }
-                } else {
-                    s_current_pcm_frame += (CHUNK_OUT_FRAMES * 2);
+                    usleep(5000);
+                    continue;
                 }
-
+                s_current_pcm_frame += read_frames;
                 for (int k = 0; k < CHUNK_OUT_FRAMES; k++) {
                     out_chunk_48k[k * 2 + 0] = 0.5f * (in_chunk_96k[(k * 2) * 2 + 0] + in_chunk_96k[(k * 2 + 1) * 2 + 0]);
                     out_chunk_48k[k * 2 + 1] = 0.5f * (in_chunk_96k[(k * 2) * 2 + 1] + in_chunk_96k[(k * 2 + 1) * 2 + 1]);
                 }
-
-                ring_write_frames(out_chunk_48k, CHUNK_OUT_FRAMES);
-            } else if (srate == 88200) {
-                /* 88.2 kHz -> 48.0 kHz Resampling (ratio 1.8375) */
-                int in_needed = (int)(CHUNK_OUT_FRAMES * (88200.0f / 48000.0f)) + 2;
-                float in_chunk_88k[in_needed * 2];
-                drflac_uint64 read_frames = drflac_read_pcm_frames_f32(pFlac, in_needed, in_chunk_88k);
-                if (read_frames < (drflac_uint64)in_needed) {
-                    if (s_stream_ctx.download_complete) {
-                        drflac_seek_to_pcm_frame(pFlac, 0);
-                        s_current_pcm_frame = 0;
-                    }
-                } else {
-                    s_current_pcm_frame += in_needed;
-                }
-
-                float r_step = 88200.0f / 48000.0f;
-                for (int k = 0; k < CHUNK_OUT_FRAMES; k++) {
-                    float pos = (float)k * r_step;
-                    int idx = (int)pos;
-                    float frac = pos - (float)idx;
-                    if (idx + 1 >= (int)read_frames) idx = (int)read_frames - 2;
-                    if (idx < 0) idx = 0;
-
-                    out_chunk_48k[k * 2 + 0] = (1.0f - frac) * in_chunk_88k[idx * 2 + 0] + frac * in_chunk_88k[(idx + 1) * 2 + 0];
-                    out_chunk_48k[k * 2 + 1] = (1.0f - frac) * in_chunk_88k[idx * 2 + 1] + frac * in_chunk_88k[(idx + 1) * 2 + 1];
-                }
-
                 ring_write_frames(out_chunk_48k, CHUNK_OUT_FRAMES);
             }
 
-            /* Ring buffer priming / rebuffering hysteresis:
-               El consumidor DMA solo lee del ring y cuenta underruns cuando
-               s_is_playing && s_ring_primed. El productor activa el priming
-               solo cuando hay >= RING_PREFILL_FRAMES (1s) decodificado, o cuando
-               la descarga completo y se decodifico todo el archivo (track < 1s).
-               Tras un underrun real (el hw thread desactiva s_ring_primed), se
-               requiere volver a juntar >= RING_PREFILL_FRAMES antes de reanudar. */
+            /* Ring priming */
             if (!s_ring_primed) {
                 if (s_stream_ctx.download_complete && s_current_pcm_frame >= s_total_pcm_frames) {
                     s_ring_primed = true;
@@ -987,7 +855,6 @@ static void stream_pipeline_worker_func(void *arg)
             total_dec_time_usec += (t1 - t0);
             frames_dec_48k += CHUNK_OUT_FRAMES;
 
-            /* Periodic stats (every ~10s of audio) */
             if (frames_dec_48k >= last_stat_frames + 480000ULL) {
                 last_stat_frames = frames_dec_48k;
                 double audio_sec = (double)frames_dec_48k / (double)SAMPLE_RATE;
@@ -995,20 +862,17 @@ static void stream_pipeline_worker_func(void *arg)
                 double ratio = (audio_sec > 0.0) ? (cpu_sec / audio_sec) : 0.0;
                 stage6_log("[AUDIO STATS] Pista: '%s' | Frames decodificados: %llu (%.1f s)",
                            s_stream_ctx.title, (unsigned long long)frames_dec_48k, audio_sec);
-                stage6_log("  - Tiempo decodificacion CPU: %.3f s", cpu_sec);
-                stage6_log("  - Carga PPU: %.2f%% (%.4f s CPU/s audio)", ratio * 100.0, ratio);
+                stage6_log("  - Tiempo decodificacion CPU: %.3f s | Carga PPU: %.2f%%", cpu_sec, ratio * 100.0);
                 stage6_log("  - Ring Buffer underruns: %u  |  Hardware DMA underruns: %u",
                            s_ring_underruns, s_hw_underruns);
             }
         }
 
         drflac_close(pFlac);
-        if (sock >= 0) { close(sock); sock = -1; }
-        s_stream_ctx.sock = -1;
-        stage6_log("[STREAM FIN] Fin de reproduccion para '%s'", s_stream_ctx.title);
+        stage6_log("[STREAM FIN] Fin de sesion de reproduccion para '%s'", s_stream_ctx.title);
     }
 
-    stage6_log("[STREAM PIPELINE] Worker thread finalizado");
+    stage6_log("[DECODE WORKER] Hilo de decodificacion finalizado");
     sysThreadExit(0);
 }
 
@@ -1070,9 +934,14 @@ int audio_engine_init(void)
     stage6_log("[THREAD] sysThreadCreate(mono_hw) -> %d (prio 100)", ret);
 
     /* 2. Launch Progressive Stream & Decoder Thread (prio 500, 128KB stack) */
-    ret = sysThreadCreate(&s_stream_thread_id, stream_pipeline_worker_func, NULL, 500,
-                          0x20000, THREAD_JOINABLE, "mono_stream");
-    stage6_log("[THREAD] sysThreadCreate(mono_stream) -> %d (prio 1000)", ret);
+    ret = sysThreadCreate(&s_stream_thread_id, stream_decode_worker_func, NULL, 500,
+                          0x20000, THREAD_JOINABLE, "mono_dec");
+    stage6_log("[THREAD] sysThreadCreate(mono_dec) -> %d (prio 500)", ret);
+
+    /* 3. Launch HTTP Streaming Downloader Thread (prio 1000, 128KB stack) */
+    ret = sysThreadCreate(&s_download_thread_id, stream_download_worker_func, NULL, 1000,
+                          0x20000, THREAD_JOINABLE, "mono_net");
+    stage6_log("[THREAD] sysThreadCreate(mono_net) -> %d (prio 1000)", ret);
 
     return 0;
 }
@@ -1083,6 +952,11 @@ void audio_engine_shutdown(void)
 
     s_engine_running = false;
     s_is_playing = false;
+    s_stream_ctx.abort = true;
+    if (s_stream_ctx.sock >= 0) {
+        close(s_stream_ctx.sock);
+        s_stream_ctx.sock = -1;
+    }
 
     /* Detener de inmediato el puerto de audio hardware para silenciar DMA y frenar la cola de eventos */
     if (s_audio_port_started) {
@@ -1130,6 +1004,7 @@ void audio_engine_play_track(const char *track_id, const char *title)
     s_ring_write_pos = 0;
     s_is_playing = true;
     s_new_track_requested = true;
+    s_track_sequence++;
 }
 
 void audio_engine_play(int track_index)
