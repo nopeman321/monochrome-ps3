@@ -43,7 +43,7 @@
 #define API_PORT 80
 
 #define STREAM_BUFFER_CAPACITY (48 * 1024 * 1024) /* 48 MB XDR buffer */
-#define PREBUFFER_THRESHOLD    (128 * 1024)       /* 128 KB suficiente para cabeceras y frames iniciales FLAC */
+#define PREBUFFER_THRESHOLD    (2 * 1024 * 1024)  /* 2 MB (~10-12s de audio FLAC) prellenado para streaming sin cortes */
 
 #define RING_BUFFER_FRAMES 576000                 /* 12.0s at 48kHz stereo float = 4.5 MB (increased from 8s) */
 #define RING_PREFILL_FRAMES 48000                 /* 1.0s de PCM 48 kHz prellenado antes de reproducir */
@@ -59,6 +59,7 @@ typedef struct {
     size_t   cursor;
     volatile bool download_complete;
     volatile bool abort;
+    volatile uint32_t seq;
     char     track_id[64];
     char     title[128];
     char     cache_path[256];
@@ -209,7 +210,6 @@ static void ring_read_frames(float *dst, size_t count)
 static uint8_t *s_stream_media_buffer = NULL;
 static StreamContext s_stream_ctx;
 
-static volatile bool s_new_track_requested = false;
 static char s_pending_track_id[64] = "";
 static char s_pending_track_title[128] = "";
 
@@ -225,7 +225,7 @@ static size_t flac_stream_read(void *pUserData, void *pBufferOut, size_t bytesTo
     StreamContext *ctx = (StreamContext *)pUserData;
     int wait_ms = 0;
     while (ctx->cursor >= ctx->received) {
-        if (ctx->download_complete || ctx->abort || !s_engine_running || s_new_track_requested) return 0;
+        if (ctx->download_complete || ctx->abort || !s_engine_running || ctx->seq != s_track_sequence) return 0;
         usleep(5000);
         wait_ms += 5;
         if (wait_ms > 20000) {
@@ -257,7 +257,7 @@ static drflac_bool32 flac_stream_seek(void *pUserData, int offset, drflac_seek_o
 
     int wait_ms = 0;
     while (new_pos > ctx->received) {
-        if (ctx->download_complete || ctx->abort || !s_engine_running || s_new_track_requested) return DRFLAC_FALSE;
+        if (ctx->download_complete || ctx->abort || !s_engine_running || ctx->seq != s_track_sequence) return DRFLAC_FALSE;
         usleep(5000);
         wait_ms += 5;
         if (wait_ms > 20000) return DRFLAC_FALSE;
@@ -353,7 +353,7 @@ static void audio_hw_thread_func(void *arg)
 }
 
 /* ── HTTP Connection Helper (Supports Initial GET & HTTP Range Resumption) ── */
-static int stream_connect_http(const char *track_id, size_t offset, size_t *out_content_length, char *out_content_type, size_t ct_size)
+static int stream_connect_http(const char *track_id, uint32_t seq, size_t offset, size_t *out_content_length, char *out_content_type, size_t ct_size)
 {
     if (out_content_length) *out_content_length = 0;
     if (out_content_type && ct_size > 0) out_content_type[0] = '\0';
@@ -361,12 +361,15 @@ static int stream_connect_http(const char *track_id, size_t offset, size_t *out_
     int max_retries = http_get_max_retries();
     if (max_retries < 1) max_retries = 3;
 
-    for (int attempt = 0; attempt < max_retries && s_engine_running && !s_new_track_requested; attempt++) {
+    for (int attempt = 0; attempt < max_retries && s_engine_running && seq == s_track_sequence; attempt++) {
         if (attempt > 0) {
             int delay_sec = 2 * (1 << (attempt - 1));
             if (delay_sec > 15) delay_sec = 15;
             stage6_log("[STREAM RETRY] Intento %d/%d (espera %ds)...", attempt + 1, max_retries, delay_sec);
-            usleep(delay_sec * 1000000);
+            for (int w = 0; w < delay_sec * 10 && s_engine_running && seq == s_track_sequence; w++) {
+                usleep(100000);
+            }
+            if (seq != s_track_sequence || !s_engine_running) return -1;
         }
 
         struct hostent *he = gethostbyname(API_HOST);
@@ -381,8 +384,14 @@ static int stream_connect_http(const char *track_id, size_t offset, size_t *out_
             continue;
         }
 
-        int rcvbuf = 256 * 1024;
+        int rcvbuf = 128 * 1024;
         setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+
+        struct timeval tv;
+        tv.tv_sec = 20;
+        tv.tv_usec = 0;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
         struct sockaddr_in saddr;
         memset(&saddr, 0, sizeof(saddr));
@@ -571,6 +580,8 @@ static void stream_download_worker_func(void *arg)
                     s_stream_ctx.received = read_bytes;
                     s_stream_ctx.download_complete = true;
                     s_stream_ctx.is_cached = true;
+                    s_stream_ctx.seq = current_seq;
+                    __asm__ volatile("lwsync" ::: "memory");
                     stage6_log("[CACHE HIT] Pista cargada desde disco: %s (%ld KB) - Reproduccion inmediata",
                                s_stream_ctx.cache_path, fsize / 1024);
                     snprintf(s_status_message, sizeof(s_status_message), "Caché local (%ld KB)", fsize / 1024);
@@ -583,11 +594,16 @@ static void stream_download_worker_func(void *arg)
         /* 2. Connect to HTTP API and download */
         size_t content_length = 0;
         char content_type[64] = "desconocido";
-        int sock = stream_connect_http(s_stream_ctx.track_id, 0, &content_length, content_type, sizeof(content_type));
+        s_stream_ctx.seq = current_seq;
+        __asm__ volatile("lwsync" ::: "memory");
+
+        int sock = stream_connect_http(s_stream_ctx.track_id, current_seq, 0, &content_length, content_type, sizeof(content_type));
         if (sock < 0) {
-            stage6_log("[STREAM ERROR] No se pudo conectar a la API para la pista %s", s_stream_ctx.track_id);
-            snprintf(s_status_message, sizeof(s_status_message), "Error de conexion");
-            s_has_error = true;
+            if (current_seq == s_track_sequence) {
+                stage6_log("[STREAM ERROR] No se pudo conectar a la API para la pista %s", s_stream_ctx.track_id);
+                snprintf(s_status_message, sizeof(s_status_message), "Error de conexion");
+                s_has_error = true;
+            }
             continue;
         }
 
@@ -604,7 +620,7 @@ static void stream_download_worker_func(void *arg)
                 if (content_length > 0 && s_stream_ctx.received < content_length) {
                     stage6_log("[STREAM RESUME] Reconectando via Range (recibidos: %lu / %lu bytes)...",
                                (unsigned long)s_stream_ctx.received, (unsigned long)content_length);
-                    sock = stream_connect_http(s_stream_ctx.track_id, s_stream_ctx.received, NULL, NULL, 0);
+                    sock = stream_connect_http(s_stream_ctx.track_id, current_seq, s_stream_ctx.received, NULL, NULL, 0);
                     if (sock < 0) {
                         usleep(1000000); /* 1s backoff */
                         continue;
@@ -675,7 +691,11 @@ static void stream_download_worker_func(void *arg)
                 }
             } else {
                 if (errno == EINTR) continue;
-                stage6_log("[STREAM ERROR] recv error (ret: %d, errno: %d)", (int)n, errno);
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    stage6_log("[STREAM TIMEOUT] Socket recv timeout (5s sin datos)");
+                } else {
+                    stage6_log("[STREAM ERROR] recv error (ret: %d, errno: %d)", (int)n, errno);
+                }
                 close(sock);
                 sock = -1;
                 s_stream_ctx.sock = -1;
@@ -720,14 +740,26 @@ static void stream_decode_worker_func(void *arg)
         s_total_pcm_frames = 0;
         s_current_pcm_frame = 0;
 
-        /* Wait for prebuffer: 128 KB or download_complete */
+        /* Sincronizar con el worker de red para asegurar que inicializo el nuevo track */
+        while (s_engine_running && current_seq == s_track_sequence && s_stream_ctx.seq != current_seq) {
+            usleep(2000);
+        }
+        if (current_seq != s_track_sequence || !s_engine_running) continue;
+
+        /* Wait for prebuffer: 2 MB or download_complete */
         uint64_t wait_start = get_time_usec();
         while (s_engine_running && current_seq == s_track_sequence) {
             if (s_stream_ctx.download_complete || s_stream_ctx.received >= PREBUFFER_THRESHOLD) {
                 break;
             }
-            if (get_time_usec() - wait_start > 15 * 1000000ULL) {
-                stage6_log("[STREAM TIMEOUT] 15s esperando prebuffer");
+            if (get_time_usec() - wait_start > 25 * 1000000ULL) {
+                /* Si tras 25s ya tenemos al menos 256 KB con cabecera valida, arrancar */
+                if (s_stream_ctx.received >= 256 * 1024 && memcmp(s_stream_ctx.data, "fLaC", 4) == 0) {
+                    stage6_log("[STREAM PREBUFFER] 25s alcanzados, arrancando con %lu KB recibidos",
+                               (unsigned long)(s_stream_ctx.received / 1024));
+                    break;
+                }
+                stage6_log("[STREAM TIMEOUT] 25s esperando prebuffer");
                 break;
             }
             usleep(5000);
@@ -785,9 +817,8 @@ static void stream_decode_worker_func(void *arg)
                 drflac_uint64 read_frames = drflac_read_pcm_frames_f32(pFlac, CHUNK_IN_44K, in_chunk_44k + 2);
                 if (read_frames == 0) {
                     if (s_stream_ctx.download_complete) {
-                        stage6_log("[TRACK FINISHED] Cancion '%s' completada normalmente (%llu frames).",
-                                   s_stream_ctx.title, (unsigned long long)s_current_pcm_frame);
-                        s_is_playing = false;
+                        stage6_log("[DECODE COMPLETO] Decodificacion FLAC completada (%llu frames). Drenando buffer...",
+                                   (unsigned long long)s_current_pcm_frame);
                         break;
                     }
                     usleep(5000);
@@ -798,7 +829,13 @@ static void stream_decode_worker_func(void *arg)
                 s_resample_boundary[0] = in_chunk_44k[read_frames * 2 + 0];
                 s_resample_boundary[1] = in_chunk_44k[read_frames * 2 + 1];
 
-                for (int k = 0; k < CHUNK_OUT_FRAMES; k++) {
+                size_t out_frames = CHUNK_OUT_FRAMES;
+                if (read_frames < CHUNK_IN_44K) {
+                    out_frames = (size_t)((read_frames * 160 + 146) / 147);
+                    if (out_frames > CHUNK_OUT_FRAMES) out_frames = CHUNK_OUT_FRAMES;
+                }
+
+                for (size_t k = 0; k < out_frames; k++) {
                     float in_pos = (float)k * (147.0f / 160.0f);
                     int idx = (int)in_pos;
                     float frac = in_pos - (float)idx;
@@ -809,13 +846,13 @@ static void stream_decode_worker_func(void *arg)
                     out_chunk_48k[k * 2 + 1] = (1.0f - frac) * in_chunk_44k[idx * 2 + 1] + frac * in_chunk_44k[(idx + 1) * 2 + 1];
                 }
 
-                ring_write_frames(out_chunk_48k, CHUNK_OUT_FRAMES);
+                ring_write_frames(out_chunk_48k, out_frames);
             } else if (srate == 48000) {
                 drflac_uint64 read_frames = drflac_read_pcm_frames_f32(pFlac, CHUNK_OUT_FRAMES, out_chunk_48k);
                 if (read_frames == 0) {
                     if (s_stream_ctx.download_complete) {
-                        stage6_log("[TRACK FINISHED] Cancion '%s' completada normalmente.", s_stream_ctx.title);
-                        s_is_playing = false;
+                        stage6_log("[DECODE COMPLETO] Decodificacion FLAC completada (%llu frames). Drenando buffer...",
+                                   (unsigned long long)s_current_pcm_frame);
                         break;
                     }
                     usleep(5000);
@@ -828,7 +865,8 @@ static void stream_decode_worker_func(void *arg)
                 drflac_uint64 read_frames = drflac_read_pcm_frames_f32(pFlac, CHUNK_OUT_FRAMES * 2, in_chunk_96k);
                 if (read_frames == 0) {
                     if (s_stream_ctx.download_complete) {
-                        s_is_playing = false;
+                        stage6_log("[DECODE COMPLETO] Decodificacion FLAC completada (%llu frames). Drenando buffer...",
+                                   (unsigned long long)s_current_pcm_frame);
                         break;
                     }
                     usleep(5000);
@@ -866,6 +904,18 @@ static void stream_decode_worker_func(void *arg)
                 stage6_log("  - Ring Buffer underruns: %u  |  Hardware DMA underruns: %u",
                            s_ring_underruns, s_hw_underruns);
             }
+        }
+
+        /* Esperar a que el consumidor de audio DMA vacie el ring buffer para reproducir hasta el final */
+        while (s_engine_running && current_seq == s_track_sequence && ring_frames_available() > 0) {
+            usleep(10000);
+        }
+
+        if (s_engine_running && current_seq == s_track_sequence) {
+            s_is_playing = false;
+            s_ring_primed = false;
+            stage6_log("[TRACK FINISHED] Cancion '%s' reproducida completamente (%llu frames).",
+                       s_stream_ctx.title, (unsigned long long)s_current_pcm_frame);
         }
 
         drflac_close(pFlac);
@@ -933,15 +983,15 @@ int audio_engine_init(void)
                           0x10000, THREAD_JOINABLE, "mono_hw");
     stage6_log("[THREAD] sysThreadCreate(mono_hw) -> %d (prio 100)", ret);
 
-    /* 2. Launch Progressive Stream & Decoder Thread (prio 500, 128KB stack) */
-    ret = sysThreadCreate(&s_stream_thread_id, stream_decode_worker_func, NULL, 500,
+    /* 2. Launch Progressive Stream & Decoder Thread (prio 600, 128KB stack) */
+    ret = sysThreadCreate(&s_stream_thread_id, stream_decode_worker_func, NULL, 600,
                           0x20000, THREAD_JOINABLE, "mono_dec");
-    stage6_log("[THREAD] sysThreadCreate(mono_dec) -> %d (prio 500)", ret);
+    stage6_log("[THREAD] sysThreadCreate(mono_dec) -> %d (prio 600)", ret);
 
-    /* 3. Launch HTTP Streaming Downloader Thread (prio 1000, 128KB stack) */
-    ret = sysThreadCreate(&s_download_thread_id, stream_download_worker_func, NULL, 1000,
+    /* 3. Launch HTTP Streaming Downloader Thread (prio 400, 128KB stack) */
+    ret = sysThreadCreate(&s_download_thread_id, stream_download_worker_func, NULL, 400,
                           0x20000, THREAD_JOINABLE, "mono_net");
-    stage6_log("[THREAD] sysThreadCreate(mono_net) -> %d (prio 1000)", ret);
+    stage6_log("[THREAD] sysThreadCreate(mono_net) -> %d (prio 400)", ret);
 
     return 0;
 }
@@ -993,17 +1043,29 @@ void audio_engine_play_track(const char *track_id, const char *title)
 {
     if (!track_id) return;
 
+    /* Abortar cualquier conexion activa o decodificacion de la pista previa */
+    s_stream_ctx.abort = true;
+    if (s_stream_ctx.sock >= 0) {
+        close(s_stream_ctx.sock);
+        s_stream_ctx.sock = -1;
+    }
+
     strncpy(s_pending_track_id, track_id, sizeof(s_pending_track_id) - 1);
     strncpy(s_pending_track_title, title ? title : "", sizeof(s_pending_track_title) - 1);
-    /* Nuevo track: desactivar priming (el productor volvera a llenar 1s de PCM
-       antes de que el consumidor DMA lea del ring), reiniciar contadores y
-       limpiar indices del ring buffer de forma segura. */
+
+    /* Nuevo track: desactivar priming e invalidar contexto para que el decoder
+       espere a que el worker de red inicialice el nuevo sequence */
     s_ring_primed = false;
     s_ring_underruns = 0;
     s_ring_read_pos = 0;
     s_ring_write_pos = 0;
+
+    s_stream_ctx.seq = 0;
+    s_stream_ctx.received = 0;
+    s_stream_ctx.download_complete = false;
+    __asm__ volatile("lwsync" ::: "memory");
+
     s_is_playing = true;
-    s_new_track_requested = true;
     s_track_sequence++;
 }
 
