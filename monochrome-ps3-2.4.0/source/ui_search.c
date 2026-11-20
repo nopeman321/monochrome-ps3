@@ -8,6 +8,7 @@
 #include "gfx_engine.h"
 #include "ui_theme.h"
 #include "ui_components.h"
+#include "ui_shell.h"
 #include "audio_engine.h"
 #include "cover_art.h"
 #include "http_client.h"
@@ -89,10 +90,14 @@ static void play_track(TrackMetadata *t) {
 }
 
 void ui_search_render(void) {
-    int x0 = 260, y0 = 64, x1 = VIRT_W, y1 = VIRT_H - 96;
+    int x0, y0, x1, y1;
+    shell_get_main_area(&x0, &y0, &x1, &y1);
     int mw = x1 - x0;
-    int cx = x0 + 30;
-    int cy = y0 + 20;
+    int mh = y1 - y0;
+    (void)mh;
+    int cx = x0 + 24;
+    int cy = y0 + 16;
+    int content_w = mw - 48;
 
     if (s_busy) {
         int http_code = 0, net_err = 0;
@@ -112,27 +117,32 @@ void ui_search_render(void) {
         }
     }
 
-    gfx_draw_text(cx, cy, "BUSQUEDA", 18.0f, TH_TEXT);
-    cy += 32;
+    gfx_draw_text(cx, cy, "BUSQUEDA //", 15.0f, TH_ACCENT);
+    cy += 28;
 
-    /* Barra de busqueda */
-    uint32_t border = s_kb_open ? TH_ACCENT : TH_BORDER;
-    gfx_draw_rect(cx, cy, mw - 60, 40, TH_SURFACE_2);
-    gfx_draw_rect_outline(cx, cy, mw - 60, 40, border, 2);
+    /* Barra de busqueda estilo terminal */
+    uint32_t border = s_kb_open ? TH_ACCENT_LT : TH_BORDER;
+    gfx_draw_rect(cx, cy, content_w, 42, TH_SURFACE_2);
+    gfx_draw_rect_outline(cx, cy, content_w, 42, border, 1.0f);
     char qbuf[256];
-    snprintf(qbuf, sizeof(qbuf), "> %s_", s_query);
-    gfx_draw_text(cx + 15, cy + 12, qbuf, 16.0f, TH_TEXT);
-    cy += 50;
+    if (s_query[0]) {
+        snprintf(qbuf, sizeof(qbuf), "> %s_", s_query);
+    } else {
+        snprintf(qbuf, sizeof(qbuf), "> Escribe un termino de busqueda...");
+    }
+    uint32_t qcolor = s_query[0] ? TH_TEXT : TH_TEXT_DIM;
+    gfx_draw_text(cx + 16, cy + 13, qbuf, 15.0f, qcolor);
+    cy += 54;
 
     if (s_kb_open) {
-        /* Teclado QWERTY */
-        int key_w = 70, key_h = 56, gap = 8;
-        int kb_x = cx;
-        int kb_y = cy + 10;
+        /* Teclado QWERTY compacto y perfectamente centrado */
+        int key_w = 64, key_h = 46, gap = 6;
+        int kb_x = cx + 8;
+        int kb_y = cy + 6;
         for (int r = 0; r < 4; r++) {
             const char *row = KB_ROWS[r];
             int rowlen = (int)strlen(row);
-            int rx = kb_x + (4 - r) * 18;
+            int rx = kb_x + (4 - r) * 16;
             for (int c = 0; c < rowlen; c++) {
                 char ch[2] = { row[c], '\0' };
                 int kx = rx + c * (key_w + gap);
@@ -141,24 +151,25 @@ void ui_search_render(void) {
                 uint32_t bg = focused ? TH_ACTIVE_BG : TH_SURFACE_2;
                 uint32_t fg = focused ? TH_ACTIVE_TEXT : TH_TEXT;
                 gfx_draw_rect(kx, ky, key_w, key_h, bg);
-                gfx_draw_rect_outline(kx, ky, key_w, key_h, TH_BORDER, 1);
-                gfx_draw_text(kx + key_w/2 - 6, ky + key_h/2 - 8, ch, 18.0f, fg);
+                gfx_draw_rect_outline(kx, ky, key_w, key_h, focused ? TH_ACCENT_LT : TH_BORDER, 1.0f);
+                gfx_draw_text(kx + (key_w - 16) / 2, ky + (key_h - 16) / 2, ch, 16.0f, fg);
             }
         }
         int by = kb_y + 4 * (key_h + gap) + 6;
         const char *btns[4] = { "ESPACIO", "BORRAR", "LIMPIAR", "BUSCAR" };
-        int bw = 170, bh = 56;
+        int bw = 150, bh = 46;
         for (int i = 0; i < 4; i++) {
             int bx = kb_x + i * (bw + 12);
             bool focused = (kb_row == 4 && kb_col == i);
             uint32_t bg = focused ? TH_ACTIVE_BG : TH_SURFACE_2;
             uint32_t fg = focused ? TH_ACTIVE_TEXT : TH_TEXT;
             gfx_draw_rect(bx, by, bw, bh, bg);
-            gfx_draw_rect_outline(bx, by, bw, bh, TH_BORDER, 1);
-            gfx_draw_text(bx + 12, by + bh/2 - 8, btns[i], 14.0f, fg);
+            gfx_draw_rect_outline(bx, by, bw, bh, focused ? TH_ACCENT_LT : TH_BORDER, 1.0f);
+            int btn_text_w = (int)strlen(btns[i]) * 13;
+            gfx_draw_text(bx + (bw - btn_text_w) / 2, by + (bh - 13) / 2, btns[i], 13.0f, fg);
         }
-        cy = by + bh + 20;
-        gfx_draw_text(cx, cy, "D-Pad mover, X seleccionar, O cerrar", 12.0f, TH_TEXT_DIM);
+        cy = by + bh + 16;
+        gfx_draw_text(cx, cy, "[D-PAD] MOVER   [X] SELECCIONAR   [O] CERRAR TECLADO", 12.0f, TH_TEXT_DIM);
     } else {
         /* detect tab change */
         if (g_app_state.active_top_tab != s_last_tab) {
@@ -169,19 +180,28 @@ void ui_search_render(void) {
         }
 
         if (s_busy) {
-            gfx_draw_text(cx, cy, "Buscando...", 14.0f, TH_ACCENT);
-            cy += 30;
+            gfx_draw_rect(cx, cy, content_w, 90, TH_SURFACE);
+            gfx_draw_rect_outline(cx, cy, content_w, 90, TH_BORDER, 1.0f);
+            gfx_draw_text(cx + 24, cy + 36, "CONSULTANDO CATALOGO FLAC...", 15.0f, TH_ACCENT_LT);
+            cy += 110;
+        } else if (s_error) {
+            gfx_draw_rect(cx, cy, content_w, 110, TH_SURFACE);
+            gfx_draw_rect_outline(cx, cy, content_w, 110, TH_BORDER, 1.0f);
+            gfx_draw_text(cx + 24, cy + 32, "[X] ERROR DE CONEXION CON EL SERVIDOR TRACKS", 15.0f, TH_ACCENT_LT);
+            gfx_draw_text(cx + 24, cy + 60, "Verifica tu conexion a internet o presiona [] para intentar otra busqueda.", 13.0f, TH_TEXT_DIM);
         } else if (s_drilldown_tracks) {
             char sub[256];
-            snprintf(sub, sizeof(sub), "%s (O volver)", s_drilldown_title);
-            gfx_draw_text(cx, cy, sub, 14.0f, TH_ACCENT);
+            snprintf(sub, sizeof(sub), "ALBUM: %s  (CIRCULO: VOLVER)", s_drilldown_title);
+            gfx_draw_text(cx, cy, sub, 14.0f, TH_ACCENT_LT);
             cy += 24;
             if (s_count == 0) {
-                gfx_draw_text(cx, cy, "Sin resultados", 14.0f, TH_TEXT_DIM);
+                gfx_draw_rect(cx, cy, content_w, 90, TH_SURFACE);
+                gfx_draw_rect_outline(cx, cy, content_w, 90, TH_BORDER, 1.0f);
+                gfx_draw_text(cx + 24, cy + 36, "Sin pistas en este album", 14.0f, TH_TEXT_DIM);
             } else {
                 int row_y = cy;
-                int row_h = 52;
-                int visible = 8;
+                int row_h = 50;
+                int visible = 9;
                 int start = 0;
                 if (s_cursor >= visible) start = s_cursor - visible + 1;
                 if (start + visible > s_count) start = s_count - visible;
@@ -201,15 +221,17 @@ void ui_search_render(void) {
                     strncpy(at.album, t->album, sizeof(at.album)-1);
                     strncpy(at.cover_url, t->cover_url, sizeof(at.cover_url)-1);
                     at.duration_sec = t->duration_sec;
-                    track_row_render((float)cx, (float)(row_y + i*row_h), (float)(mw-60), (float)row_h, (uint32_t)(idx+1), &at, st);
+                    track_row_render((float)cx, (float)(row_y + i*row_h), (float)content_w, (float)row_h, (uint32_t)(idx+1), &at, st);
                 }
             }
         } else if (g_app_state.active_top_tab == TAB_ALBUMS) {
             if (s_album_count == 0) {
-                gfx_draw_text(cx, cy, "Sin albumes para esta busqueda", 14.0f, TH_TEXT_DIM);
+                gfx_draw_rect(cx, cy, content_w, 90, TH_SURFACE);
+                gfx_draw_rect_outline(cx, cy, content_w, 90, TH_BORDER, 1.0f);
+                gfx_draw_text(cx + 24, cy + 36, "Sin albumes para esta busqueda", 14.0f, TH_TEXT_DIM);
             } else {
                 int row_y = cy;
-                int row_h = 40;
+                int row_h = 44;
                 int visible = 10;
                 int start = 0;
                 if (s_cursor >= visible) start = s_cursor - visible + 1;
@@ -218,20 +240,28 @@ void ui_search_render(void) {
                 for (int i = 0; i < visible && (start + i) < s_album_count; i++) {
                     int idx = start + i;
                     AlbumMetadata *a = &s_albums[idx];
-                    uint32_t bg = (idx == s_cursor) ? TH_ACTIVE_BG : TH_SURFACE_2;
-                    uint32_t fg = (idx == s_cursor) ? TH_ACTIVE_TEXT : TH_TEXT;
-                    gfx_draw_rect(cx, row_y + i*row_h, mw - 60, row_h - 4, bg);
-                    char line[256];
+                    bool is_foc = (idx == s_cursor);
+                    uint32_t bg = is_foc ? TH_SURFACE_2 : TH_SURFACE;
+                    gfx_draw_rect(cx, row_y + i*row_h, content_w, row_h - 2, bg);
+                    if (is_foc) {
+                        gfx_draw_rect_outline(cx, row_y + i*row_h, content_w, row_h - 2, TH_BORDER_LT, 1.0f);
+                        gfx_draw_rect(cx, row_y + i*row_h, 4, row_h - 2, TH_ACCENT_LT);
+                    } else {
+                        gfx_draw_rect(cx, row_y + i*row_h + row_h - 2, content_w, 1, TH_BORDER);
+                    }
+                    char line[320];
                     snprintf(line, sizeof(line), "%s - %s (%s)", a->title, a->artist, a->year);
-                    gfx_draw_text(cx + 8, row_y + i*row_h + 10, line, 14.0f, fg);
+                    gfx_draw_text_clipped(cx + 16, row_y + i*row_h + 12, (float)(content_w - 32), line, 14.0f, is_foc ? TH_TEXT : TH_TEXT_DIM);
                 }
             }
         } else if (g_app_state.active_top_tab == TAB_ARTISTS) {
             if (s_artist_count == 0) {
-                gfx_draw_text(cx, cy, "Sin artistas para esta busqueda", 14.0f, TH_TEXT_DIM);
+                gfx_draw_rect(cx, cy, content_w, 90, TH_SURFACE);
+                gfx_draw_rect_outline(cx, cy, content_w, 90, TH_BORDER, 1.0f);
+                gfx_draw_text(cx + 24, cy + 36, "Sin artistas para esta busqueda", 14.0f, TH_TEXT_DIM);
             } else {
                 int row_y = cy;
-                int row_h = 40;
+                int row_h = 44;
                 int visible = 10;
                 int start = 0;
                 if (s_cursor >= visible) start = s_cursor - visible + 1;
@@ -240,18 +270,26 @@ void ui_search_render(void) {
                 for (int i = 0; i < visible && (start + i) < s_artist_count; i++) {
                     int idx = start + i;
                     ArtistMetadata *a = &s_artists[idx];
-                    uint32_t bg = (idx == s_cursor) ? TH_ACTIVE_BG : TH_SURFACE_2;
-                    uint32_t fg = (idx == s_cursor) ? TH_ACTIVE_TEXT : TH_TEXT;
-                    gfx_draw_rect(cx, row_y + i*row_h, mw - 60, row_h - 4, bg);
-                    gfx_draw_text(cx + 8, row_y + i*row_h + 10, a->name, 14.0f, fg);
+                    bool is_foc = (idx == s_cursor);
+                    uint32_t bg = is_foc ? TH_SURFACE_2 : TH_SURFACE;
+                    gfx_draw_rect(cx, row_y + i*row_h, content_w, row_h - 2, bg);
+                    if (is_foc) {
+                        gfx_draw_rect_outline(cx, row_y + i*row_h, content_w, row_h - 2, TH_BORDER_LT, 1.0f);
+                        gfx_draw_rect(cx, row_y + i*row_h, 4, row_h - 2, TH_ACCENT_LT);
+                    } else {
+                        gfx_draw_rect(cx, row_y + i*row_h + row_h - 2, content_w, 1, TH_BORDER);
+                    }
+                    gfx_draw_text_clipped(cx + 16, row_y + i*row_h + 12, (float)(content_w - 32), a->name, 14.0f, is_foc ? TH_TEXT : TH_TEXT_DIM);
                 }
             }
         } else if (g_app_state.active_top_tab == TAB_PLAYLISTS) {
             if (s_playlist_count == 0) {
-                gfx_draw_text(cx, cy, "Sin playlists para esta busqueda", 14.0f, TH_TEXT_DIM);
+                gfx_draw_rect(cx, cy, content_w, 90, TH_SURFACE);
+                gfx_draw_rect_outline(cx, cy, content_w, 90, TH_BORDER, 1.0f);
+                gfx_draw_text(cx + 24, cy + 36, "Sin playlists para esta busqueda", 14.0f, TH_TEXT_DIM);
             } else {
                 int row_y = cy;
-                int row_h = 40;
+                int row_h = 44;
                 int visible = 10;
                 int start = 0;
                 if (s_cursor >= visible) start = s_cursor - visible + 1;
@@ -260,23 +298,37 @@ void ui_search_render(void) {
                 for (int i = 0; i < visible && (start + i) < s_playlist_count; i++) {
                     int idx = start + i;
                     PlaylistMetadata *p = &s_playlists[idx];
-                    uint32_t bg = (idx == s_cursor) ? TH_ACTIVE_BG : TH_SURFACE_2;
-                    uint32_t fg = (idx == s_cursor) ? TH_ACTIVE_TEXT : TH_TEXT;
-                    gfx_draw_rect(cx, row_y + i*row_h, mw - 60, row_h - 4, bg);
+                    bool is_foc = (idx == s_cursor);
+                    uint32_t bg = is_foc ? TH_SURFACE_2 : TH_SURFACE;
+                    gfx_draw_rect(cx, row_y + i*row_h, content_w, row_h - 2, bg);
+                    if (is_foc) {
+                        gfx_draw_rect_outline(cx, row_y + i*row_h, content_w, row_h - 2, TH_BORDER_LT, 1.0f);
+                        gfx_draw_rect(cx, row_y + i*row_h, 4, row_h - 2, TH_ACCENT_LT);
+                    } else {
+                        gfx_draw_rect(cx, row_y + i*row_h + row_h - 2, content_w, 1, TH_BORDER);
+                    }
                     char line[256];
                     snprintf(line, sizeof(line), "%s (%u tracks)", p->title, p->track_count);
-                    gfx_draw_text(cx + 8, row_y + i*row_h + 10, line, 14.0f, fg);
+                    gfx_draw_text_clipped(cx + 16, row_y + i*row_h + 12, (float)(content_w - 32), line, 14.0f, is_foc ? TH_TEXT : TH_TEXT_DIM);
                 }
             }
         } else {
             /* TAB_ALL / TAB_TRACKS */
             if (s_count == 0) {
-                if (s_error) gfx_draw_text(cx, cy, "Error de red - intenta de nuevo", 14.0f, TH_TEXT_DIM);
-                else gfx_draw_text(cx, cy, "Sin resultados", 14.0f, TH_TEXT_DIM);
+                gfx_draw_rect(cx, cy, content_w, 100, TH_SURFACE);
+                gfx_draw_rect_outline(cx, cy, content_w, 100, TH_BORDER, 1.0f);
+                char no_res[256];
+                if (s_query[0]) {
+                    snprintf(no_res, sizeof(no_res), "[!] NO SE ENCONTRARON PISTAS PARA \"%s\"", s_query);
+                } else {
+                    snprintf(no_res, sizeof(no_res), "Presiona [] para abrir el teclado y buscar musica.");
+                }
+                gfx_draw_text_clipped(cx + 24, cy + 34, (float)(content_w - 48), no_res, 15.0f, TH_TEXT);
+                gfx_draw_text(cx + 24, cy + 62, "Explora millones de canciones en calidad lossless FLAC.", 13.0f, TH_TEXT_DIM);
             } else {
                 int row_y = cy;
-                int row_h = 52;
-                int visible = 8;
+                int row_h = 50;
+                int visible = 9;
                 int start = 0;
                 if (s_cursor >= visible) start = s_cursor - visible + 1;
                 if (start + visible > s_count) start = s_count - visible;
@@ -296,7 +348,7 @@ void ui_search_render(void) {
                     strncpy(at.album, t->album, sizeof(at.album)-1);
                     strncpy(at.cover_url, t->cover_url, sizeof(at.cover_url)-1);
                     at.duration_sec = t->duration_sec;
-                    track_row_render((float)cx, (float)(row_y + i*row_h), (float)(mw-60), (float)row_h, (uint32_t)(idx+1), &at, st);
+                    track_row_render((float)cx, (float)(row_y + i*row_h), (float)content_w, (float)row_h, (uint32_t)(idx+1), &at, st);
                 }
             }
         }

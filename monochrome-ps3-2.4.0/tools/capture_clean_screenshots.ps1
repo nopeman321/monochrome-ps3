@@ -1,11 +1,11 @@
-# tools/capture_clean_screenshots.ps1 - Captura limpia con prioridad absoluta en ventana y fullscreen
+﻿# tools/capture_clean_screenshots.ps1 - Captura limpia con prioridad absoluta en ventana y fullscreen
 param(
   [switch]$KeepRunning
 )
 
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $PSScriptRoot
-$rpcs3 = Join-Path $repo 'emulator\rpcs3'
+$rpcs3 = 'C:\Users\Juanjo\.gemini\antigravity\scratch\ps3-monochrome\emulator\rpcs3'
 $shotsDir = Join-Path $repo 'docs\screenshots'
 $evDir = Join-Path $repo 'evidence'
 

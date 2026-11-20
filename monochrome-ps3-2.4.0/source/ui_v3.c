@@ -1,8 +1,8 @@
 /*
- * Monochrome PS3 - UI v3 Shell (Phase 3)
- * Nuevo punto de entrada que implementa include/ui.h.
+ * Monochrome PS3 - UI v3 Shell (Phase 3 & Phase 6)
+ * Implementa include/ui.h.
  * Estructura base: Left Rail + Top Tabs + Bottom Player Dock.
- * Las vistas de contenido se completan en fases posteriores.
+ * Integracion de Fullscreen Visualizer (SQUARE) y Cola de reproduccion (TRIANGLE).
  */
 
 #include <stdio.h>
@@ -27,6 +27,8 @@
 #include "ui_search.h"
 #include "ui_settings.h"
 #include "ui_library.h"
+#include "ui_queue.h"
+#include "ui_visualizer.h"
 
 /* ── Estado de UI v3 ─────────────────────────────────────────────── */
 static bool s_exit_requested = false;
@@ -42,6 +44,8 @@ void ui_init(void)
     ui_search_init();
     ui_library_init();
     ui_settings_init();
+    ui_queue_init();
+    ui_visualizer_init();
 
     /* Inicializar red */
     http_net_init();
@@ -69,17 +73,17 @@ void ui_render_splash(void)
         gfx_draw_rect(frame_x, frame_y, frame_w, frame_h, TH_SURFACE);
         gfx_draw_rect_outline(frame_x, frame_y, frame_w, frame_h, TH_ACCENT, 3);
 
-        gfx_draw_text(frame_x + 40, frame_y + 60,
-                      "MONOCHROME PS3", 24.0f, 0xFFFFFFFF);
-        gfx_draw_text(frame_x + 40, frame_y + 100,
-                      "Shell v3 — Left Rail + Top Tabs + Bottom Dock",
-                      16.0f, 0x008A2BE2);
-        gfx_draw_text(frame_x + 40, frame_y + 140,
-                      APP_DISPLAY_VERSION, 16.0f, 0x00FFFFFF);
-        gfx_draw_text(frame_x + 40, frame_y + 170,
-                      "SHA: " APP_BUILD_SHA, 8.0f, 0x00666666);
-        gfx_draw_text(frame_x + 40, frame_y + 200,
-                      "Pulsa cualquier botón para continuar", 8.0f, 0x00C83838);
+        gfx_draw_text(frame_x + 48, frame_y + 54,
+                      "MONOCHROME PS3", 24.0f, TH_TEXT);
+        gfx_draw_text(frame_x + 48, frame_y + 96,
+                      "High-Resolution Lossless Audio // PSL1GHT RSX",
+                      15.0f, TH_ACCENT_LT);
+        gfx_draw_text(frame_x + 48, frame_y + 130,
+                      APP_DISPLAY_VERSION, 14.0f, TH_TEXT);
+        gfx_draw_text(frame_x + 48, frame_y + 160,
+                      "BUILD SHA: " APP_BUILD_SHA, 12.0f, TH_TEXT_DIM);
+        gfx_draw_text(frame_x + 48, frame_y + 220,
+                      "Pulsa cualquier boton para iniciar...", 13.0f, TH_TEXT_DIM);
 
         platform_flip();
 
@@ -100,13 +104,37 @@ AppState ui_handle_input(AppState current, InputAction act)
         return current;
     }
 
+    /* Si visualizador fullscreen activo, delegar todo a ui_visualizer */
+    if (g_app_state.visualizer_fullscreen) {
+        ui_visualizer_handle_input(act);
+        return current;
+    }
+
+    /* Si cola abierta, priorizar su input */
+    if (g_app_state.right_drawer_open) {
+        ui_queue_handle_input(act);
+        return current;
+    }
+
+    /* ACT_TRIANGLE: abrir/cerrar cola de reproduccion */
+    if (act == ACT_TRIANGLE) {
+        ui_queue_handle_input(act);
+        return current;
+    }
+
+    /* ACT_SQUARE: toggle visualizador fullscreen */
+    if (act == ACT_SQUARE) {
+        ui_visualizer_handle_input(act);
+        return current;
+    }
+
     /* Si teclado de busqueda abierto, delegar todo a ui_search antes del shell */
     if (g_app_state.active_section == SEC_SEARCH && g_app_state.focus_zone == ZONE_MAIN_CONTENT && ui_search_is_keyboard_open()) {
         ui_search_handle_input(act);
         return current;
     }
 
-    /* Delegar navegación por zonas al shell */
+    /* Delegar navegacion por zonas al shell */
     shell_handle_input(act);
 
     /* Delegar input a las vistas de contenido solo con foco en MAIN_CONTENT */
@@ -123,11 +151,15 @@ AppState ui_handle_input(AppState current, InputAction act)
 /* ── Render del área central según sección activa ────────────────── */
 static void render_main_content(int sw, int sh, long frame)
 {
+    (void)sw;
+    (void)sh;
     (void)frame;
     int x0, y0, x1, y1;
     shell_get_main_area(&x0, &y0, &x1, &y1);
     int mw = x1 - x0;
     int mh = y1 - y0;
+    (void)mw;
+    (void)mh;
     int cx = x0 + 30;
     int cy = y0 + 20;
 
@@ -156,18 +188,37 @@ static void render_main_content(int sw, int sh, long frame)
 /* ── ui_render ───────────────────────────────────────────────────── */
 void ui_render(AppState state, long frame)
 {
+    (void)state;
     s_frame = frame;
     int sw = VIRT_W;
     int sh = VIRT_H;
 
-    /* Render shell (fondo + top bar + left rail + área central limpia) */
+    /* Si visualizador fullscreen activo, renderizar exclusivamente visualizador */
+    if (g_app_state.visualizer_fullscreen) {
+        ui_visualizer_render();
+
+        /* Overlay de salida */
+        if (s_exit_requested) {
+            gfx_draw_rect(0, sh / 2 - 60, sw, 120, TH_ACTIVE_BG);
+            gfx_draw_rect_outline(0, sh / 2 - 60, sw, 120, TH_ACCENT, 3);
+            gfx_draw_text(sw / 2 - 120, sh / 2 - 20, "SALIENDO AL XMB...", 16.0f, TH_ACTIVE_TEXT);
+        }
+        return;
+    }
+
+    /* Render shell (fondo + top bar + left rail + area central limpia) */
     shell_render(sw, sh, frame);
 
-    /* Render área central (contenido de la sección activa) */
+    /* Render area central (contenido de la seccion activa) */
     render_main_content(sw, sh, frame);
 
     /* Render Bottom Player Dock */
     player_dock_render(sw, sh, frame);
+
+    /* Render cola de reproduccion overlay si esta abierta */
+    if (g_app_state.right_drawer_open) {
+        ui_queue_render();
+    }
 
     /* Overlay de salida */
     if (s_exit_requested) {

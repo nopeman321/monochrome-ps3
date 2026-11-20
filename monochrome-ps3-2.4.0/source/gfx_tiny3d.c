@@ -530,32 +530,103 @@ void gfx_draw_9slice(const GfxTexture *tex, float x, float y, float w, float h,
 
 static int s_font_loaded = 0;
 
-static void draw_glyph(rsxBuffer *b, int fx, int fy, float scale,
-                       unsigned char ch, uint32_t rgba)
+static unsigned char normalize_utf8_char(const char **p_utf8)
+{
+    const unsigned char *s = (const unsigned char *)*p_utf8;
+    if (*s < 0x80) {
+        (*p_utf8)++;
+        return *s;
+    }
+
+    /* UTF-8 multi-byte sequence */
+    if (s[0] == 0xC3 && s[1]) {
+        (*p_utf8) += 2;
+        unsigned char c2 = s[1];
+        /* á, à, ä, â, ã, å */
+        if (c2 >= 0xA0 && c2 <= 0xA5) return 'a';
+        /* Á, À, Ä, Â, Ã, Å */
+        if (c2 >= 0x80 && c2 <= 0x85) return 'A';
+        /* é, è, ë, ê */
+        if (c2 >= 0xA8 && c2 <= 0xAB) return 'e';
+        /* É, È, Ë, Ê */
+        if (c2 >= 0x88 && c2 <= 0x8B) return 'E';
+        /* í, ì, ï, î */
+        if (c2 >= 0xAC && c2 <= 0xAF) return 'i';
+        /* Í, Ì, Ï, Î */
+        if (c2 >= 0x8C && c2 <= 0x8F) return 'I';
+        /* ó, ò, ö, ô, õ */
+        if (c2 >= 0xB2 && c2 <= 0xB6) return 'o';
+        /* Ó, Ò, Ö, Ô, Õ */
+        if (c2 >= 0x92 && c2 <= 0x96) return 'O';
+        /* ú, ù, ü, û */
+        if (c2 >= 0xB9 && c2 <= 0xBC) return 'u';
+        /* Ú, Ù, Ü, Û */
+        if (c2 >= 0x99 && c2 <= 0x9C) return 'U';
+        /* ñ */
+        if (c2 == 0xB1) return 'n';
+        /* Ñ */
+        if (c2 == 0x91) return 'N';
+        /* ç, Ç */
+        if (c2 == 0xA7) return 'c';
+        if (c2 == 0x87) return 'C';
+        return '?';
+    } else if (s[0] == 0xC2 && s[1]) {
+        (*p_utf8) += 2;
+        unsigned char c2 = s[1];
+        if (c2 == 0xBF) return '?'; /* ¿ */
+        if (c2 == 0xA1) return '!'; /* ¡ */
+        if (c2 == 0xB7) return '-'; /* middle dot · */
+        return ' ';
+    } else if (s[0] == 0xE2 && s[1] && s[2]) {
+        (*p_utf8) += 3;
+        /* E2 80 93 / 94 (en dash, em dash) */
+        if (s[1] == 0x80 && (s[2] == 0x93 || s[2] == 0x94)) return '-';
+        /* E2 80 98 / 99 (single quotes) */
+        if (s[1] == 0x80 && (s[2] == 0x98 || s[2] == 0x99)) return '\'';
+        /* E2 80 9C / 9D (double quotes) */
+        if (s[1] == 0x80 && (s[2] == 0x9C || s[2] == 0x9D)) return '"';
+        /* E2 80 A2 (bullet •) */
+        if (s[1] == 0x80 && s[2] == 0xA2) return '*';
+        return ' ';
+    }
+
+    /* Fallback: skip leading byte */
+    (*p_utf8)++;
+    return '?';
+}
+
+static void draw_glyph_box(rsxBuffer *b, int x0, int y0, int x1, int y1,
+                           unsigned char ch, uint32_t rgba)
 {
     if (ch < 0x20 || ch > 0x7E) ch = '?';
     const uint8_t *g = FONT8[ch - 0x20];
 
-    int gw = (int)(8.0f * scale);
-    int gh = (int)(8.0f * scale);
+    int gw = x1 - x0;
+    int gh = y1 - y0;
+    if (gw <= 0 || gh <= 0) return;
 
     for (int r = 0; r < 8; r++) {
         uint8_t bits = g[r];
         if (!bits) continue;
-        int py = fy + (int)(r * scale);
-        if (py < 0 || py >= b->height) continue;
-        uint32_t *row = &b->ptr[(size_t)py * b->width + fx];
+        int py_start = y0 + (r * gh) / 8;
+        int py_end   = y0 + ((r + 1) * gh) / 8;
+        if (py_end <= 0 || py_start >= b->height) continue;
+        if (py_start < 0) py_start = 0;
+        if (py_end > b->height) py_end = b->height;
+
         for (int c = 0; c < 8; c++) {
             if (!(bits & (1u << c))) continue;
-            int px = fx + (int)(c * scale);
-            if (px < 0 || px >= b->width) continue;
-            for (int sx = 0; sx < (int)scale; sx++) {
-                int px2 = px + sx;
-                if (px2 < 0 || px2 >= b->width) continue;
-                for (int sy = 0; sy < (int)scale; sy++) {
-                    int py2 = py + sy;
-                    if (py2 < 0 || py2 >= b->height) continue;
-                    b->ptr[(size_t)py2 * b->width + px2] = rgba;
+            int px_start = x0 + (c * gw) / 8;
+            int px_end   = x0 + ((c + 1) * gw) / 8;
+            if (px_end <= 0 || px_start >= b->width) continue;
+            if (px_start < 0) px_start = 0;
+            if (px_end > b->width) px_end = b->width;
+
+            for (int py = py_start; py < py_end; py++) {
+                uint32_t *row = &b->ptr[(size_t)py * b->width + px_start];
+                int span = px_end - px_start;
+                for (int s = 0; s < span; s++) {
+                    row[s] = rgba;
                 }
             }
         }
@@ -565,57 +636,67 @@ static void draw_glyph(rsxBuffer *b, int fx, int fy, float scale,
 int gfx_draw_text(float x, float y, const char *utf8, float size_px, uint32_t rgba)
 {
     if (!utf8 || !*utf8) return 0;
-    if (size_px < 8.0f) size_px = 8.0f;
+    if (size_px < 12.0f) size_px = 12.0f;
     if (size_px > 96.0f) size_px = 96.0f;
     if (!s_font_loaded) {
-        platform_log("[GFX] Fuente bitmap 8x8 cargada (render bitmap)");
+        platform_log("[GFX] Fuente bitmap 8x8 optimizada cargada (render continuo)");
         s_font_loaded = 1;
     }
 
-    int fx = (int)vx(x);
-    int fy = (int)vy(y);
-    float scale = size_px / 8.0f;
-    if (scale < 1.0f) scale = 1.0f;
-
     rsxBuffer *b = &s_buffers[s_cur_buffer];
-    int cur_x = fx;
+    float cur_vx = x;
 
-    while (*utf8) {
-        unsigned char ch = (unsigned char)*utf8++;
-        draw_glyph(b, cur_x, fy, scale, ch, rgba);
-        cur_x += (int)(8.0f * scale);
+    const char *p = utf8;
+    while (*p) {
+        unsigned char ch = normalize_utf8_char(&p);
+        int gx0 = (int)vx(cur_vx);
+        int gy0 = (int)vy(y);
+        int gx1 = (int)vx(cur_vx + size_px);
+        int gy1 = (int)vy(y + size_px);
+        draw_glyph_box(b, gx0, gy0, gx1, gy1, ch, rgba);
+        cur_vx += size_px;
     }
-    return cur_x - fx;
+    return (int)(cur_vx - x);
 }
 
 int gfx_draw_text_clipped(float x, float y, float max_w, const char *utf8,
                           float size_px, uint32_t rgba)
 {
     if (!utf8 || !*utf8) return 0;
-    float scale = size_px / 8.0f;
-    if (scale < 1.0f) scale = 1.0f;
-
-    int char_w = (int)(8.0f * scale);
-    if (char_w < 1) char_w = 1;
-    int max_chars = (int)(max_w / (float)char_w);
+    if (size_px < 12.0f) size_px = 12.0f;
+    int max_chars = (int)(max_w / size_px);
     if (max_chars <= 0) return 0;
 
-    int len = (int)strlen(utf8);
-    if (len <= max_chars) {
+    /* Measure visual characters considering UTF-8 normalization */
+    int char_count = 0;
+    const char *p = utf8;
+    while (*p) {
+        normalize_utf8_char(&p);
+        char_count++;
+    }
+
+    if (char_count <= max_chars) {
         return gfx_draw_text(x, y, utf8, size_px, rgba);
     }
 
-    char buf[256];
-    int copy_len = (max_chars > 3) ? (max_chars - 3) : max_chars;
-    if (copy_len < 0) copy_len = 0;
-    if (copy_len >= (int)sizeof(buf) - 4) copy_len = (int)sizeof(buf) - 4;
-    memcpy(buf, utf8, copy_len);
-    if (max_chars > 3) {
-        buf[copy_len] = '.'; buf[copy_len + 1] = '.'; buf[copy_len + 2] = '.';
-        buf[copy_len + 3] = '\0';
-    } else {
-        buf[copy_len] = '\0';
+    char buf[512];
+    int out_idx = 0;
+    int target_chars = (max_chars > 3) ? (max_chars - 3) : max_chars;
+    if (target_chars < 1) target_chars = 1;
+
+    p = utf8;
+    for (int i = 0; i < target_chars && *p; i++) {
+        unsigned char ch = normalize_utf8_char(&p);
+        if (out_idx < (int)sizeof(buf) - 5) {
+            buf[out_idx++] = (char)ch;
+        }
     }
+    if (max_chars > 3 && out_idx <= (int)sizeof(buf) - 4) {
+        buf[out_idx++] = '.';
+        buf[out_idx++] = '.';
+        buf[out_idx++] = '.';
+    }
+    buf[out_idx] = '\0';
     return gfx_draw_text(x, y, buf, size_px, rgba);
 }
 

@@ -1,7 +1,7 @@
 /*
- * Monochrome PS3 - UI Player Dock v3 (Phase 3)
+ * Monochrome PS3 - UI Player Dock v3 (Phase 3 & Phase 6)
  * Bottom Persistent Player Dock de 96px (y: 984..1080)
- * Muestra estado real del motor de audio: carátula, artista/título,
+ * Muestra estado real del motor de audio: caratula, artista/titulo,
  * progreso, barra de onda 1-bit y leyendas de glifos DualShock 3.
  */
 
@@ -21,15 +21,20 @@
 /* ── Render del dock inferior ────────────────────────────────────── */
 void player_dock_render(int sw, int sh, long frame)
 {
+    (void)sw;
+    (void)sh;
     (void)frame;
-    int dock_y = sh - BOTTOM_DOCK_H;   /* 984 */
-    int dock_h = BOTTOM_DOCK_H;        /* 96 */
+
+    int virt_w = VIRT_W;
+    int virt_h = VIRT_H;
+    int dock_y = virt_h - BOTTOM_DOCK_H;   /* 984 */
+    int dock_h = BOTTOM_DOCK_H;            /* 96 */
 
     /* Fondo del dock */
-    gfx_draw_rect(0, dock_y, sw, dock_h, TH_SURFACE);
-    gfx_draw_rect(0, dock_y, sw, 2, TH_BORDER);
+    gfx_draw_rect(0, dock_y, virt_w, dock_h, TH_SURFACE);
+    gfx_draw_rect(0, dock_y, virt_w, 2, TH_BORDER);
 
-    /* ── Izquierda: carátula 72x72 ─────────────────────────────── */
+    /* ── Izquierda: caratula 72x72 ─────────────────────────────── */
     int cover_size = 72;
     int cover_x = 20;
     int cover_y = dock_y + (dock_h - cover_size) / 2;   /* centrado vertical */
@@ -53,19 +58,21 @@ void player_dock_render(int sw, int sh, long frame)
                             0xFFFFFFFF);
         }
     } else {
-        /* Placeholder de carátula */
-        gfx_draw_rect(cover_x + 12, cover_y + 12, cover_size - 24, cover_size - 24, TH_BORDER);
-        gfx_draw_text(cover_x + 18, cover_y + 28, "MC", 16.0f, TH_TEXT_DIM);
+        /* Placeholder de caratula */
+        gfx_draw_rect(cover_x + 8, cover_y + 8, cover_size - 16, cover_size - 16, TH_BORDER);
+        int mc_x = cover_x + (cover_size - 18 * 2) / 2;
+        int mc_y = cover_y + (cover_size - 18) / 2;
+        gfx_draw_text(mc_x, mc_y, "MC", 18.0f, TH_TEXT_DIM);
     }
 
-    /* ── Centro: ARTISTA - TÍTULO + tiempo + barra de onda ─────── */
+    /* ── Centro: ARTISTA - TITULO + tiempo + barra de onda ─────── */
     int info_x = cover_x + cover_size + 24;
     int info_y = dock_y + 14;
-    int max_info_w = sw - info_x - 260;  /* dejar espacio a la derecha para glifos */
+    int max_info_w = virt_w - info_x - 260;  /* dejar espacio a la derecha para glifos */
 
     if (has_track) {
-        /* Artista - Título */
-        char line1[256];
+        /* Artista - Titulo */
+        char line1[512];
         snprintf(line1, sizeof(line1), "%s - %s",
                  g_app_state.current_track.artist,
                  g_app_state.current_track.title);
@@ -78,8 +85,8 @@ void player_dock_render(int sw, int sh, long frame)
                            audio_engine_get_progress());
         char time_str[16];
         snprintf(time_str, sizeof(time_str), "%d:%02d", cur_sec / 60, cur_sec % 60);
-        int time_w = (int)strlen(time_str) * 8 * 1;
-        gfx_draw_text(sw - 260 + (120 - time_w) / 2, info_y + 4, time_str, 8.0f, TH_ACCENT);
+        int time_w = (int)strlen(time_str) * 12;
+        gfx_draw_text(virt_w - 260 + (120 - time_w) / 2, info_y + 4, time_str, 12.0f, TH_ACCENT);
 
         info_y += 24;
 
@@ -100,7 +107,6 @@ void player_dock_render(int sw, int sh, long frame)
         int bar_w = 4;
         int bar_gap = 4;
         int total_bar_w = bar_count * bar_w + (bar_count - 1) * bar_gap;
-        int start_x = wave_x + (wave_w - total_bar_w) / 2;
 
         float progress = audio_engine_get_progress();
         for (int b = 0; b < bar_count; b++) {
@@ -129,23 +135,22 @@ void player_dock_render(int sw, int sh, long frame)
 
         info_y += wave_h + 10;
     } else {
-        gfx_draw_text(info_x, info_y, "Ningun tema seleccionado", 8.0f, TH_TEXT_DIM);
-        info_y += 24;
-        gfx_draw_text(info_x, info_y, "Pulsa X en la lista para reproducir", 8.0f, TH_TEXT_DIM);
+        gfx_draw_text(info_x, info_y + 8, "Ningun tema seleccionado", 16.0f, TH_TEXT);
+        gfx_draw_text(info_x, info_y + 38, "Pulsa X en la lista para reproducir", 13.0f, TH_TEXT_DIM);
     }
 
     /* ── Derecha: leyendas de glifos DualShock 3 ───────────────── */
-    int glyph_x = sw - 250;
-    int glyph_y = dock_y + 14;
-    int glyph_line_h = 16;
+    int glyph_x = virt_w - 240;
+    int glyph_y = dock_y + 12;
+    int glyph_line_h = 15;
 
-    gfx_draw_text(glyph_x, glyph_y, "L1/R1 TABS", 8.0f, TH_TEXT_DIM);
+    gfx_draw_text(glyph_x, glyph_y, "L1/R1 TABS", 11.0f, TH_TEXT_DIM);
     glyph_y += glyph_line_h;
-    gfx_draw_text(glyph_x, glyph_y, "L2/R2 SCRUB", 8.0f, TH_TEXT_DIM);
+    gfx_draw_text(glyph_x, glyph_y, "L2/R2 SCRUB", 11.0f, TH_TEXT_DIM);
     glyph_y += glyph_line_h;
-    gfx_draw_text(glyph_x, glyph_y, "X PLAY/PAUSE", 8.0f, TH_TEXT_DIM);
+    gfx_draw_text(glyph_x, glyph_y, "X PLAY/PAUSE", 11.0f, TH_TEXT_DIM);
     glyph_y += glyph_line_h;
-    gfx_draw_text(glyph_x, glyph_y, "[] VISUALIZER", 8.0f, TH_TEXT_DIM);
+    gfx_draw_text(glyph_x, glyph_y, "[] VISUALIZER", 11.0f, TH_TEXT_DIM);
     glyph_y += glyph_line_h;
-    gfx_draw_text(glyph_x, glyph_y, "TRIANGLE QUEUE", 8.0f, TH_TEXT_DIM);
+    gfx_draw_text(glyph_x, glyph_y, "TRIANGLE QUEUE", 11.0f, TH_TEXT_DIM);
 }

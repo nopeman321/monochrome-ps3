@@ -66,7 +66,6 @@ int platform_draw_text(int x, int y, const char *str, uint32_t color, int scale)
 int platform_draw_text_r(int rx, int y, const char *str, uint32_t color, int scale)
 {
     if (!str || !*str) return 0;
-    float size_px = 8.0f * (float)scale;
     float scale_f = (float)scale;
     int char_w = (int)(8.0f * scale_f);
     if (char_w < 1) char_w = 1;
