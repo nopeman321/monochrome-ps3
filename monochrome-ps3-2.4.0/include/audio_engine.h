@@ -24,5 +24,7 @@ uint32_t audio_engine_get_underruns(void);
 
 const char *audio_engine_get_status_message(void);
 bool audio_engine_has_error(void);
+int  audio_engine_get_last_error(void);
+void audio_engine_clear_error(void);
 
 #endif /* AUDIO_ENGINE_H */

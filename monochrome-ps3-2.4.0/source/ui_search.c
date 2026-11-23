@@ -12,6 +12,7 @@
 #include "audio_engine.h"
 #include "cover_art.h"
 #include "http_client.h"
+#include "platform.h"
 
 static char s_query[128] = "";
 static TrackMetadata s_results[MAX_SEARCH_RESULTS];
@@ -42,10 +43,15 @@ static const char *KB_ROWS[4] = {
 static int kb_row = 0;
 static int kb_col = 0;
 
+static int  s_last_played_idx = -1;
+static bool s_result_failed[MAX_SEARCH_RESULTS];
+
 bool ui_search_is_keyboard_open(void) { return s_kb_open; }
 
 void ui_search_init(void) {
     memset(s_results, 0, sizeof(s_results));
+    memset(s_result_failed, 0, sizeof(s_result_failed));
+    s_last_played_idx = -1;
     s_count = 0; s_cursor = 0; s_busy = false; s_error = false;
     s_query[0] = '\0';
     s_kb_open = true;
@@ -65,6 +71,8 @@ static void do_search(void) {
     s_kb_open = false;
     s_drilldown_tracks = false;
     s_drilldown_title[0] = '\0';
+    s_last_played_idx = -1;
+    memset(s_result_failed, 0, sizeof(s_result_failed));
     http_search_async_start(s_query);
 }
 
@@ -87,6 +95,13 @@ static void play_track(TrackMetadata *t) {
         g_app_state.has_current_track = true;
         if (t->cover_url[0]) cover_art_load(t->cover_url, g_app_state.cover_mode);
     }
+}
+
+static void play_track_at_index(int idx) {
+    if (idx < 0 || idx >= s_count) return;
+    s_last_played_idx = idx;
+    TrackMetadata *t = &s_results[idx];
+    play_track(t);
 }
 
 void ui_search_render(void) {
@@ -114,6 +129,48 @@ void ui_search_render(void) {
             s_busy = false;
             s_count = 0;
             s_error = (st == SEARCH_STATUS_ERROR);
+        }
+    }
+
+    /* Auto-fallback si la pista seleccionada devolvio 404 */
+    if (s_last_played_idx >= 0 && s_last_played_idx < s_count &&
+        audio_engine_has_error() && audio_engine_get_last_error() == 404) {
+        s_result_failed[s_last_played_idx] = true;
+        const char *failed_title = s_results[s_last_played_idx].title;
+        const char *failed_artist = s_results[s_last_played_idx].artist;
+
+        int fallback_idx = -1;
+        /* 1. Buscar coincidencia exacta de titulo y artista */
+        for (int i = 0; i < s_count; i++) {
+            if (i != s_last_played_idx && !s_result_failed[i]) {
+                if (strcasecmp(s_results[i].title, failed_title) == 0 &&
+                    strcasecmp(s_results[i].artist, failed_artist) == 0) {
+                    fallback_idx = i;
+                    break;
+                }
+            }
+        }
+        /* 2. Si no hubo coincidencia de artista, buscar coincidencia de titulo */
+        if (fallback_idx < 0) {
+            for (int i = 0; i < s_count; i++) {
+                if (i != s_last_played_idx && !s_result_failed[i]) {
+                    if (strcasecmp(s_results[i].title, failed_title) == 0) {
+                        fallback_idx = i;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (fallback_idx >= 0) {
+            platform_log("[AUTO-FALLBACK] Pista #%d ('%s' [ID: %s]) devolvio 404. Probando alternativa #%d ('%s' [ID: %s])...",
+                         s_last_played_idx + 1, s_results[s_last_played_idx].title, s_results[s_last_played_idx].id,
+                         fallback_idx + 1, s_results[fallback_idx].title, s_results[fallback_idx].id);
+            s_cursor = fallback_idx;
+            play_track_at_index(fallback_idx);
+        } else {
+            platform_log("[AUTO-FALLBACK] No se encontraron versiones alternativas para '%s'", failed_title);
+            s_last_played_idx = -1; /* Detener busqueda de fallback */
         }
     }
 
@@ -216,7 +273,11 @@ void ui_search_render(void) {
                     AppTrack at;
                     memset(&at, 0, sizeof(at));
                     strncpy(at.id, t->id, sizeof(at.id)-1);
-                    strncpy(at.title, t->title, sizeof(at.title)-1);
+                    if (s_result_failed[idx]) {
+                        snprintf(at.title, sizeof(at.title), "%.118s [404]", t->title);
+                    } else {
+                        strncpy(at.title, t->title, sizeof(at.title)-1);
+                    }
                     strncpy(at.artist, t->artist, sizeof(at.artist)-1);
                     strncpy(at.album, t->album, sizeof(at.album)-1);
                     strncpy(at.cover_url, t->cover_url, sizeof(at.cover_url)-1);
@@ -343,7 +404,11 @@ void ui_search_render(void) {
                     AppTrack at;
                     memset(&at, 0, sizeof(at));
                     strncpy(at.id, t->id, sizeof(at.id)-1);
-                    strncpy(at.title, t->title, sizeof(at.title)-1);
+                    if (s_result_failed[idx]) {
+                        snprintf(at.title, sizeof(at.title), "%.118s [404]", t->title);
+                    } else {
+                        strncpy(at.title, t->title, sizeof(at.title)-1);
+                    }
                     strncpy(at.artist, t->artist, sizeof(at.artist)-1);
                     strncpy(at.album, t->album, sizeof(at.album)-1);
                     strncpy(at.cover_url, t->cover_url, sizeof(at.cover_url)-1);
@@ -441,7 +506,7 @@ void ui_search_handle_input(InputAction act) {
             case ACT_CROSS: {
                 if (s_drilldown_tracks) {
                     if (s_count > 0 && s_cursor >= 0 && s_cursor < s_count) {
-                        play_track(&s_results[s_cursor]);
+                        play_track_at_index(s_cursor);
                     }
                     break;
                 }
@@ -469,7 +534,7 @@ void ui_search_handle_input(InputAction act) {
                     }
                 } else {
                     if (s_count > 0 && s_cursor >= 0 && s_cursor < s_count) {
-                        play_track(&s_results[s_cursor]);
+                        play_track_at_index(s_cursor);
                     }
                 }
                 break;

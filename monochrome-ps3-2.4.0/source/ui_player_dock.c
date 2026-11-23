@@ -80,60 +80,69 @@ void player_dock_render(int sw, int sh, long frame)
         if (max_line1_w < 100) max_line1_w = 100;
         gfx_draw_text_clipped(info_x, info_y, (float)max_line1_w, line1, 18.0f, TH_TEXT);
 
-        /* Tiempo MM:SS en violeta */
-        int cur_sec = (int)(g_app_state.current_track.duration_sec *
-                           audio_engine_get_progress());
-        char time_str[16];
-        snprintf(time_str, sizeof(time_str), "%d:%02d", cur_sec / 60, cur_sec % 60);
-        int time_w = (int)strlen(time_str) * 12;
-        gfx_draw_text(virt_w - 260 + (120 - time_w) / 2, info_y + 4, time_str, 12.0f, TH_ACCENT);
+        if (audio_engine_has_error()) {
+            info_y += 24;
+            const char *msg = audio_engine_get_status_message();
+            char err_str[160];
+            snprintf(err_str, sizeof(err_str), "[!] %s", msg);
+            gfx_draw_text(info_x, info_y + 4, err_str, 14.0f, 0xFFFF4444);
+            info_y += 24;
+        } else {
+            /* Tiempo MM:SS en violeta */
+            int cur_sec = (int)(g_app_state.current_track.duration_sec *
+                               audio_engine_get_progress());
+            char time_str[16];
+            snprintf(time_str, sizeof(time_str), "%d:%02d", cur_sec / 60, cur_sec % 60);
+            int time_w = (int)strlen(time_str) * 12;
+            gfx_draw_text(virt_w - 260 + (120 - time_w) / 2, info_y + 4, time_str, 12.0f, TH_ACCENT);
 
-        info_y += 24;
+            info_y += 24;
 
-        /* Barra de progreso con forma de onda 1-bit */
-        int wave_x = info_x;
-        int wave_y = info_y + 6;
-        int wave_w = max_info_w > 200 ? max_info_w : 200;
-        int wave_h = 14;
+            /* Barra de progreso con forma de onda 1-bit */
+            int wave_x = info_x;
+            int wave_y = info_y + 6;
+            int wave_w = max_info_w > 200 ? max_info_w : 200;
+            int wave_h = 14;
 
-        /* Fondo de la onda */
-        gfx_draw_rect(wave_x, wave_y, wave_w, wave_h, TH_BORDER);
+            /* Fondo de la onda */
+            gfx_draw_rect(wave_x, wave_y, wave_w, wave_h, TH_BORDER);
 
-        /* Barras verticales reactivas alimentadas por audio_engine_get_vis() */
-        float vis_bands[VIS_BANDS];
-        audio_engine_get_vis(vis_bands, VIS_BANDS);
+            /* Barras verticales reactivas alimentadas por audio_engine_get_vis() */
+            float vis_bands[VIS_BANDS];
+            audio_engine_get_vis(vis_bands, VIS_BANDS);
 
-        int bar_count = 16;
-        int bar_w = 4;
-        int bar_gap = 4;
-        int total_bar_w = bar_count * bar_w + (bar_count - 1) * bar_gap;
+            int bar_count = 16;
+            int bar_w = 4;
+            int bar_gap = 4;
+            int total_bar_w = bar_count * bar_w + (bar_count - 1) * bar_gap;
 
-        float progress = audio_engine_get_progress();
-        for (int b = 0; b < bar_count; b++) {
-            float band = vis_bands[b % VIS_BANDS];
-            int bar_h = (int)(band * (float)wave_h * 0.8f) + 2;
-            if (bar_h > wave_h) bar_h = wave_h;
-            if (bar_h < 2) bar_h = 2;
+            float progress = audio_engine_get_progress();
+            for (int b = 0; b < bar_count; b++) {
+                float band = vis_bands[b % VIS_BANDS];
+                int bar_h = (int)(band * (float)wave_h * 0.8f) + 2;
+                if (bar_h > wave_h) bar_h = wave_h;
+                if (bar_h < 2) bar_h = 2;
 
-            /* Solo rellenar hasta el progreso actual (onda reactiva) */
-            float fill_x = progress * (float)total_bar_w;
-            float bar_left = (float)(b * (bar_w + bar_gap));
-            float bar_right = bar_left + (float)bar_w;
+                /* Solo rellenar hasta el progreso actual (onda reactiva) */
+                float fill_x = progress * (float)total_bar_w;
+                float bar_left = (float)(b * (bar_w + bar_gap));
+                float bar_right = bar_left + (float)bar_w;
 
-            uint32_t bar_color;
-            if (bar_right <= fill_x) {
-                bar_color = TH_ACCENT;   /* ya reproducido: violeta */
-            } else if (bar_left < fill_x) {
-                bar_color = TH_ACCENT_LT; /* parcialmente: violeta claro */
-            } else {
-                bar_color = TH_TEXT_DIM; /* pendiente: gris oscuro */
+                uint32_t bar_color;
+                if (bar_right <= fill_x) {
+                    bar_color = TH_ACCENT;   /* ya reproducido: violeta */
+                } else if (bar_left < fill_x) {
+                    bar_color = TH_ACCENT_LT; /* parcialmente: violeta claro */
+                } else {
+                    bar_color = TH_TEXT_DIM; /* pendiente: gris oscuro */
+                }
+
+                gfx_draw_rect(wave_x + (int)bar_left, wave_y + (wave_h - bar_h),
+                              bar_w, bar_h, bar_color);
             }
 
-            gfx_draw_rect(wave_x + (int)bar_left, wave_y + (wave_h - bar_h),
-                          bar_w, bar_h, bar_color);
+            info_y += wave_h + 10;
         }
-
-        info_y += wave_h + 10;
     } else {
         gfx_draw_text(info_x, info_y + 8, "Ningun tema seleccionado", 16.0f, TH_TEXT);
         gfx_draw_text(info_x, info_y + 38, "Pulsa X en la lista para reproducir", 13.0f, TH_TEXT_DIM);

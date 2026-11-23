@@ -147,6 +147,7 @@ static float s_vis_bands[VIS_BANDS];
 /* Live status message for UI */
 static char s_status_message[128] = "Listo";
 static volatile bool s_has_error = false;
+static volatile int  s_last_error_code = 0;
 
 const char *audio_engine_get_status_message(void)
 {
@@ -156,6 +157,17 @@ const char *audio_engine_get_status_message(void)
 bool audio_engine_has_error(void)
 {
     return s_has_error;
+}
+
+int audio_engine_get_last_error(void)
+{
+    return s_last_error_code;
+}
+
+void audio_engine_clear_error(void)
+{
+    s_has_error = false;
+    s_last_error_code = 0;
 }
 
 /* ── Lock-Free Ring Buffer ── */
@@ -469,6 +481,13 @@ static int stream_connect_http(const char *track_id, uint32_t seq, size_t offset
             continue;
         }
 
+        if (http_code == 404 || http_code == 403 || http_code == 410) {
+            stage6_log("[STREAM HTTP] Error permanente HTTP %d para pista %s (no reintentable)", http_code, track_id);
+            s_last_error_code = http_code;
+            close(sock);
+            return -http_code;
+        }
+
         if (http_code != 200 && http_code != 206) {
             stage6_log("[ERROR] HTTP codigo %d no esperado", http_code);
             close(sock);
@@ -600,9 +619,21 @@ static void stream_download_worker_func(void *arg)
         int sock = stream_connect_http(s_stream_ctx.track_id, current_seq, 0, &content_length, content_type, sizeof(content_type));
         if (sock < 0) {
             if (current_seq == s_track_sequence) {
-                stage6_log("[STREAM ERROR] No se pudo conectar a la API para la pista %s", s_stream_ctx.track_id);
-                snprintf(s_status_message, sizeof(s_status_message), "Error de conexion");
+                stage6_log("[STREAM ERROR] No se pudo conectar a la API para la pista %s (ret: %d)", s_stream_ctx.track_id, sock);
+                if (sock == -404) {
+                    snprintf(s_status_message, sizeof(s_status_message), "Pista no disponible (404)");
+                    s_last_error_code = 404;
+                } else if (sock == -403) {
+                    snprintf(s_status_message, sizeof(s_status_message), "Acceso restringido (403)");
+                    s_last_error_code = 403;
+                } else {
+                    snprintf(s_status_message, sizeof(s_status_message), "Error de conexion");
+                    s_last_error_code = 500;
+                }
                 s_has_error = true;
+                s_is_playing = false;
+                s_stream_ctx.abort = true;
+                __asm__ volatile("lwsync" ::: "memory");
             }
             continue;
         }
@@ -752,6 +783,9 @@ static void stream_decode_worker_func(void *arg)
             if (s_stream_ctx.download_complete || s_stream_ctx.received >= PREBUFFER_THRESHOLD) {
                 break;
             }
+            if (s_stream_ctx.abort || s_has_error) {
+                break;
+            }
             if (get_time_usec() - wait_start > 25 * 1000000ULL) {
                 /* Si tras 25s ya tenemos al menos 256 KB con cabecera valida, arrancar */
                 if (s_stream_ctx.received >= 256 * 1024 && memcmp(s_stream_ctx.data, "fLaC", 4) == 0) {
@@ -766,6 +800,12 @@ static void stream_decode_worker_func(void *arg)
         }
 
         if (current_seq != s_track_sequence || !s_engine_running) continue;
+
+        if (s_stream_ctx.abort || s_has_error) {
+            stage6_log("[DECODE WORKER] Sesion abortada antes de iniciar decodificacion");
+            s_is_playing = false;
+            continue;
+        }
 
         if (s_stream_ctx.received < 4 || memcmp(s_stream_ctx.data, "fLaC", 4) != 0) {
             stage6_log("[DECODE ERROR] Datos recibidos invalidos (magic no es fLaC)");
@@ -1049,6 +1089,10 @@ void audio_engine_play_track(const char *track_id, const char *title)
         close(s_stream_ctx.sock);
         s_stream_ctx.sock = -1;
     }
+
+    s_has_error = false;
+    s_last_error_code = 0;
+    snprintf(s_status_message, sizeof(s_status_message), "Conectando...");
 
     strncpy(s_pending_track_id, track_id, sizeof(s_pending_track_id) - 1);
     strncpy(s_pending_track_title, title ? title : "", sizeof(s_pending_track_title) - 1);
