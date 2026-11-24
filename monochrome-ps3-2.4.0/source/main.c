@@ -45,7 +45,12 @@ int main(int argc, const char *argv[])
         int ox, oy;
         float sc;
         platform_get_screen_adjust(&ox, &oy, &sc);
+        g_app_state.overscan_x = ox;
+        g_app_state.overscan_y = oy;
+        g_app_state.overscan_scale = sc;
         platform_set_screen_adjust(ox, oy, sc);
+    } else {
+        platform_set_screen_adjust(g_app_state.overscan_x, g_app_state.overscan_y, g_app_state.overscan_scale);
     }
 
     cover_art_init();

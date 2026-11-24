@@ -71,7 +71,7 @@ void app_state_init(void)
     g_app_state.search_error    = false;
 
     /* Configuración por defecto */
-    g_app_state.cover_mode       = COVER_MODE_1BIT_DITHER;
+    g_app_state.cover_mode       = COVER_MODE_ORIGINAL;
     g_app_state.overscan_x       = 0;
     g_app_state.overscan_y       = 0;
     g_app_state.overscan_scale   = 1.0f;
@@ -98,7 +98,7 @@ bool app_state_load_config(void)
             continue;
 
         if (strcmp(key, "cover_mode") == 0) {
-            g_app_state.cover_mode = (strcmp(val, "1") == 0) ? COVER_MODE_ORIGINAL : COVER_MODE_1BIT_DITHER;
+            g_app_state.cover_mode = COVER_MODE_ORIGINAL;
         } else if (strcmp(key, "overscan_x") == 0) {
             g_app_state.overscan_x = atoi(val);
         } else if (strcmp(key, "overscan_y") == 0) {

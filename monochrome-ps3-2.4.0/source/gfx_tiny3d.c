@@ -187,11 +187,8 @@ int gfx_init(void)
         }
     }
 
-    /* Escala virtual 1920x1080 -> salida real */
-    s_scale_x = (float)s_screen_w / 1920.0f;
-    s_scale_y = (float)s_screen_h / 1080.0f;
-    s_offset_x = (float)s_overscan_x;
-    s_offset_y = (float)s_overscan_y;
+    /* Escala virtual 1920x1080 -> salida real centrada con overscan */
+    gfx_set_overscan(s_overscan_x, s_overscan_y, s_overscan_scale);
 
     flip(s_context, 1);
     waitFlip();
@@ -766,11 +763,13 @@ int gfx_get_height(void) { return s_screen_h; }
 
 void gfx_set_overscan(int offset_x, int offset_y, float scale)
 {
+    if (scale < 0.70f) scale = 0.70f;
+    if (scale > 1.00f) scale = 1.00f;
     s_overscan_x = offset_x;
     s_overscan_y = offset_y;
     s_overscan_scale = scale;
-    s_offset_x = (float)offset_x;
-    s_offset_y = (float)offset_y;
     s_scale_x = scale * ((float)s_screen_w / 1920.0f);
     s_scale_y = scale * ((float)s_screen_h / 1080.0f);
+    s_offset_x = (float)offset_x + ((float)s_screen_w * (1.0f - scale) * 0.5f);
+    s_offset_y = (float)offset_y + ((float)s_screen_h * (1.0f - scale) * 0.5f);
 }

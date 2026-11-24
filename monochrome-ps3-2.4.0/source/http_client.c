@@ -83,6 +83,88 @@ void http_net_shutdown(void)
     s_net_inited = false;
 }
 
+/* Helper para extraer todos los artistas y colaboradores concatenados con ", " */
+static void parse_artists_to_string(const cJSON *item, const char *fallback, char *out_str, size_t out_max)
+{
+    if (!out_str || out_max == 0) return;
+    out_str[0] = '\0';
+    if (!item) {
+        if (fallback) {
+            strncpy(out_str, fallback, out_max - 1);
+            out_str[out_max - 1] = '\0';
+        }
+        return;
+    }
+
+    size_t written = 0;
+
+    /* 1. Probar array "artistNames" (e.g. ["Artista 1", "Artista 2", ...]) */
+    cJSON *jnames = cJSON_GetObjectItemCaseSensitive(item, "artistNames");
+    if (jnames && cJSON_IsArray(jnames) && cJSON_GetArraySize(jnames) > 0) {
+        int count = cJSON_GetArraySize(jnames);
+        for (int i = 0; i < count; i++) {
+            cJSON *elem = cJSON_GetArrayItem(jnames, i);
+            const char *name = NULL;
+            if (elem && cJSON_IsString(elem) && elem->valuestring && elem->valuestring[0]) {
+                name = elem->valuestring;
+            } else if (elem && cJSON_IsObject(elem)) {
+                cJSON *subname = cJSON_GetObjectItemCaseSensitive(elem, "name");
+                if (subname && cJSON_IsString(subname)) name = subname->valuestring;
+            }
+            if (name && name[0]) {
+                if (written > 0 && written + 2 < out_max) {
+                    written += snprintf(out_str + written, out_max - written, ", ");
+                }
+                if (written < out_max) {
+                    written += snprintf(out_str + written, out_max - written, "%s", name);
+                }
+            }
+        }
+    }
+
+    /* 2. Si no hubo artistNames, probar array "artists" (e.g. [{"name": "..."}, ...]) */
+    if (out_str[0] == '\0') {
+        cJSON *jartists = cJSON_GetObjectItemCaseSensitive(item, "artists");
+        if (jartists && cJSON_IsArray(jartists) && cJSON_GetArraySize(jartists) > 0) {
+            int count = cJSON_GetArraySize(jartists);
+            for (int i = 0; i < count; i++) {
+                cJSON *elem = cJSON_GetArrayItem(jartists, i);
+                const char *name = NULL;
+                if (elem && cJSON_IsObject(elem)) {
+                    cJSON *subname = cJSON_GetObjectItemCaseSensitive(elem, "name");
+                    if (subname && cJSON_IsString(subname)) name = subname->valuestring;
+                } else if (elem && cJSON_IsString(elem)) {
+                    name = elem->valuestring;
+                }
+                if (name && name[0]) {
+                    if (written > 0 && written + 2 < out_max) {
+                        written += snprintf(out_str + written, out_max - written, ", ");
+                    }
+                    if (written < out_max) {
+                        written += snprintf(out_str + written, out_max - written, "%s", name);
+                    }
+                }
+            }
+        }
+    }
+
+    /* 3. Probar campos de string único: "artist", "artistName" */
+    if (out_str[0] == '\0') {
+        cJSON *ja = cJSON_GetObjectItemCaseSensitive(item, "artist");
+        if (!ja) ja = cJSON_GetObjectItemCaseSensitive(item, "artistName");
+        if (ja && cJSON_IsString(ja) && ja->valuestring && ja->valuestring[0]) {
+            strncpy(out_str, ja->valuestring, out_max - 1);
+            out_str[out_max - 1] = '\0';
+        }
+    }
+
+    /* 4. Fallback si no se encontró nada */
+    if (out_str[0] == '\0' && fallback && fallback[0]) {
+        strncpy(out_str, fallback, out_max - 1);
+        out_str[out_max - 1] = '\0';
+    }
+}
+
 /* ── Synchronous HTTP Search ── */
 int http_search_sync(const char *query, TrackMetadata *out_tracks, int max_tracks, int *out_http_code, int *out_errno)
 {
@@ -258,11 +340,8 @@ int http_search_sync(const char *query, TrackMetadata *out_tracks, int max_track
             cJSON *jtitle = cJSON_GetObjectItemCaseSensitive(item, "title");
             if (jtitle && cJSON_IsString(jtitle)) strncpy(alb->title, jtitle->valuestring, sizeof(alb->title) - 1);
 
-            cJSON *jnames = cJSON_GetObjectItemCaseSensitive(item, "artistNames");
-            if (jnames && cJSON_IsArray(jnames) && cJSON_GetArraySize(jnames) > 0) {
-                cJSON *fa = cJSON_GetArrayItem(jnames, 0);
-                if (fa && cJSON_IsString(fa)) strncpy(alb->artist, fa->valuestring, sizeof(alb->artist) - 1);
-            }
+            /* Artist */
+            parse_artists_to_string(item, NULL, alb->artist, sizeof(alb->artist));
 
             cJSON *jart = cJSON_GetObjectItemCaseSensitive(item, "artwork");
             if (jart && cJSON_IsString(jart)) strncpy(alb->cover_url, jart->valuestring, sizeof(alb->cover_url) - 1);
@@ -365,19 +444,8 @@ int http_search_sync(const char *query, TrackMetadata *out_tracks, int max_track
                 strncpy(t->title, jtitle->valuestring, sizeof(t->title) - 1);
             }
 
-            /* Artist */
-            cJSON *jnames = cJSON_GetObjectItemCaseSensitive(item, "artistNames");
-            if (jnames && cJSON_IsArray(jnames) && cJSON_GetArraySize(jnames) > 0) {
-                cJSON *first_a = cJSON_GetArrayItem(jnames, 0);
-                if (first_a && cJSON_IsString(first_a)) {
-                    strncpy(t->artist, first_a->valuestring, sizeof(t->artist) - 1);
-                }
-            } else {
-                cJSON *ja = cJSON_GetObjectItemCaseSensitive(item, "artist");
-                if (ja && cJSON_IsString(ja)) {
-                    strncpy(t->artist, ja->valuestring, sizeof(t->artist) - 1);
-                }
-            }
+            /* Artist (todos los colaboradores) */
+            parse_artists_to_string(item, NULL, t->artist, sizeof(t->artist));
 
             /* Album from releaseId match */
             cJSON *jrel_id = cJSON_GetObjectItemCaseSensitive(item, "releaseId");
@@ -595,6 +663,9 @@ int http_fetch_album_tracks_sync(const char *release_id, const char *album_title
         strncpy(default_album_title, album_title, sizeof(default_album_title) - 1);
     }
 
+    char default_album_artist[128] = "";
+    parse_artists_to_string(root, NULL, default_album_artist, sizeof(default_album_artist));
+
     cJSON *j_tracks = cJSON_GetObjectItemCaseSensitive(root, "tracks");
     int parsed_count = 0;
     if (j_tracks && cJSON_IsArray(j_tracks)) {
@@ -612,12 +683,8 @@ int http_fetch_album_tracks_sync(const char *release_id, const char *album_title
             cJSON *jtitle = cJSON_GetObjectItemCaseSensitive(item, "title");
             if (jtitle && cJSON_IsString(jtitle)) strncpy(t->title, jtitle->valuestring, sizeof(t->title) - 1);
 
-            cJSON *jartists = cJSON_GetObjectItemCaseSensitive(item, "artists");
-            if (jartists && cJSON_IsArray(jartists) && cJSON_GetArraySize(jartists) > 0) {
-                cJSON *fa = cJSON_GetArrayItem(jartists, 0);
-                cJSON *faname = cJSON_GetObjectItemCaseSensitive(fa, "name");
-                if (faname && cJSON_IsString(faname)) strncpy(t->artist, faname->valuestring, sizeof(t->artist) - 1);
-            }
+            /* Artist (todos los colaboradores o default del album) */
+            parse_artists_to_string(item, default_album_artist, t->artist, sizeof(t->artist));
 
             strncpy(t->album, default_album_title, sizeof(t->album) - 1);
 
@@ -801,7 +868,8 @@ int http_fetch_artist_tracks_sync(const char *artist_id, const char *artist_name
             cJSON *jtitle = cJSON_GetObjectItemCaseSensitive(item, "title");
             if (jtitle && cJSON_IsString(jtitle)) strncpy(t->title, jtitle->valuestring, sizeof(t->title) - 1);
 
-            strncpy(t->artist, default_artist_name, sizeof(t->artist) - 1);
+            /* Artist (todos los colaboradores o default de la consulta) */
+            parse_artists_to_string(item, default_artist_name, t->artist, sizeof(t->artist));
             strncpy(t->album, "Top Tracks", sizeof(t->album) - 1);
 
             cJSON *jdur = cJSON_GetObjectItemCaseSensitive(item, "duration");

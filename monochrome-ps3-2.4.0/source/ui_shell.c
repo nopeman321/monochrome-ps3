@@ -249,8 +249,17 @@ void shell_handle_input(InputAction act)
         return;
     }
 
-    /* D-Pad Left desde borde izquierdo -> foco al Left Rail (excepto teclado de busqueda abierto) */
+    /* D-Pad Left desde borde izquierdo -> foco al Left Rail (excepto teclado de busqueda o ajustes) */
     if (act == ACT_LEFT && g_app_state.focus_zone == ZONE_MAIN_CONTENT &&
+        !(g_app_state.active_section == SEC_SEARCH && ui_search_is_keyboard_open()) &&
+        !(g_app_state.active_section == SEC_SETTINGS)) {
+        app_state_set_focus_zone(ZONE_LEFT_RAIL);
+        g_app_state.left_rail_expanded = true;
+        return;
+    }
+
+    /* Circulo desde Main Content -> volver al Left Rail */
+    if (act == ACT_CIRCLE && g_app_state.focus_zone == ZONE_MAIN_CONTENT &&
         !(g_app_state.active_section == SEC_SEARCH && ui_search_is_keyboard_open())) {
         app_state_set_focus_zone(ZONE_LEFT_RAIL);
         g_app_state.left_rail_expanded = true;

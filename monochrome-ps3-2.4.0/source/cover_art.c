@@ -42,14 +42,6 @@
 #define COVER_RESIZE_W    256
 #define COVER_RESIZE_H    256
 
-/* ── Bayer 4x4 matriz ordenada (0-15) ──────────────────────────── */
-static const uint8_t BAYER4[4][4] = {
-    { 0,  8,  2, 10},
-    {12,  4, 14,  6},
-    { 3, 11,  1,  9},
-    {15,  7, 13,  5}
-};
-
 /* ── Logging ───────────────────────────────────────────────────── */
 static void cover_log(const char *fmt, ...)
 {
@@ -70,14 +62,14 @@ static void cover_log(const char *fmt, ...)
 /* ── Estado global ─────────────────────────────────────────────── */
 static CoverCacheEntry s_cache[MAX_COVER_CACHE];
 static uint32_t s_access_clock = 0;
-static CoverArtMode s_cover_mode = COVER_MODE_1BIT_DITHER;
+static CoverArtMode s_cover_mode = COVER_MODE_ORIGINAL;
 
 static sys_ppu_thread_t s_cover_thread_id;
 static volatile bool s_cover_thread_running = false;
 static char s_pending_url[512] = "";
 static sys_mutex_t s_cover_mutex;
 static bool s_mutex_initialized = false;
-static CoverArtMode cover_art_mode_global = COVER_MODE_1BIT_DITHER;
+static CoverArtMode cover_art_mode_global = COVER_MODE_ORIGINAL;
 
 /* ── libjpeg error manager ─────────────────────────────────────── */
 struct custom_jpeg_error_mgr {
@@ -142,25 +134,6 @@ static void cache_free_entry(int idx)
     s_cache[idx].has_og = false;
     s_cache[idx].has_1bit = false;
     s_cache[idx].url[0] = '\0';
-}
-
-/* ── Bayer 4x4 1-bit dithering ─────────────────────────────────── */
-/* Convierte luminancia a blanco puro (#FFFFFF) o negro puro (#000000)
-   usando la matriz Bayer 4x4 ordenada escalada a 0-255. */
-static void apply_bayer4x4_1bit(uint8_t *rgba, int w, int h)
-{
-    for (int y = 0; y < h; y++) {
-        for (int x = 0; x < w; x++) {
-            uint8_t *p = &rgba[(y * w + x) * 4];
-            uint8_t r = p[0], g = p[1], b = p[2];
-            /* Luminancia Rec.601 */
-            uint8_t lum = (uint8_t)((r * 299 + g * 587 + b * 114) / 1000);
-            uint8_t thr = BAYER4[y & 3][x & 3];
-            thr = (uint8_t)((thr * 255) / 15);
-            uint8_t val = (lum > thr) ? 255 : 0;
-            p[0] = val; p[1] = val; p[2] = val;
-        }
-    }
 }
 
 /* ── Decodificador JPEG ────────────────────────────────────────── */
@@ -437,18 +410,6 @@ static void cover_art_worker(void *arg)
         return;
     }
 
-    /* Preparar versión 1-bit (Bayer dither) */
-    uint8_t *rgba_1bit = (uint8_t *)memalign(16,
-        (size_t)COVER_RESIZE_W * (size_t)COVER_RESIZE_H * 4u);
-    if (!rgba_1bit) {
-        free(resized);
-        s_cover_thread_running = false;
-        sysThreadExit(0);
-        return;
-    }
-    memcpy(rgba_1bit, resized, (size_t)COVER_RESIZE_W * (size_t)COVER_RESIZE_H * 4u);
-    apply_bayer4x4_1bit(rgba_1bit, COVER_RESIZE_W, COVER_RESIZE_H);
-
     /* Guardar en caché (slot LRU o existente) */
     if (s_mutex_initialized) sysMutexLock(s_cover_mutex, 0);
 
@@ -456,7 +417,7 @@ static void cover_art_worker(void *arg)
     if (slot < 0) slot = cache_lru_victim();
     if (slot < 0) {
         if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
-        free(resized); free(rgba_1bit);
+        free(resized);
         s_cover_thread_running = false;
         sysThreadExit(0);
         return;
@@ -469,26 +430,18 @@ static void cover_art_worker(void *arg)
     s_cache[slot].height = COVER_RESIZE_H;
     s_cache[slot].last_access = ++s_access_clock;
 
-    /* Subir versión OG */
+    /* Subir versión original en color */
     if (upload_texture(&s_cache[slot].tex_og, resized,
                        COVER_RESIZE_W, COVER_RESIZE_H)) {
         s_cache[slot].has_og = true;
         cover_log("[COVER OK] Textura OG subida: %s", url);
     }
-
-    /* Subir versión 1-bit */
-    if (upload_texture(&s_cache[slot].tex_1bit, rgba_1bit,
-                       COVER_RESIZE_W, COVER_RESIZE_H)) {
-        s_cache[slot].has_1bit = true;
-        cover_log("[COVER OK] Textura 1-bit subida: %s", url);
-    }
-
-    s_cache[slot].ready = s_cache[slot].has_og || s_cache[slot].has_1bit;
+    s_cache[slot].has_1bit = false;
+    s_cache[slot].ready = s_cache[slot].has_og;
 
     if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
 
     free(resized);
-    free(rgba_1bit);
 
     cover_log("[COVER READY] Caratula cacheada: %s (slot %d)", url, slot);
     s_cover_thread_running = false;
@@ -507,10 +460,9 @@ void cover_art_init(void)
     }
     memset(s_cache, 0, sizeof(s_cache));
     s_access_clock = 0;
-    s_cover_mode = COVER_MODE_1BIT_DITHER;
-    cover_log("[COVER] Caché LRU inicializado (%d slots, modo %s)",
-              MAX_COVER_CACHE,
-              s_cover_mode == COVER_MODE_1BIT_DITHER ? "1BIT" : "OG");
+    s_cover_mode = COVER_MODE_ORIGINAL;
+    cover_log("[COVER] Caché LRU inicializado (%d slots, modo ORIGINAL)",
+              MAX_COVER_CACHE);
 }
 
 void cover_art_shutdown(void)
@@ -520,21 +472,14 @@ void cover_art_shutdown(void)
     cover_log("[COVER] Caché LRU detenido");
 }
 
-CoverArtMode cover_art_get_mode(void) { return s_cover_mode; }
+CoverArtMode cover_art_get_mode(void) { return COVER_MODE_ORIGINAL; }
 
 void cover_art_set_mode(CoverArtMode mode)
 {
+    (void)mode;
     if (s_mutex_initialized) sysMutexLock(s_cover_mutex, 0);
-    s_cover_mode = mode;
-    /* Invalidar texturas: se regenerarán al acceder según el nuevo modo */
-    for (int i = 0; i < MAX_COVER_CACHE; i++) {
-        if (s_cache[i].ready) {
-            s_cache[i].last_access = ++s_access_clock;
-        }
-    }
+    s_cover_mode = COVER_MODE_ORIGINAL;
     if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
-    cover_log("[COVER] Modo cambiado a %s",
-              mode == COVER_MODE_1BIT_DITHER ? "1BIT DITHER" : "OG");
 }
 
 bool cover_art_load(const char *url, CoverArtMode mode)
@@ -586,27 +531,9 @@ bool cover_art_get_texture(const char *url, GfxTexture *out)
 
     if (s_mutex_initialized) sysMutexLock(s_cover_mutex, 0);
     int slot = cache_find_slot(url);
-    if (slot >= 0 && s_cache[slot].ready) {
+    if (slot >= 0 && s_cache[slot].ready && s_cache[slot].has_og) {
         s_cache[slot].last_access = ++s_access_clock;
-        if (s_cover_mode == COVER_MODE_1BIT_DITHER && s_cache[slot].has_1bit) {
-            *out = s_cache[slot].tex_1bit;
-            if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
-            return true;
-        }
-        if (s_cover_mode == COVER_MODE_ORIGINAL && s_cache[slot].has_og) {
-            *out = s_cache[slot].tex_og;
-            if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
-            return true;
-        }
-        /* Fallback: usar la que esté disponible */
-        if (s_cache[slot].has_og) {
-            *out = s_cache[slot].tex_og;
-        } else if (s_cache[slot].has_1bit) {
-            *out = s_cache[slot].tex_1bit;
-        } else {
-            if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
-            return false;
-        }
+        *out = s_cache[slot].tex_og;
         if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
         return true;
     }
