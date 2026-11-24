@@ -65,24 +65,45 @@ static void render_hero(int x, int y, int w, int h, AppTrack *track) {
     /* Badges tecnicos */
     int bx = cx + csize + 28;
     int by = cy + 126;
-    gfx_draw_rect(bx, by, 168, 26, TH_SURFACE_2);
-    gfx_draw_rect_outline(bx, by, 168, 26, TH_BORDER, 1.0f);
-    gfx_draw_text(bx + 10, by + 6, "FLAC 48kHz / 24-bit", 11.0f, TH_ACCENT_LT);
 
-    gfx_draw_rect(bx + 180, by, 100, 26, TH_SURFACE_2);
-    gfx_draw_rect_outline(bx + 180, by, 100, 26, TH_BORDER, 1.0f);
-    gfx_draw_text(bx + 190, by + 6, "BIT-PERFECT", 11.0f, TH_TEXT_DIM);
+    int b1_w = 256;
+    gfx_draw_rect(bx, by, b1_w, 26, TH_SURFACE_2);
+    gfx_draw_rect_outline(bx, by, b1_w, 26, TH_BORDER, 1.0f);
+    gfx_draw_text(bx + 14, by + 6, "FLAC 48kHz / 24-bit", 12.0f, TH_ACCENT_LT);
 
-    /* Mini barras reactivas en el Hero */
-    if (audio_engine_is_playing()) {
-        float raw_vis[16] = {0.0f};
+    int b2_x = bx + b1_w + 16;
+    int b2_w = 160;
+    gfx_draw_rect(b2_x, by, b2_w, 26, TH_SURFACE_2);
+    gfx_draw_rect_outline(b2_x, by, b2_w, 26, TH_BORDER, 1.0f);
+    gfx_draw_text(b2_x + 14, by + 6, "BIT-PERFECT", 12.0f, TH_TEXT_DIM);
+
+    /* Mini barras reactivas en el Hero con contenedor dedicado */
+    int spec_box_x = b2_x + b2_w + 16;
+    int spec_box_w = 120;
+    gfx_draw_rect(spec_box_x, by, spec_box_w, 26, TH_SURFACE_2);
+    gfx_draw_rect_outline(spec_box_x, by, spec_box_w, 26, TH_BORDER, 1.0f);
+
+    bool is_playing = audio_engine_is_playing();
+    float raw_vis[16] = {0.0f};
+    if (is_playing) {
         audio_engine_get_vis(raw_vis, 16);
-        int spec_x = bx + 276;
-        int spec_y = by + 2;
-        for (int b = 0; b < 16; b++) {
-            int bar_h = (int)(raw_vis[b] * 20.0f) + 2;
-            if (bar_h > 20) bar_h = 20;
-            gfx_draw_rect(spec_x + b * 6, spec_y + (20 - bar_h), 4, bar_h, TH_ACCENT);
+    }
+
+    int spec_x = spec_box_x + 13;
+    int spec_y = by + 4;
+    for (int b = 0; b < 16; b++) {
+        float band = raw_vis[b];
+        if (band > 1.0f) band = 1.0f;
+        if (band < 0.0f) band = 0.0f;
+
+        int bar_h = is_playing ? ((int)(band * 18.0f) + 2) : 2;
+        if (bar_h > 18) bar_h = 18;
+        if (bar_h < 2) bar_h = 2;
+
+        uint32_t bar_col = is_playing ? TH_ACCENT : TH_TEXT_DIM;
+        gfx_draw_rect(spec_x + b * 6, spec_y + (18 - bar_h), 4, bar_h, bar_col);
+        if (is_playing && bar_h > 4) {
+            gfx_draw_rect(spec_x + b * 6, spec_y + (18 - bar_h), 4, 2, TH_ACCENT_LT);
         }
     }
 }
