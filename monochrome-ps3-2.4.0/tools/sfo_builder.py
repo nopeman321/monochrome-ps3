@@ -91,7 +91,7 @@ def build_monochrome_sfo(output_path):
     entries = {
         'APP_VER':        (FMT_STRING, '01.00'),
         'BOOTABLE':       (FMT_UINT32, 1),
-        'CATEGORY':       (FMT_STRING, 'HG'), # 'HG' = PS3 Harddisk Application
+        'CATEGORY':       (FMT_STRING, 'AM'), # 'AM' = PS3 Music / Audio Application (XMB Music)
         'PARENTAL_LEVEL': (FMT_UINT32, 0),
         'PS3_SYSTEM_VER': (FMT_STRING, '04.21'),
         'RESOLUTION':     (FMT_UINT32, 63),   # 480p + 576p + 720p + 1080i + 1080p

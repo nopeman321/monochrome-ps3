@@ -1,5 +1,40 @@
 # Monochrome PS3 — Release Notes
 
+## v2.4.11 — Red PS3 Blindada, Pestañas Activas y Categoría Música en XMB
+
+**Title ID:** `MONO00024` · **Categoría XMB:** Música (`AM`) · **Formato:** Free NPDRM CEX PKG (`monochrome_ps3.pkg`) · **Destino:** PS3 (PS3HEN / CFW) y RPCS3
+
+---
+
+### Parte 1 · Novedades para Usuarios
+
+- **Ahora en la columna Música del XMB (`AM`):** Monochrome PS3 pasa de la columna *Juego* a aparecer directamente en **Música** junto a tu biblioteca multimedia en PS3. *(Si actualizas sobre una instalación anterior en Juego, reinicia el XMB o reinstala el `.pkg` para que el menú mueva el icono.)*
+- **Conexión en PS3 real corregida:** se resolvió el fallo que impedía conectar desde consola física tras la actualización de red; la búsqueda inicial, las carátulas y el catálogo cargan automáticamente al obtener IP.
+- **Pestañas `L1 / R1` funcionando en toda la app:** ya puedes alternar entre **ALL**, **ALBUMS**, **ARTISTS**, **PLAYLISTS** y **TRACKS** desde *Search*, *Home* y *Library*, abrir álbumes/artistas/playlists con `✕` y explorar sus pistas.
+- **Estabilidad de reproducción continua:** reproducción FLAC más estable sin pausas prematuras, con soporte para pistas Hi-Res y gestión automática de caché para no llenar el disco de la consola.
+- **Nueva galería Tiny3D v3:** capturas actualizadas tomadas sobre la interfaz actual en `README.md`.
+
+---
+
+### Parte 2 · Detalles Técnicos de la Release (`v2.4.9` → `v2.4.11`)
+
+1. **Correcciones críticas de red en PSL1GHT (`net_hal.c`, `http_client.c`):**
+   - Reemplazo de `memset` sobre `sys_mutex_t` por `sysMutexAttrInitialize` en `init_mutex()` para evitar fallos de inicialización de primitivas LV2 en hardware real.
+   - Sustitución de `select()` / `FD_SET` por `poll()` (`<net/poll.h>`) debido a que PSL1GHT asigna descriptores con `SOCKET_FD_MASK = 0x40000000`, evitando errores/corrupción fuera de rango en `fd_set`.
+   - Corrección de lectura de errores (`errno` priorizado sobre `net_errno`) y registro explícito de transiciones de estado en `NetCtl` y cliente HTTP.
+   - Hardening completo previo (`v2.4.9`): capa `net_hal` con caché DNS (TTL 60 s), worker `mono_search` con `sysCond`, `cJSON` acotado a `CJSON_MAX_DEPTH = 64`, redirecciones acotadas y logger rotativo en `/dev_hdd0/tmp/mono_stage6.log`.
+
+2. **Enrutamiento de pestañas y sincronización de catálogo (`ui_v3.c`, `ui_search.c`, `ui_home.c`, `ui_library.c`, `app_state.c`):**
+   - `ui_handle_input()` en `ui_v3.c` ahora evalúa `visualizer_fullscreen` y `right_drawer_open` antes del bloque de `SEC_SEARCH`, y permite que `ACT_L1` / `ACT_R1` alcancen `shell_handle_input()`.
+   - `ui_search_update()` sincroniza `artists` y `playlists` además de `tracks` y `albums` hacia `g_app_state`.
+   - Nueva función compartida `app_state_get_tab_items()` consumida por `ui_home` y `ui_library`, junto con helpers `ui_search_open_album()`, `ui_search_open_artist()` y `ui_search_open_playlist()` para drill-down seguro sin intentar reproducir IDs no reproducibles como audio.
+
+3. **Audio Engine, RSX y XMB Packaging (`audio_engine.c`, `cover_art.c`, `rsxutil.h`, `sfo.xml`, `Makefile`):**
+   - `PREBUFFER_THRESHOLD` de 2 MB, reanudación HTTP `Range` acotada, downsampling automático de flujos Hi-Res, caché en `/dev_hdd0/tmp/monochrome/cache/` limitada a `25` archivos / `512 MB`, `HOST_SIZE = 8 MB` en RSX y optimización `-O2`.
+   - `CATEGORY` cambiado a `AM` en `sfo.xml` y `tools/sfo_builder.py`, enlazando explícitamente `SFOXML := $(CURDIR)/sfo.xml` en `Makefile` (corrigiendo el fallback previo a `$(PS3DEV)/bin/sfo.xml`).
+
+---
+
 ## 🚀 v2.4.0 — Actualización Oficial de Estabilidad y Navegación
 
 **Title ID**: `MONO00024`  

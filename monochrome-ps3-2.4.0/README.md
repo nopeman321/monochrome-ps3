@@ -1,92 +1,120 @@
-# Monochrome PS3 — Technical Specification (v2.4.0)
+# Monochrome PS3
 
 <p align="center">
-  <img src="docs/banner.png" alt="Monochrome PS3 Splash Screen Banner" width="100%">
+  <img src="docs/banner.png" alt="Monochrome PS3 Tiny3D UI Banner" width="100%">
 </p>
 
-PlayStation 3 native music streaming engine built with the **PSL1GHT v2** open-source toolchain for the Cell Broadband Engine and RSX Reality Synthesizer.
+<p align="center">
+  <strong>Title ID:</strong> <code>MONO00024</code> &nbsp;|&nbsp;
+  <strong>Categoría XMB:</strong> Música (<code>AM</code>) &nbsp;|&nbsp;
+  <strong>Versión:</strong> <code>v2.4.11</code> &nbsp;|&nbsp;
+  <strong>Plataforma:</strong> PlayStation 3 (CFW / PS3HEN) &amp; RPCS3
+</p>
+
+**Monochrome PS3** es un reproductor nativo de música en streaming sin pérdida (*FLAC lossless*) diseñado desde cero para PlayStation 3, con interfaz acelerada por hardware (RSX / Tiny3D) y control completo desde el DualShock 3.
 
 ---
 
-## ⚙️ Especificaciones Técnicas de la Arquitectura
+# Parte 1 · Guía para Usuarios
 
-### 1. Subsistema de Audio (GameOS Audio DMA)
-- **Modo de Salida**: 2 canales estéreo Float32 LPCM nativos a 48.000 Hz.
-- **Hardware DMA Synchronization**: Manejo de eventos hardware mediante `audioCreateNotifyEventQueue` + `audioSetNotifyEventQueue` y polling con `sysEventQueueReceive` (timeout 25 ms).
-- **Consumo de Hardware**: 256 samples por bloque (5.33 ms por interrupción DMA) escritos directamente en el offset del bloque destino (`dest = audioDataStart + write_block * blockSize`).
-- **Prioridad de Hilos LV2**:
-  - Hilo Consumidor DMA (`mono_hw`): Prioridad de tiempo real **100** (64 KB stack), asegurando 0 underruns de hardware.
-  - Hilo de Pipeline / Decodificador (`mono_stream`): Prioridad cooperativa **1000** (128 KB stack).
-- **Decodificación FLAC**: Decodificador progresivo `dr_flac` con callbacks personalizados no bloqueantes (`flac_stream_read`, `flac_stream_seek`, `flac_stream_tell`).
-- **Resampling Polifásico Lineal**: Conversión exacta 147:160 para flujos a 44.1 kHz hacia 48.0 kHz nativos con preservación de continuidad en fronteras de bloque (`s_resample_boundary`).
-- **Ring Buffer Intermedio**: Capacidad de 576.000 frames (12.0 segundos de búfer estéreo a 48 kHz).
+## ¿Qué ofrece Monochrome PS3?
 
-### 2. Capa de Red y Streaming TCP (BSD Sockets / libnet)
-- **Protocolo**: HTTP/1.1 persistente hacia `tracks.monochrome.st:80`.
-- **Configuración de Socket**: `SO_RCVBUF` ajustado a 512 KB para evitar estancamiento de ventana TCP en flujos Hi-Res de alto bitrate (hasta 96 kHz / 24-bit).
-- **Recepción No Bloqueante**: Consumo concurrente mediante `recv(..., MSG_DONTWAIT)` dentro del bucle de decodificación para prevenir bloqueos del pipeline.
-- **Estrategia de Prebuffer**: Umbral mínimo de 4 MB de flujo FLAC crudo verificado antes del inicio de reproducción.
-- **Manejo de Respuestas HTTP 429**: Algoritmo de backoff exponencial configurable (hasta 8 reintentos: 3s, 6s, 12s, 24s, 48s, 60s).
-- **Caché Persistente en Disco**: Persistencia atómica en `/dev_hdd0/tmp/monochrome/tracks/<id>.flac` y `/dev_hdd0/tmp/monochrome/cache/`.
-- **Subsistema de Carátulas Asíncrono (`mono_cover`)**: Hilo PPU cooperativo en segundo plano (prioridad **1500**, stack 128 KB) con parsing dinámico de URL (host/puerto/path) y decodificación protegida con `libjpeg` vía `custom_jpeg_error_mgr` (`setjmp`/`longjmp`) para inmunidad absoluta ante datos truncados o corruptos sin abortar el proceso.
-
-### 3. Subsistema Gráfico y Presentación (RSX Reality Synthesizer)
-- **Contexto de Comando**: RSX GCM context asignado en memoria de host XDR (`0x40100000`, 32 MB IO mapping).
-- **Resolución y Formato**: 1920×1080 / 1280×720 nativo, 32-bit XRGB (3.686.400 / 8.294.400 bytes por buffer de visualización).
-- **Estrategia de Buffer**: Doble buffer en RSX Local Memory con sincronización vertical `gcmSetFlipMode(GCM_FLIP_VSYNC)` (`flip` / `waitFlip`).
-- **Optimización de Bus FlexIO**: Precomputación de tabla de mapeo horizontal (`tx_lut[1920]`) eliminando divisiones por cuadro, y transferencias empaquetadas en ráfagas de 64 bits (`uint64_t`) hacia VRAM para tasa sostenida de 60 FPS sin saturar el bus PPU-RSX.
-- **Ajuste de Geometría de Pantalla**:
-  - Offset horizontal y vertical con precisión de 1 píxel.
-  - Factor de escala con precisión flotante de 0.005 (`0.50` a `1.50`).
-  - Factor de escala tipográfica con precisión de 0.02.
-  - Persistencia en archivo binario/texto `/dev_hdd0/tmp/monochrome/screen_config.txt`.
-
-### 4. Empaquetado y Metadatos de Sistema
-- **Binario de Ejecución**: ELF64 compilado con `ppu-gcc`, enlazado con `-mcpu=cell` y empaquetado como CEX SELF NPDRM.
-- **Title ID**: `MONO00024`.
-- **Versión PARAM.SFO**: `02.30`.
-- **Estructura PKG Free NPDRM**:
-  - `ICON0.PNG`: 320×176 píxeles, formato PNG RGBA.
-  - `PIC1.PNG`: 1920×1080 píxeles, formato PNG RGBA oscuro de alto contraste.
-  - `USRDIR/EBOOT.BIN`: SELF firmado para ejecución en OFW/HFW PS3HEN y CFW Cobra.
+- **Audio FLAC en tiempo real**: reproduce música sin compresión destructiva directamente en tu PS3 (compatible con pistas de calidad estándar y Hi-Res).
+- **Integración en la columna Música del XMB**: se instala bajo el Title ID `MONO00024` con categoría `AM`, apareciendo directamente en el apartado **Música** del menú principal de PS3.
+- **Interfaz v3 limpia y rápida a 60 FPS**: barra lateral de secciones (*Search, Home, Library, Playlists, Instances, Settings*), pestañas superiores (`ALL`, `ALBUMS`, `ARTISTS`, `PLAYLISTS`, `TRACKS`), reproductor inferior fijo con carátula, cola lateral y visualizador a pantalla completa.
+- **Caché local inteligente**: almacena pistas recientes en disco para reanudar o repetir sin volver a descargar, limpiando automáticamente las más antiguas al alcanzar su límite.
+- **Ajuste de pantalla (Overscan / Zona Segura)**: adapta el tamaño de la interfaz directamente desde **Settings** si tu televisor recorta los bordes.
 
 ---
 
-## 📸 Galería
+## Galería (Tiny3D v3)
 
 <p align="center">
-  <img src="docs/screenshots/home.png" width="49%">
-  <img src="docs/screenshots/search.png" width="49%">
+  <img src="docs/screenshots/home.png" alt="Inicio y pista destacada" width="49%">
+  <img src="docs/screenshots/search.png" alt="Buscador QWERTY y resultados" width="49%">
 </p>
 <p align="center">
-  <img src="docs/screenshots/playing.png" width="49%">
-  <img src="docs/screenshots/library.png" width="49%">
+  <img src="docs/screenshots/search_albums.png" alt="Filtro de pestañas L1/R1 en Álbumes" width="49%">
+  <img src="docs/screenshots/playing.png" alt="Visualizador a pantalla completa" width="49%">
 </p>
 <p align="center">
-  <img src="docs/screenshots/unreleased.png" width="70%">
+  <img src="docs/screenshots/queue.png" alt="Cola de reproducción lateral" width="49%">
+  <img src="docs/screenshots/library.png" alt="Biblioteca filtrada por pestañas" width="49%">
+</p>
+<p align="center">
+  <img src="docs/screenshots/settings.png" alt="Ajustes y diagnóstico de red en vivo" width="75%">
 </p>
 
 ---
 
-## 🎮 Mapeo de Entradas (DualShock 3 / ioPad)
+## Instalación en PlayStation 3
 
-| Código de Entrada | Botón Físico | Función en Sistema |
-|---|---|---|
-| `ACT_UP` / `ACT_DOWN` | D-Pad Arriba / Abajo | Navegación de listas / Desplazamiento vertical (Screen Adjust: ±1px) |
-| `ACT_LEFT` / `ACT_RIGHT` | D-Pad Izquierda / Derecha | Navegación horizontal / Desplazamiento horizontal (Screen Adjust: ±1px) |
-| `ACT_CROSS` | Cruz (✕) | Selección / Play / Pause |
-| `ACT_CIRCLE` | Círculo (○) | Retorno / Cancelar / Salir de submenú |
-| `ACT_SQUARE` | Cuadrado (□) | Conmutar a teclado en pantalla (`STATE_SEARCH`) |
-| `ACT_TRIANGLE` | Triángulo (△) | Conmutar a cola de pistas (`STATE_QUEUE`) |
-| `ACT_L1` / `ACT_R1` | Gatillos L1 / R1 | Pista anterior / siguiente \| Escala de fuente (Screen Adjust: ±0.02) |
-| `ACT_L2` / `ACT_R2` | Gatillos L2 / R2 | Escala de visualización (Screen Adjust: ±0.005) |
-| `ACT_START` | Botón START | Abrir menú de opciones / Guardar configuración de pantalla |
-| `ACT_SELECT` | Botón SELECT | Restablecer configuración de pantalla a valores de fábrica |
+1. Descarga el archivo `monochrome_ps3.pkg` desde la sección **Releases**.
+2. Cópialo a la raíz de un USB en formato FAT32 o a `/dev_hdd0/packages/` por FTP (webMAN MOD / multiMAN).
+3. En la PS3 (con **PS3HEN** activado o **CFW**), entra en *Administrar archivos PKG → Instalar archivos PKG* e instala `monochrome_ps3.pkg`.
+4. Abre **Monochrome Music Player** desde la columna **Música** del XMB. *(Si ya tenías instalada una versión previa en la columna Juego, reinicia el XMB o reinstala el `.pkg` para refrescar la categoría.)*
 
 ---
 
-## 🛠️ Pipeline de Compilación
+## Controles (DualShock 3)
+
+| Botón | Función |
+|---|---|
+| **D-Pad Arriba / Abajo** | Navegar por pistas, álbumes, artistas, playlists, cola o menú lateral |
+| **D-Pad Izquierda / Derecha** | Moverse entre el contenido y el menú lateral izquierdo / ajustar valores en Ajustes |
+| **Cruz (`✕`)** | Reproducir o pausar pista / abrir álbum, artista o playlist / confirmar tecla |
+| **Círculo (`○`)** | Volver al menú lateral izquierdo / salir del drill-down o cerrar modales |
+| **L1 / R1** | Cambiar pestaña superior (`ALL` · `ALBUMS` · `ARTISTS` · `PLAYLISTS` · `TRACKS`) |
+| **L2 / R2** | Adelantar o retroceder (`-5%` / `+5%`) dentro del visualizador |
+| **Triángulo (`△`)** | Abrir / cerrar la cola de reproducción (en Buscar inserta un espacio) |
+| **Cuadrado (`□`)** | Abrir / cerrar el visualizador a pantalla completa (en Buscar borra un carácter) |
+| **START** | Ejecutar búsqueda (en Buscar) / Play-Pause rápido en el resto de pantallas |
+| **SELECT** | Limpiar texto de búsqueda (en Buscar) |
+| **Botón PS** | Salida limpia e inmediata al XMB |
+
+---
+---
+
+# Parte 2 · Especificaciones Técnicas y Arquitectura
+
+## 1. Capa de Red HAL (`net_hal`) y Cliente HTTP/JSON
+
+Implementado en [`include/net_hal.h`](include/net_hal.h), [`source/net_hal.c`](source/net_hal.c), [`source/http_client.c`](source/http_client.c) y [`source/cJSON.c`](source/cJSON.c) sobre **PSL1GHT v2** (`libnet` + `libnetctl` + `libsysmodule`):
+
+- **Gestión de enlace e inicialización idempotente**: carga `SYSMODULE_NET` y `SYSMODULE_NETCTL`, monitoriza el estado de red (`NET_HAL_DISCONNECTED`, `NET_HAL_CONNECTING`, `NET_HAL_IP_OBTAINED`, `NET_HAL_ERROR`) e integra caché DNS con TTL de 60 s protegida con mutex (`sysMutexAttrInitialize`).
+- **E/S no bloqueante compatible con PSL1GHT**: sockets TCP configurados con `O_NONBLOCK` / `SO_NBIO` e inspeccionados mediante `poll()` (`<net/poll.h>`) en cortes de ≤250 ms. Se evita explícitamente `select()`/`FD_SET` porque en PSL1GHT los descriptores llevan `SOCKET_FD_MASK = 0x40000000`, excediendo `FD_SETSIZE`.
+- **Worker de búsqueda persistente (`mono_search`)**: hilo dedicado sincronizado por `sysCond` + mutex, cancelación cooperativa, validación de IDs (`[A-Za-z0-9_-]`, longitud `1..63`), codificación URL RFC 3986 y seguimiento acotado de redirecciones HTTP.
+- **Parser JSON endurecido (`cJSON`)**: profundidad máxima acotada (`CJSON_MAX_DEPTH = 64`), guardas contra punteros nulos y decodificación segura de pares subrogados UTF-16.
+- **Telemetría y logging rotativo**: registro thread-safe en `/dev_hdd0/tmp/mono_stage6.log` (rotación a 2 MB) y métricas en tiempo real (`NetHalTelemetry`: IP, DNS, código HTTP, `errno`, `h_errno`, latencia API, bitrate del stream, reconexiones y underruns) visibles en **Settings**.
+
+## 2. Subsistema de Audio Lossless (`audio_engine`)
+
+Implementado en [`source/audio_engine.c`](source/audio_engine.c) sobre GameOS `libaudio` + `dr_flac`:
+
+- **Salida DMA nativa**: 2 canales estéreo Float32 LPCM a **48.000 Hz**, sincronizados por eventos hardware (`audioCreateNotifyEventQueue` / `audioSetNotifyEventQueue`).
+- **Planificación de hilos LV2**: hilo consumidor DMA (`mono_hw`) en prioridad de tiempo real junto a worker de streaming HTTP (`mono_stream`, descarga en `750`), desacoplados por un ring buffer de PCM y buffer circular de descarga.
+- **Resiliencia de flujo FLAC**: prebuffer inicial (`PREBUFFER_THRESHOLD = 2 MB`), recepción no bloqueante con `SO_RCVBUF` ampliado, reanudación automática mediante `HTTP 206 Range` ante cortes TCP/timeout y downsampling automático de pistas Hi-Res (`44.1 kHz -> 48 kHz` polifásico y `88.2/96/192 kHz`).
+- **Caché en HDD**: almacenamiento persistente en `/dev_hdd0/tmp/monochrome/cache/` acotado automáticamente (`CACHE_MAX_FILES = 25`, `CACHE_MAX_BYTES = 512 MB`) con expulsión LRU/antigüedad.
+
+## 3. Motor Gráfico RSX / Tiny3D y UI v3
+
+Implementado en [`source/gfx_tiny3d.c`](source/gfx_tiny3d.c), [`source/rsxutil.c`](source/rsxutil.c), [`source/cover_art.c`](source/cover_art.c) y `source/ui_*.c`:
+
+- **Renderizado Tiny3D sobre RSX**: contexto GCM con `HOST_SIZE = 8 MB` y buffer de comandos `CB_SIZE = 1 MB` ([`include/rsxutil.h`](include/rsxutil.h)), lienzo lógico `1920×1080` con escalado subpíxel tipográfico y calibración de zona segura persistida en `/dev_hdd0/game/MONO00024/USRDIR/config.cfg`.
+- **Subsistema asíncrono de carátulas (`cover_art.c`)**: descarga JPEG en segundo plano, decodificación con `libjpeg` aislada mediante `setjmp`/`longjmp` ante imágenes truncadas o corruptas y carga en texturas RSX.
+- **Arquitectura desacoplada de estado (`app_state.c`)**: estado puro sin llamadas gráficas (`AppContext`), cola real de reproducción, historial reciente, mapeo uniforme de pestañas (`app_state_get_tab_items`) y drill-down asíncrono para álbumes, artistas y playlists.
+
+## 4. Ciclo de Vida, Empaquetado y Compilación
+
+- **Binario y metadatos SFO**: `SYS_PROCESS_PARAM(1001, 0x100000)` en [`source/main.c`](source/main.c), salida limpia al XMB mediante `sysUtilRegisterCallback` / `sysUtilCheckCallback`, Title ID unificado `MONO00024` y categoría `AM` (Música) definida en [`sfo.xml`](sfo.xml) e inyectada en [`Makefile`](Makefile) vía `SFOXML := $(CURDIR)/sfo.xml`.
+- **Compilación oficial (Docker `ghcr.io/altps3/ps3dev:latest`)**:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/run_in_docker.ps1
+```
+
+O directamente dentro del contenedor:
 
 ```bash
-docker run --rm -v "${PWD}:/src" ghcr.io/altps3/ps3dev:latest bash -c "cd /src && make clean && make pkg"
+docker run --rm -v "${PWD}:/src" -w /src ghcr.io/altps3/ps3dev:latest bash -c "make clean && make pkg"
 ```

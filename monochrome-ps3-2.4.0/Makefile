@@ -25,6 +25,7 @@ CONTENTID	:=	UP0001-$(APPID)_00-0000000000000000
 
 ICON0		:=	$(CURDIR)/pkgfiles/ICON0.PNG
 PKGFILES	:=	$(CURDIR)/pkgfiles
+SFOXML		:=	$(CURDIR)/sfo.xml
 
 #---------------------------------------------------------------------------------
 # options for code generation
