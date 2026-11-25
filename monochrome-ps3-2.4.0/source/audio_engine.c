@@ -259,8 +259,8 @@ static size_t flac_stream_read(void *pUserData, void *pBufferOut, size_t bytesTo
         if (ctx->download_complete || ctx->abort || !s_engine_running || ctx->seq != s_track_sequence) return 0;
         usleep(5000);
         wait_ms += 5;
-        if (wait_ms > 20000) {
-            stage6_log("[STREAM TIMEOUT] 20s sin nuevos datos recibidos en flac_stream_read");
+        if (wait_ms > 25000) {
+            stage6_log("[STREAM TIMEOUT] 25s sin nuevos datos recibidos en flac_stream_read");
             return 0;
         }
     }
@@ -307,7 +307,7 @@ static drflac_bool32 flac_stream_seek(void *pUserData, int offset, drflac_seek_o
         if (ctx->download_complete || ctx->abort || !s_engine_running || ctx->seq != s_track_sequence) return DRFLAC_FALSE;
         usleep(5000);
         wait_ms += 5;
-        if (wait_ms > 20000) return DRFLAC_FALSE;
+        if (wait_ms > 25000) return DRFLAC_FALSE;
     }
 
     __asm__ volatile("lwsync" ::: "memory");
@@ -440,7 +440,7 @@ static int stream_connect_http(const char *track_id, uint32_t seq, uint64_t offs
         setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
         struct timeval tv;
-        tv.tv_sec = 20;
+        tv.tv_sec = 6;
         tv.tv_usec = 0;
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
@@ -809,14 +809,14 @@ static void stream_download_worker_func(void *arg)
             } else {
                 if (errno == EINTR) continue;
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    stage6_log("[STREAM TIMEOUT] Socket recv timeout (5s sin datos)");
+                    stage6_log("[STREAM TIMEOUT] Socket recv timeout (6s sin datos)");
                 } else {
                     stage6_log("[STREAM ERROR] recv error (ret: %d, errno: %d)", (int)n, errno);
                 }
                 close(sock);
                 sock = -1;
                 s_stream_ctx.sock = -1;
-                usleep(500000);
+                usleep(100000);
             }
         }
 
