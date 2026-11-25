@@ -242,3 +242,48 @@ void app_state_set_focus_zone(FocusZone zone)
 {
     g_app_state.focus_zone = zone;
 }
+
+const AppTrack *app_state_get_tab_items(TopFilterTab tab, int *out_count, const char **out_heading)
+{
+    const AppTrack *items = g_app_state.tracks;
+    int count = (int)g_app_state.track_count;
+    const char *heading = "PISTAS DISPONIBLES //";
+
+    switch (tab) {
+        case TAB_ALBUMS:
+            items = g_app_state.albums;
+            count = (int)g_app_state.album_count;
+            heading = "ALBUMES DISPONIBLES //";
+            break;
+        case TAB_ARTISTS:
+            items = g_app_state.artists;
+            count = (int)g_app_state.artist_count;
+            heading = "ARTISTAS DISPONIBLES //";
+            break;
+        case TAB_PLAYLISTS:
+            items = g_app_state.playlists;
+            count = (int)g_app_state.playlist_count;
+            heading = "PLAYLISTS DISPONIBLES //";
+            break;
+        case TAB_TRACKS:
+            items = g_app_state.tracks;
+            count = (int)g_app_state.track_count;
+            heading = "PISTAS DISPONIBLES //";
+            break;
+        case TAB_ALL:
+        default:
+            if (g_app_state.track_count > 0) {
+                items = g_app_state.tracks;
+                count = (int)g_app_state.track_count;
+            } else {
+                items = g_app_state.albums;
+                count = (int)g_app_state.album_count;
+            }
+            heading = "PISTAS DISPONIBLES //";
+            break;
+    }
+
+    if (out_count) *out_count = count;
+    if (out_heading) *out_heading = heading;
+    return items;
+}

@@ -22,7 +22,7 @@
 #include <net/net.h>
 #include <net/netctl.h>
 #include <net/netdb.h>
-#include <net/select.h>
+#include <net/poll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -84,21 +84,27 @@ static void init_mutex(sys_mutex_t *m, bool *inited_flag)
 {
     if (*inited_flag) return;
     sys_mutex_attr_t attr;
-    memset(&attr, 0, sizeof(attr));
+    sysMutexAttrInitialize(attr);
     attr.attr_protocol = SYS_MUTEX_PROTOCOL_FIFO;
-    attr.attr_recursive = SYS_MUTEX_ATTR_NOT_RECURSIVE;
-    if (sysMutexCreate(m, &attr) == 0) {
+    int rc = sysMutexCreate(m, &attr);
+    if (rc == 0) {
         *inited_flag = true;
+    } else {
+        net_hal_log("NET_HAL ERR", "sysMutexCreate failed: 0x%x", rc);
     }
 }
 
 static int read_net_errno(void)
 {
+    /* libnet wrappers (socket.o .netErrno) already translate net_errno into
+     * newlib errno (EINPROGRESS=119, EAGAIN=11, EINTR=4). Raw net_errno uses
+     * different numbering (NET_EINPROGRESS=36, NET_EAGAIN=35). */
+    if (errno != 0) return errno;
 #ifdef net_errno
-    int ne = net_errno;
-    if (ne != 0) return ne;
+    return net_errno;
+#else
+    return 0;
 #endif
-    return errno;
 }
 
 static int read_h_errno(void)
@@ -158,6 +164,10 @@ static NetHalState refresh_link_state_locked(bool force)
             invalidate_dns_cache_locked();
             sysMutexUnlock(s_dns_mutex);
         }
+    }
+    if (!force && next != prev) {
+        net_hal_log("NET_HAL", "Link state changed: %d -> %d (rc=%d, ctl=%d)",
+                    (int)prev, (int)next, (int)rc, (int)ctl_state);
     }
     return next;
 }
@@ -635,17 +645,14 @@ int net_hal_connect(const char *host, uint16_t port, int timeout_ms,
 
             uint64_t rem = deadline - now;
             int slice_ms = (rem > NET_HAL_SLICE_MS) ? NET_HAL_SLICE_MS : (int)rem;
-            struct timeval tv;
-            tv.tv_sec = slice_ms / 1000;
-            tv.tv_usec = (slice_ms % 1000) * 1000;
+            if (slice_ms < 1) slice_ms = 1;
 
-            fd_set wfds, efds;
-            FD_ZERO(&wfds);
-            FD_ZERO(&efds);
-            FD_SET(sock, &wfds);
-            FD_SET(sock, &efds);
+            struct pollfd pfd;
+            pfd.fd = sock;
+            pfd.events = POLLOUT;
+            pfd.revents = 0;
 
-            int sret = select(sock + 1, NULL, &wfds, &efds, &tv);
+            int sret = poll(&pfd, 1, slice_ms);
             if (sret < 0) {
                 err = read_net_errno();
                 if (err == EINTR) continue;
@@ -662,9 +669,9 @@ int net_hal_connect(const char *host, uint16_t port, int timeout_ms,
             if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_err, &slen) < 0) {
                 so_err = read_net_errno();
             }
-            if (so_err != 0) {
+            if (so_err != 0 || (pfd.revents & (POLLERR | POLLNVAL))) {
                 close(sock);
-                if (out_errno) *out_errno = so_err;
+                if (out_errno) *out_errno = (so_err != 0) ? so_err : ECONNREFUSED;
                 return -1;
             }
             break;
@@ -726,15 +733,14 @@ int net_hal_send_all(int sock, const void *buf, size_t len, int timeout_ms,
 
         uint64_t rem = deadline - now;
         int slice_ms = (rem > NET_HAL_SLICE_MS) ? NET_HAL_SLICE_MS : (int)rem;
-        struct timeval tv;
-        tv.tv_sec = slice_ms / 1000;
-        tv.tv_usec = (slice_ms % 1000) * 1000;
+        if (slice_ms < 1) slice_ms = 1;
 
-        fd_set wfds;
-        FD_ZERO(&wfds);
-        FD_SET(sock, &wfds);
+        struct pollfd pfd;
+        pfd.fd = sock;
+        pfd.events = POLLOUT;
+        pfd.revents = 0;
 
-        int sret = select(sock + 1, NULL, &wfds, NULL, &tv);
+        int sret = poll(&pfd, 1, slice_ms);
         if (sret < 0) {
             int err = read_net_errno();
             if (err == EINTR) continue;
@@ -743,6 +749,10 @@ int net_hal_send_all(int sock, const void *buf, size_t len, int timeout_ms,
         }
         if (sret == 0) {
             continue;
+        }
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            if (out_errno) *out_errno = EPIPE;
+            return -1;
         }
 
         ssize_t n = send(sock, p + sent_total, len - sent_total, 0);
@@ -795,15 +805,14 @@ int net_hal_recv_some(int sock, void *buf, size_t len, int timeout_ms,
 
         uint64_t rem = deadline - now;
         int slice_ms = (rem > NET_HAL_SLICE_MS) ? NET_HAL_SLICE_MS : (int)rem;
-        struct timeval tv;
-        tv.tv_sec = slice_ms / 1000;
-        tv.tv_usec = (slice_ms % 1000) * 1000;
+        if (slice_ms < 1) slice_ms = 1;
 
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        FD_SET(sock, &rfds);
+        struct pollfd pfd;
+        pfd.fd = sock;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
 
-        int sret = select(sock + 1, &rfds, NULL, NULL, &tv);
+        int sret = poll(&pfd, 1, slice_ms);
         if (sret < 0) {
             int err = read_net_errno();
             if (err == EINTR) continue;
@@ -814,7 +823,7 @@ int net_hal_recv_some(int sock, void *buf, size_t len, int timeout_ms,
             continue;
         }
 
-        /* Socket is readable: retry ONLY EINTR; abort on EAGAIN/EWOULDBLOCK/other */
+        /* Socket is readable: retry EINTR, return to poll() on spurious EAGAIN */
         for (;;) {
             if (abort_flag && *abort_flag) {
                 if (out_errno) *out_errno = ECANCELED;
@@ -830,6 +839,9 @@ int net_hal_recv_some(int sock, void *buf, size_t len, int timeout_ms,
             int err = read_net_errno();
             if (err == EINTR) {
                 continue;
+            }
+            if (err == EAGAIN || err == EWOULDBLOCK) {
+                break;
             }
             if (out_errno) *out_errno = err;
             return -1;

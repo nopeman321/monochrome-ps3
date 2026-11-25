@@ -80,5 +80,6 @@ bool app_state_queue_prev(AppTrack *out);
 void app_state_set_section(MainSection section);
 void app_state_set_top_tab(TopFilterTab tab);
 void app_state_set_focus_zone(FocusZone zone);
+const AppTrack *app_state_get_tab_items(TopFilterTab tab, int *out_count, const char **out_heading);
 
 #endif /* APP_STATE_H */

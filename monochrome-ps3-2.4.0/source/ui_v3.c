@@ -105,10 +105,24 @@ AppState ui_handle_input(AppState current, InputAction act)
 {
     if (act == ACT_NONE) return current;
 
+    /* Si visualizador fullscreen activo, delegar todo a ui_visualizer */
+    if (g_app_state.visualizer_fullscreen) {
+        ui_visualizer_handle_input(act);
+        return current;
+    }
+
+    /* Si cola abierta, priorizar su input */
+    if (g_app_state.right_drawer_open) {
+        ui_queue_handle_input(act);
+        return current;
+    }
+
     /* En la pantalla de búsqueda con foco en contenido principal:
        delegar prioritariamente a ui_search (START = buscar, CUADRADO = borrar,
-       TRIÁNGULO = espacio, SELECT = limpiar, etc.) antes de interceptores globales */
-    if (g_app_state.active_section == SEC_SEARCH && g_app_state.focus_zone == ZONE_MAIN_CONTENT) {
+       TRIÁNGULO = espacio, SELECT = limpiar, etc.) antes de interceptores globales,
+       pero permitir que L1/R1 roten las pestañas superiores en shell_handle_input */
+    if (g_app_state.active_section == SEC_SEARCH && g_app_state.focus_zone == ZONE_MAIN_CONTENT &&
+        act != ACT_L1 && act != ACT_R1) {
         ui_search_handle_input(act);
         return current;
     }
@@ -119,18 +133,6 @@ AppState ui_handle_input(AppState current, InputAction act)
             if (audio_engine_is_playing()) audio_engine_pause();
             else audio_engine_resume();
         }
-        return current;
-    }
-
-    /* Si visualizador fullscreen activo, delegar todo a ui_visualizer */
-    if (g_app_state.visualizer_fullscreen) {
-        ui_visualizer_handle_input(act);
-        return current;
-    }
-
-    /* Si cola abierta, priorizar su input */
-    if (g_app_state.right_drawer_open) {
-        ui_queue_handle_input(act);
         return current;
     }
 

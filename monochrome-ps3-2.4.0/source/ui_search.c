@@ -77,6 +77,60 @@ void ui_search_start_initial(const char *query) {
     http_search_async_start(query);
 }
 
+static void prepare_drilldown(const char *title) {
+    s_busy = true;
+    s_error = false;
+    s_fallback_exhausted = false;
+    s_drilldown_tracks = true;
+    s_focus_in_results = true;
+    s_count = 0;
+    s_cursor = 0;
+    s_last_tab = g_app_state.active_top_tab;
+    if (title) {
+        strncpy(s_drilldown_title, title, sizeof(s_drilldown_title) - 1);
+        s_drilldown_title[sizeof(s_drilldown_title) - 1] = '\0';
+    } else {
+        s_drilldown_title[0] = '\0';
+    }
+}
+
+void ui_search_open_album(const char *release_id, const char *title) {
+    if (!release_id || !release_id[0]) return;
+    prepare_drilldown(title);
+    app_state_set_section(SEC_SEARCH);
+    app_state_set_focus_zone(ZONE_MAIN_CONTENT);
+    http_fetch_album_async_start(release_id, title ? title : "");
+}
+
+void ui_search_open_artist(const char *artist_id, const char *name) {
+    if (!artist_id || !artist_id[0]) return;
+    prepare_drilldown(name);
+    app_state_set_section(SEC_SEARCH);
+    app_state_set_focus_zone(ZONE_MAIN_CONTENT);
+    http_fetch_artist_async_start(artist_id, name ? name : "");
+}
+
+void ui_search_open_playlist(const char *title) {
+    if (!title || !title[0]) return;
+    strncpy(s_query, title, sizeof(s_query) - 1);
+    s_query[sizeof(s_query) - 1] = '\0';
+    app_state_set_top_tab(TAB_ALL);
+    s_last_tab = TAB_ALL;
+    app_state_set_section(SEC_SEARCH);
+    app_state_set_focus_zone(ZONE_MAIN_CONTENT);
+    s_busy = true;
+    s_count = 0;
+    s_cursor = 0;
+    s_error = false;
+    s_fallback_exhausted = false;
+    s_focus_in_results = true;
+    s_drilldown_tracks = false;
+    s_drilldown_title[0] = '\0';
+    s_last_played_idx = -1;
+    memset(s_result_failed, 0, sizeof(s_result_failed));
+    http_search_async_start(s_query);
+}
+
 static void do_search(void) {
     if (s_query[0] == '\0') return;
     s_busy = true;
@@ -163,8 +217,8 @@ void ui_search_update(void) {
                 g_app_state.tracks[i].is_hi_res = s_results[i].is_hi_res;
             }
 
-            if (!s_drilldown_tracks && s_album_count > 0) {
-                int sync_albums = (s_album_count > MAX_SEARCH_RESULTS) ? MAX_SEARCH_RESULTS : s_album_count;
+            if (!s_drilldown_tracks) {
+                int sync_albums = (s_album_count > MAX_SEARCH_RESULTS) ? MAX_SEARCH_RESULTS : (s_album_count < 0 ? 0 : s_album_count);
                 g_app_state.album_count = (uint32_t)sync_albums;
                 for (int i = 0; i < sync_albums; i++) {
                     memset(&g_app_state.albums[i], 0, sizeof(AppTrack));
@@ -172,6 +226,27 @@ void ui_search_update(void) {
                     strncpy(g_app_state.albums[i].title, s_albums[i].title, sizeof(g_app_state.albums[i].title)-1);
                     strncpy(g_app_state.albums[i].artist, s_albums[i].artist, sizeof(g_app_state.albums[i].artist)-1);
                     strncpy(g_app_state.albums[i].cover_url, s_albums[i].cover_url, sizeof(g_app_state.albums[i].cover_url)-1);
+                }
+
+                int sync_artists = (s_artist_count > MAX_SEARCH_RESULTS) ? MAX_SEARCH_RESULTS : (s_artist_count < 0 ? 0 : s_artist_count);
+                g_app_state.artist_count = (uint32_t)sync_artists;
+                for (int i = 0; i < sync_artists; i++) {
+                    memset(&g_app_state.artists[i], 0, sizeof(AppTrack));
+                    strncpy(g_app_state.artists[i].id, s_artists[i].id, sizeof(g_app_state.artists[i].id)-1);
+                    strncpy(g_app_state.artists[i].title, s_artists[i].name, sizeof(g_app_state.artists[i].title)-1);
+                    strncpy(g_app_state.artists[i].artist, "Artista", sizeof(g_app_state.artists[i].artist)-1);
+                    strncpy(g_app_state.artists[i].album, s_artists[i].bio, sizeof(g_app_state.artists[i].album)-1);
+                    strncpy(g_app_state.artists[i].cover_url, s_artists[i].avatar_url, sizeof(g_app_state.artists[i].cover_url)-1);
+                }
+
+                int sync_playlists = (s_playlist_count > MAX_SEARCH_RESULTS) ? MAX_SEARCH_RESULTS : (s_playlist_count < 0 ? 0 : s_playlist_count);
+                g_app_state.playlist_count = (uint32_t)sync_playlists;
+                for (int i = 0; i < sync_playlists; i++) {
+                    memset(&g_app_state.playlists[i], 0, sizeof(AppTrack));
+                    strncpy(g_app_state.playlists[i].id, s_playlists[i].id, sizeof(g_app_state.playlists[i].id)-1);
+                    strncpy(g_app_state.playlists[i].title, s_playlists[i].title, sizeof(g_app_state.playlists[i].title)-1);
+                    strncpy(g_app_state.playlists[i].artist, s_playlists[i].curator, sizeof(g_app_state.playlists[i].artist)-1);
+                    strncpy(g_app_state.playlists[i].album, s_playlists[i].description, sizeof(g_app_state.playlists[i].album)-1);
                 }
             }
         } else if (st == SEARCH_STATUS_NO_RESULTS || st == SEARCH_STATUS_ERROR) {
@@ -689,24 +764,17 @@ void ui_search_handle_input(InputAction act) {
                 if (g_app_state.active_top_tab == TAB_ALBUMS) {
                     if (s_album_count > 0 && s_cursor >= 0 && s_cursor < s_album_count) {
                         AlbumMetadata *a = &s_albums[s_cursor];
-                        s_busy = true;
-                        s_drilldown_tracks = true;
-                        strncpy(s_drilldown_title, a->title, sizeof(s_drilldown_title)-1);
-                        s_drilldown_title[sizeof(s_drilldown_title)-1] = '\0';
-                        s_count = 0;
-                        s_cursor = 0;
-                        http_fetch_album_async_start(a->id, a->title);
+                        ui_search_open_album(a->id, a->title);
                     }
                 } else if (g_app_state.active_top_tab == TAB_ARTISTS) {
                     if (s_artist_count > 0 && s_cursor >= 0 && s_cursor < s_artist_count) {
                         ArtistMetadata *a = &s_artists[s_cursor];
-                        s_busy = true;
-                        s_drilldown_tracks = true;
-                        strncpy(s_drilldown_title, a->name, sizeof(s_drilldown_title)-1);
-                        s_drilldown_title[sizeof(s_drilldown_title)-1] = '\0';
-                        s_count = 0;
-                        s_cursor = 0;
-                        http_fetch_artist_async_start(a->id, a->name);
+                        ui_search_open_artist(a->id, a->name);
+                    }
+                } else if (g_app_state.active_top_tab == TAB_PLAYLISTS) {
+                    if (s_playlist_count > 0 && s_cursor >= 0 && s_cursor < s_playlist_count) {
+                        PlaylistMetadata *p = &s_playlists[s_cursor];
+                        ui_search_open_playlist(p->title);
                     }
                 } else {
                     if (s_count > 0 && s_cursor >= 0 && s_cursor < s_count) {

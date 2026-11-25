@@ -9,18 +9,21 @@
 #include "ui_theme.h"
 #include "ui_components.h"
 #include "ui_shell.h"
+#include "ui_search.h"
 #include "cover_art.h"
 #include "audio_engine.h"
 
 static int s_lane_cursor = 0;
 static int s_hero_index = 0;
+static TopFilterTab s_last_tab = TAB_ALL;
 
 void ui_home_init(void) {
     s_lane_cursor = 0;
     s_hero_index = 0;
+    s_last_tab = TAB_ALL;
 }
 
-static void render_hero(int x, int y, int w, int h, AppTrack *track) {
+static void render_hero(int x, int y, int w, int h, const AppTrack *track) {
     gfx_draw_rect(x, y, w, h, TH_SURFACE);
     gfx_draw_rect_outline(x, y, w, h, TH_BORDER, 1.0f);
     gfx_draw_text(x + 20, y + 14, "DESTACADO //", 13.0f, TH_ACCENT);
@@ -109,17 +112,22 @@ static void render_hero(int x, int y, int w, int h, AppTrack *track) {
 }
 
 static void render_lanes(int x, int y, int w, int h) {
-    int count = (int)g_app_state.track_count;
-    if (count <= 0) count = (int)g_app_state.album_count;
+    int count = 0;
+    const char *heading = NULL;
+    const AppTrack *items = app_state_get_tab_items(g_app_state.active_top_tab, &count, &heading);
+
     if (count <= 0) {
         gfx_draw_rect(x, y, w, 110, TH_SURFACE);
         gfx_draw_rect_outline(x, y, w, 110, TH_BORDER, 1.0f);
-        gfx_draw_text(x + 24, y + 28, "[ ! ] NO HAY PISTAS CARGADAS EN EL BUFFER", 16.0f, TH_TEXT);
-        gfx_draw_text(x + 24, y + 64, "Navega a BUSCAR (D-Pad Izquierda -> SEARCH) para explorar catalogo.", 13.0f, TH_TEXT_DIM);
+        gfx_draw_text(x + 24, y + 28, "[ ! ] NO HAY ELEMENTOS EN ESTA PESTANA", 16.0f, TH_TEXT);
+        gfx_draw_text(x + 24, y + 64, "Cambia de pestana con [L1/R1] o ve a BUSCAR para explorar catalogo.", 13.0f, TH_TEXT_DIM);
         return;
     }
 
-    gfx_draw_text(x, y - 24, "PISTAS DISPONIBLES //", 15.0f, TH_TEXT);
+    if (s_lane_cursor >= count) s_lane_cursor = count - 1;
+    if (s_lane_cursor < 0) s_lane_cursor = 0;
+
+    gfx_draw_text(x, y - 24, heading ? heading : "PISTAS DISPONIBLES //", 15.0f, TH_TEXT);
 
     int row_h = 50;
     int visible = (h - 30) / row_h;
@@ -133,9 +141,7 @@ static void render_lanes(int x, int y, int w, int h) {
 
     for (int i = 0; i < visible && (start + i) < count; i++) {
         int idx = start + i;
-        AppTrack *t = NULL;
-        if (idx < (int)g_app_state.track_count) t = &g_app_state.tracks[idx];
-        else if (idx < (int)g_app_state.album_count) t = &g_app_state.albums[idx];
+        const AppTrack *t = &items[idx];
 
         UiComponentState st = UI_COMPONENT_STATE_DEFAULT;
         if (idx == s_lane_cursor) st = UI_COMPONENT_STATE_FOCUSED;
@@ -152,6 +158,11 @@ static void render_lanes(int x, int y, int w, int h) {
 }
 
 void ui_home_render(void) {
+    if (g_app_state.active_top_tab != s_last_tab) {
+        s_last_tab = g_app_state.active_top_tab;
+        s_lane_cursor = 0;
+    }
+
     int x0, y0, x1, y1;
     shell_get_main_area(&x0, &y0, &x1, &y1);
     int mw = x1 - x0;
@@ -161,7 +172,7 @@ void ui_home_render(void) {
     int cy = y0 + 16;
     int content_w = mw - 48;
 
-    AppTrack *hero = NULL;
+    const AppTrack *hero = NULL;
     if (g_app_state.has_current_track) {
         hero = &g_app_state.current_track;
     } else if (g_app_state.track_count > 0) {
@@ -178,8 +189,13 @@ void ui_home_render(void) {
 }
 
 void ui_home_handle_input(InputAction act) {
-    int count = (int)g_app_state.track_count;
-    if (count <= 0) count = (int)g_app_state.album_count;
+    if (g_app_state.active_top_tab != s_last_tab) {
+        s_last_tab = g_app_state.active_top_tab;
+        s_lane_cursor = 0;
+    }
+
+    int count = 0;
+    const AppTrack *items = app_state_get_tab_items(g_app_state.active_top_tab, &count, NULL);
 
     switch (act) {
         case ACT_UP:
@@ -199,20 +215,27 @@ void ui_home_handle_input(InputAction act) {
             }
             break;
         case ACT_CROSS: {
-            AppTrack *t = NULL;
-            if (s_lane_cursor < (int)g_app_state.track_count) t = &g_app_state.tracks[s_lane_cursor];
-            else if (s_lane_cursor < (int)g_app_state.album_count) t = &g_app_state.albums[s_lane_cursor];
-            if (t) {
-                if (g_app_state.has_current_track && strcmp(g_app_state.current_track.id, t->id) == 0) {
-                    if (audio_engine_is_playing()) audio_engine_pause();
-                    else audio_engine_resume();
+            if (count > 0 && s_lane_cursor >= 0 && s_lane_cursor < count) {
+                const AppTrack *t = &items[s_lane_cursor];
+                TopFilterTab tab = g_app_state.active_top_tab;
+                if (tab == TAB_ALBUMS || (tab == TAB_ALL && g_app_state.track_count == 0)) {
+                    ui_search_open_album(t->id, t->title);
+                } else if (tab == TAB_ARTISTS) {
+                    ui_search_open_artist(t->id, t->title);
+                } else if (tab == TAB_PLAYLISTS) {
+                    ui_search_open_playlist(t->title);
                 } else {
-                    audio_engine_play_track(t->id, t->title);
-                    memcpy(&g_app_state.current_track, t, sizeof(AppTrack));
-                    g_app_state.has_current_track = true;
-                    app_state_add_recent(t->id, t->title);
-                    app_state_queue_push(t);
-                    if (t->cover_url[0]) cover_art_load(t->cover_url, g_app_state.cover_mode);
+                    if (g_app_state.has_current_track && strcmp(g_app_state.current_track.id, t->id) == 0) {
+                        if (audio_engine_is_playing()) audio_engine_pause();
+                        else audio_engine_resume();
+                    } else {
+                        audio_engine_play_track(t->id, t->title);
+                        memcpy(&g_app_state.current_track, t, sizeof(AppTrack));
+                        g_app_state.has_current_track = true;
+                        app_state_add_recent(t->id, t->title);
+                        app_state_queue_push(t);
+                        if (t->cover_url[0]) cover_art_load(t->cover_url, g_app_state.cover_mode);
+                    }
                 }
             }
             break;

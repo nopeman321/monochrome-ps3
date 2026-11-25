@@ -415,6 +415,8 @@ static int http_execute_get(const char *initial_host, uint16_t initial_port,
         }
         if (!net_hal_is_connected()) {
             last_err = ENETDOWN;
+            net_hal_log("HTTP ERR", "Aborted %s: link not connected (state=%d)",
+                        initial_path, (int)net_hal_get_state());
             break;
         }
         wait_while_menu_paused(abort_flag);
