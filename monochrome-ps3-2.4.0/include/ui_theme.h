@@ -3,18 +3,21 @@
 
 #include <stdint.h>
 
-/* ── Paleta Monocroma + Acento Violeta ───────────────────────────── */
-#define COLOR_BG          0x00000000   /* #000000 */
-#define COLOR_SURFACE     0x0012141C   /* gris oscuro superficie */
-#define COLOR_SURFACE_2   0x001A1E2A   /* superficie ligeramente más clara */
-#define COLOR_BORDER      0x00383D50   /* gris borde */
-#define COLOR_BORDER_LT   0x004A5268   /* borde resaltado */
-#define COLOR_TEXT        0x00FFFFFF   /* #FFFFFF */
-#define COLOR_TEXT_DIM    0x008890A4   /* plata secundario legible */
-#define COLOR_ACCENT      0x007B2CBF   /* #7B2CBF violeta */
-#define COLOR_ACCENT_LT   0x009D4EDD   /* #9D4EDD violeta claro / lilac */
-#define COLOR_ACTIVE_BG   0x00FFFFFF   /* bloque blanco para ítem activo */
-#define COLOR_ACTIVE_TEXT 0x007B2CBF   /* texto violeta sobre blanco */
+/* ── Neutral Monochrome Palette + Playback-Only Violet Accent ────── */
+#define COLOR_BG          0x00000000   /* #000000 pure black */
+#define COLOR_BAR_BG      0x00000000   /* #000000 translucent bar backdrop */
+#define COLOR_SURFACE     0x00080808   /* #080808 dark neutral surface */
+#define COLOR_SURFACE_2   0x00161616   /* #161616 elevated neutral surface */
+#define COLOR_MODAL_BG    0x00060606   /* #060606 translucent modal panel */
+#define COLOR_SCRIM       0x00000000   /* #000000 modal backdrop scrim */
+#define COLOR_BORDER      0x002E2E2E   /* #2E2E2E subtle hairline border */
+#define COLOR_BORDER_LT   0x00888888   /* #888888 highlighted border */
+#define COLOR_TEXT        0x00FFFFFF   /* #FFFFFF primary text */
+#define COLOR_TEXT_DIM    0x009A9A9A   /* #9A9A9A secondary dim text */
+#define COLOR_ACTIVE_BG   0x00FFFFFF   /* #FFFFFF solid white active block */
+#define COLOR_ACTIVE_TEXT 0x00000000   /* #000000 black text on white active block */
+#define COLOR_ACCENT      0x007B2CBF   /* #7B2CBF violet (playback-only) */
+#define COLOR_ACCENT_LT   0x009D4EDD   /* #9D4EDD light violet (playback-only) */
 
 /* ── Medidas virtuales 1920x1080 ─────────────────────────────────── */
 #define VIRT_W 1920
@@ -55,15 +58,18 @@ static inline uint32_t th_color(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 }
 
 #define TH_BG          th_color(0x00, 0x00, 0x00, 0xFF)
-#define TH_SURFACE     th_color(0x12, 0x14, 0x1C, 0xFF)
-#define TH_SURFACE_2   th_color(0x1A, 0x1E, 0x2A, 0xFF)
-#define TH_BORDER      th_color(0x38, 0x3D, 0x50, 0xFF)
-#define TH_BORDER_LT   th_color(0x4A, 0x52, 0x68, 0xFF)
+#define TH_BAR_BG      th_color(0x00, 0x00, 0x00, 0xCC)
+#define TH_SURFACE     th_color(0x08, 0x08, 0x08, 0xA8)
+#define TH_SURFACE_2   th_color(0x16, 0x16, 0x16, 0xC4)
+#define TH_MODAL_BG    th_color(0x06, 0x06, 0x06, 0xEA)
+#define TH_SCRIM       th_color(0x00, 0x00, 0x00, 0xA0)
+#define TH_BORDER      th_color(0x2E, 0x2E, 0x2E, 0xFF)
+#define TH_BORDER_LT   th_color(0x88, 0x88, 0x88, 0xFF)
 #define TH_TEXT        th_color(0xFF, 0xFF, 0xFF, 0xFF)
-#define TH_TEXT_DIM    th_color(0x88, 0x90, 0xA4, 0xFF)
-#define TH_ACCENT      th_color(0x7B, 0x2C, 0xBF, 0xFF)
-#define TH_ACCENT_LT   th_color(0x9D, 0x4E, 0xDD, 0xFF)
+#define TH_TEXT_DIM    th_color(0x9A, 0x9A, 0x9A, 0xFF)
 #define TH_ACTIVE_BG   th_color(0xFF, 0xFF, 0xFF, 0xFF)
-#define TH_ACTIVE_TEXT th_color(0x7B, 0x2C, 0xBF, 0xFF)
+#define TH_ACTIVE_TEXT th_color(0x00, 0x00, 0x00, 0xFF)
+#define TH_ACCENT      th_color(0x7B, 0x2C, 0xBF, 0xFF) /* playback-only */
+#define TH_ACCENT_LT   th_color(0x9D, 0x4E, 0xDD, 0xFF) /* playback-only */
 
 #endif /* UI_THEME_H */
