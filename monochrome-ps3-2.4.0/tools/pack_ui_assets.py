@@ -18,17 +18,25 @@ Uso:
 import argparse
 import os
 import struct
+import sys
 import zlib
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS_RAW = os.path.join(BASE_DIR, "assets_raw")
 DATA_DIR = os.path.join(BASE_DIR, "data")
+PKGFILES_DIR = os.path.join(BASE_DIR, "pkgfiles")
 
 OUTPUT_PNGS = {
     "ui_frame_9slice.png":    (128, 128),
     "ui_glyphs_ds3.png":      (256, 256),
     "ui_icons_iso.png":       (256, 256),
     "ui_radar_rings.png":     (256, 256),
+}
+
+BG_SOURCES = {
+    "bg_fracture_hud.png":  {"highlight_scale": 1.00, "black_floor": 3},
+    "bg_matte_slabs.png":   {"highlight_scale": 0.85, "black_floor": 3},
+    "bg_liquid_chrome.png": {"highlight_scale": 1.00, "black_floor": 3},
 }
 
 WHITE = (255, 255, 255, 255)
@@ -291,6 +299,58 @@ def generate_placeholders():
     print("[OK] Placeholders 1-bit generados en data/")
 
 
+def _calibrate_bg_lut(black_floor, highlight_scale):
+    """Build a 256-entry L-mode lookup table clamping dark noise and scaling highlights."""
+    lut = []
+    for value in range(256):
+        if value <= black_floor:
+            lut.append(0)
+        else:
+            scaled = int(round(value * highlight_scale))
+            lut.append(255 if scaled > 255 else max(0, scaled))
+    return lut
+
+
+def pack_backgrounds():
+    """Export calibrated 8-bit grayscale backgrounds and XMB PIC1.PNG."""
+    try:
+        from PIL import Image
+    except ImportError:
+        print("[SKIP] backgrounds: Pillow is not available", file=sys.stderr)
+        return False
+
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(PKGFILES_DIR, exist_ok=True)
+    processed_any = False
+
+    for name, cfg in BG_SOURCES.items():
+        src = os.path.join(ASSETS_RAW, name)
+        if not os.path.exists(src):
+            print(f"[SKIP] {name}: missing {src}", file=sys.stderr)
+            continue
+
+        with Image.open(src) as img:
+            assert img.size == (1920, 1080), f"{name}: expected 1920x1080, got {img.size}"
+            gray = img.convert("L")
+            lut = _calibrate_bg_lut(cfg["black_floor"], cfg["highlight_scale"])
+            calibrated = gray.point(lut)
+            dst = os.path.join(DATA_DIR, name)
+            calibrated.save(dst, format="PNG", optimize=True)
+            print(f"[PACK] {dst} ({calibrated.size[0]}x{calibrated.size[1]}, mode={calibrated.mode})")
+            processed_any = True
+
+    pic1_src = os.path.join(ASSETS_RAW, "bg_fracture_hud.png")
+    if os.path.exists(pic1_src):
+        with Image.open(pic1_src) as img:
+            assert img.size == (1920, 1080), f"PIC1.PNG: expected 1920x1080, got {img.size}"
+            rgb = img.convert("RGB")
+            pic1_dst = os.path.join(PKGFILES_DIR, "PIC1.PNG")
+            rgb.save(pic1_dst, format="PNG", optimize=True)
+            print(f"[PACK] {pic1_dst} ({rgb.size[0]}x{rgb.size[1]}, mode={rgb.mode})")
+
+    return processed_any
+
+
 def process_from_assets_raw():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(ASSETS_RAW, exist_ok=True)
@@ -319,6 +379,8 @@ def process_from_assets_raw():
             generated_any = True
         else:
             print(f"[SKIP] {name}: no se encontro {src}")
+    if pack_backgrounds():
+        generated_any = True
     if not generated_any:
         print("[WARN] No se encontraron imagenes en assets_raw/. Use --generate-placeholders.")
 
@@ -327,10 +389,14 @@ def main():
     parser = argparse.ArgumentParser(description="Monochrome PS3 UI Asset Packer (1-bit)")
     parser.add_argument("--generate-placeholders", action="store_true",
                         help="Genera PNGs 1-bit geometricos validos en data/")
+    parser.add_argument("--backgrounds-only", action="store_true",
+                        help="Export calibrated 8-bit grayscale backgrounds and PIC1.PNG only")
     args = parser.parse_args()
 
     if args.generate_placeholders:
         generate_placeholders()
+    elif args.backgrounds_only:
+        pack_backgrounds()
     else:
         process_from_assets_raw()
 
