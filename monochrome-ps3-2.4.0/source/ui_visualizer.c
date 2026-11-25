@@ -23,9 +23,7 @@ bool ui_visualizer_is_fullscreen(void)
 void ui_visualizer_set_fullscreen(bool fullscreen)
 {
     g_app_state.visualizer_fullscreen = fullscreen;
-    if (!fullscreen) {
-        gfx_set_background_dim(1.0f);
-    }
+    gfx_set_background_dim(fullscreen ? 0.60f : 1.0f);
 }
 
 bool ui_visualizer_handle_input(Action act)
@@ -33,6 +31,7 @@ bool ui_visualizer_handle_input(Action act)
     if (!g_app_state.visualizer_fullscreen) {
         if (act == ACT_SQUARE) {
             g_app_state.visualizer_fullscreen = true;
+            gfx_set_background_dim(0.60f);
             return true;
         }
         return false;

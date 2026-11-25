@@ -215,7 +215,9 @@ int gfx_init(void)
 
     /* Virtual 1920x1080 -> native centered output with overscan + pre-baked bg */
     gfx_set_overscan(s_overscan_x, s_overscan_y, s_overscan_scale);
-    bake_background();
+    if (s_bg_dirty) {
+        bake_background();
+    }
 
     flip(s_context, 1);
     waitFlip();
@@ -357,11 +359,14 @@ void gfx_draw_rect(float x, float y, float w, float h, uint32_t rgba)
 
     uint32_t a = (rgba >> 24) & 0xFFu;
     if (a == 0u) return;
+    if (w <= 0.0f || h <= 0.0f) return;
 
     int ix = (int)vx(x);
     int iy = (int)vy(y);
     int iw = (int)vw(w);
     int ih = (int)vh(h);
+    if (iw < 1) iw = 1;
+    if (ih < 1) ih = 1;
     int bw = (int)s_screen_w;
     int bh = (int)s_screen_h;
 
@@ -556,6 +561,7 @@ int gfx_decode_png_memory(const uint8_t *buf, size_t len,
         png_set_filler(png_ptr, 0xFF, PNG_FILLER_AFTER);
     }
 
+    png_set_interlace_handling(png_ptr);
     png_read_update_info(png_ptr, info_ptr);
     png_size_t rowbytes = png_get_rowbytes(png_ptr, info_ptr);
     if (rowbytes != (png_size_t)w * 4u) {
