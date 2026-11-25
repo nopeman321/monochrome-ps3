@@ -37,27 +37,50 @@ void ui_settings_render(void) {
     int cy = y0 + 16;
     int content_w = mw - 48;
 
-    gfx_draw_text(cx, cy, "AJUSTES //", 15.0f, TH_ACCENT);
+    gfx_draw_text(cx, cy, "AJUSTES //", 15.0f, TH_TEXT);
     cy += 36;
 
     int row_h = 44;
+    char line[256];
 
-    /* Fila 0: Escalado de Zona Segura / Safe Area */
+    /* Row 0: Interface Background Theme */
+    static const char *const k_bg_theme_labels[BG_THEME_COUNT] = {
+        "Fractura HUD",
+        "Planos Mate",
+        "Cromo Liquido",
+        "Negro Puro"
+    };
+    int theme_idx = (int)g_app_state.bg_theme;
+    if (theme_idx < 0 || theme_idx >= BG_THEME_COUNT) {
+        theme_idx = 0;
+    }
     bool foc0 = (s_sel == 0);
     gfx_draw_rect(cx, cy, content_w, row_h, foc0 ? TH_SURFACE_2 : TH_SURFACE);
     if (foc0) {
         gfx_draw_rect_outline(cx, cy, content_w, row_h, TH_BORDER_LT, 1.0f);
-        gfx_draw_rect(cx, cy, 4, row_h, TH_ACCENT_LT);
+        gfx_draw_rect(cx, cy, 4, row_h, TH_TEXT);
+    } else {
+        gfx_draw_rect(cx, cy + row_h - 1, content_w, 1, TH_BORDER);
+    }
+    snprintf(line, sizeof(line), "Fondo de Interfaz: < %s >", k_bg_theme_labels[theme_idx]);
+    gfx_draw_text(cx + 16, cy + 14, line, 14.0f, foc0 ? TH_TEXT : TH_TEXT_DIM);
+    cy += row_h + 10;
+
+    /* Row 1: Safe Area Scaling */
+    bool foc1 = (s_sel == 1);
+    gfx_draw_rect(cx, cy, content_w, row_h, foc1 ? TH_SURFACE_2 : TH_SURFACE);
+    if (foc1) {
+        gfx_draw_rect_outline(cx, cy, content_w, row_h, TH_BORDER_LT, 1.0f);
+        gfx_draw_rect(cx, cy, 4, row_h, TH_TEXT);
     } else {
         gfx_draw_rect(cx, cy + row_h - 1, content_w, 1, TH_BORDER);
     }
 
     int pct = (int)(g_app_state.overscan_scale * 100.0f + 0.5f);
-    char line[256];
     snprintf(line, sizeof(line), "Escalado de Zona Segura: < %d%% (%.2fx) >", pct, g_app_state.overscan_scale);
-    gfx_draw_text(cx + 16, cy + 14, line, 14.0f, foc0 ? TH_TEXT : TH_TEXT_DIM);
+    gfx_draw_text(cx + 16, cy + 14, line, 14.0f, foc1 ? TH_TEXT : TH_TEXT_DIM);
 
-    /* Barra visual en la derecha */
+    /* Right-side visual slider bar */
     int slider_w = 180;
     int slider_h = 8;
     int slider_x = cx + content_w - slider_w - 20;
@@ -69,37 +92,37 @@ void ui_settings_render(void) {
     if (ratio > 1.0f) ratio = 1.0f;
     int fill_w = (int)(ratio * (float)slider_w);
     if (fill_w > 0) {
-        gfx_draw_rect(slider_x, slider_y, fill_w, slider_h, foc0 ? TH_ACCENT_LT : TH_ACCENT);
+        gfx_draw_rect(slider_x, slider_y, fill_w, slider_h, foc1 ? TH_TEXT : TH_TEXT_DIM);
     }
     cy += row_h + 10;
 
-    /* Fila 1: Timeout HTTP de Red */
-    bool foc1 = (s_sel == 1);
-    gfx_draw_rect(cx, cy, content_w, row_h, foc1 ? TH_SURFACE_2 : TH_SURFACE);
-    if (foc1) {
+    /* Row 2: Network HTTP Timeout */
+    bool foc2 = (s_sel == 2);
+    gfx_draw_rect(cx, cy, content_w, row_h, foc2 ? TH_SURFACE_2 : TH_SURFACE);
+    if (foc2) {
         gfx_draw_rect_outline(cx, cy, content_w, row_h, TH_BORDER_LT, 1.0f);
-        gfx_draw_rect(cx, cy, 4, row_h, TH_ACCENT_LT);
+        gfx_draw_rect(cx, cy, 4, row_h, TH_TEXT);
     } else {
         gfx_draw_rect(cx, cy + row_h - 1, content_w, 1, TH_BORDER);
     }
     snprintf(line, sizeof(line), "Timeout de Red (HTTP): < %u ms (%u s) >",
              g_app_state.http_timeout_ms, g_app_state.http_timeout_ms / 1000u);
-    gfx_draw_text(cx + 16, cy + 14, line, 14.0f, foc1 ? TH_TEXT : TH_TEXT_DIM);
+    gfx_draw_text(cx + 16, cy + 14, line, 14.0f, foc2 ? TH_TEXT : TH_TEXT_DIM);
     cy += row_h + 10;
 
-    /* Fila 2: Restablecer valores por defecto */
-    bool foc2 = (s_sel == 2);
-    gfx_draw_rect(cx, cy, content_w, row_h, foc2 ? TH_SURFACE_2 : TH_SURFACE);
-    if (foc2) {
+    /* Row 3: Reset Safe Area */
+    bool foc3 = (s_sel == 3);
+    gfx_draw_rect(cx, cy, content_w, row_h, foc3 ? TH_SURFACE_2 : TH_SURFACE);
+    if (foc3) {
         gfx_draw_rect_outline(cx, cy, content_w, row_h, TH_BORDER_LT, 1.0f);
-        gfx_draw_rect(cx, cy, 4, row_h, TH_ACCENT_LT);
+        gfx_draw_rect(cx, cy, 4, row_h, TH_TEXT);
     } else {
         gfx_draw_rect(cx, cy + row_h - 1, content_w, 1, TH_BORDER);
     }
-    gfx_draw_text(cx + 16, cy + 14, "Restablecer Zona Segura al 100% (Pantalla Completa)", 14.0f, foc2 ? TH_TEXT : TH_TEXT_DIM);
+    gfx_draw_text(cx + 16, cy + 14, "Restablecer Zona Segura al 100% (Pantalla Completa)", 14.0f, foc3 ? TH_TEXT : TH_TEXT_DIM);
     cy += row_h + 20;
 
-    /* Info de sistema + telemetria en vivo (box estructurado) */
+    /* System info + live telemetry (structured box) */
     NetHalTelemetry tel;
     net_hal_get_telemetry(&tel);
 
@@ -107,7 +130,7 @@ void ui_settings_render(void) {
     gfx_draw_rect(cx, cy, content_w, box_h, TH_SURFACE);
     gfx_draw_rect_outline(cx, cy, content_w, box_h, TH_BORDER, 1.0f);
 
-    gfx_draw_text(cx + 20, cy + 14, "DIAGNOSTICO DEL SISTEMA & TELEMETRIA // MONOCHROME PS3", 13.0f, TH_ACCENT);
+    gfx_draw_text(cx + 20, cy + 14, "DIAGNOSTICO DEL SISTEMA & TELEMETRIA // MONOCHROME PS3", 13.0f, TH_TEXT);
 
     int sy = cy + 40;
     snprintf(line, sizeof(line), "BUILD SHA:      %s  |  COMPILACION: %s", APP_BUILD_SHA, APP_BUILD_TIME);
@@ -121,7 +144,7 @@ void ui_settings_render(void) {
              tel.ip_str[0] ? tel.ip_str : "0.0.0.0",
              net_hal_is_menu_paused() ? "  [PAUSA XMB]" : "");
     gfx_draw_text_clipped(cx + 20, sy, (float)(content_w - 40), line, 12.0f,
-                          (tel.state == NET_HAL_IP_OBTAINED) ? TH_ACCENT_LT : TH_TEXT_DIM);
+                          (tel.state == NET_HAL_IP_OBTAINED) ? TH_TEXT : TH_TEXT_DIM);
     sy += 22;
 
     snprintf(line, sizeof(line), "DNS:            %s -> %s  |  h_errno: %d",
@@ -150,17 +173,24 @@ void ui_settings_handle_input(InputAction act) {
             if (s_sel > 0) s_sel--;
             break;
         case ACT_DOWN:
-            if (s_sel < 2) s_sel++;
+            if (s_sel < 3) s_sel++;
             break;
         case ACT_LEFT: {
             if (s_sel == 0) {
+                int t = (int)g_app_state.bg_theme;
+                if (t < 0 || t >= BG_THEME_COUNT) t = 0;
+                t = (t + BG_THEME_COUNT - 1) % BG_THEME_COUNT;
+                g_app_state.bg_theme = (BgThemeMode)t;
+                gfx_set_background_theme(t);
+                app_state_save_config();
+            } else if (s_sel == 1) {
                 float sc = g_app_state.overscan_scale - 0.01f;
                 if (sc < 0.75f) sc = 0.75f;
                 g_app_state.overscan_scale = (float)((int)(sc * 100.0f + 0.5f)) / 100.0f;
                 platform_set_screen_adjust(g_app_state.overscan_x, g_app_state.overscan_y, g_app_state.overscan_scale);
                 app_state_save_config();
                 platform_save_screen_config();
-            } else if (s_sel == 1) {
+            } else if (s_sel == 2) {
                 uint32_t t = (g_app_state.http_timeout_ms > 1000u) ? (g_app_state.http_timeout_ms - 1000u) : 5000u;
                 if (t < 5000u) t = 5000u;
                 g_app_state.http_timeout_ms = t;
@@ -171,13 +201,20 @@ void ui_settings_handle_input(InputAction act) {
         }
         case ACT_RIGHT: {
             if (s_sel == 0) {
+                int t = (int)g_app_state.bg_theme;
+                if (t < 0 || t >= BG_THEME_COUNT) t = 0;
+                t = (t + 1) % BG_THEME_COUNT;
+                g_app_state.bg_theme = (BgThemeMode)t;
+                gfx_set_background_theme(t);
+                app_state_save_config();
+            } else if (s_sel == 1) {
                 float sc = g_app_state.overscan_scale + 0.01f;
                 if (sc > 1.00f) sc = 1.00f;
                 g_app_state.overscan_scale = (float)((int)(sc * 100.0f + 0.5f)) / 100.0f;
                 platform_set_screen_adjust(g_app_state.overscan_x, g_app_state.overscan_y, g_app_state.overscan_scale);
                 app_state_save_config();
                 platform_save_screen_config();
-            } else if (s_sel == 1) {
+            } else if (s_sel == 2) {
                 uint32_t t = g_app_state.http_timeout_ms + 1000u;
                 if (t > 30000u) t = 30000u;
                 g_app_state.http_timeout_ms = t;
@@ -188,7 +225,14 @@ void ui_settings_handle_input(InputAction act) {
         }
         case ACT_CROSS: {
             if (s_sel == 0) {
-                /* Ciclar preajustes comunes: 100% -> 95% -> 90% -> 85% -> 80% -> 100% */
+                int t = (int)g_app_state.bg_theme;
+                if (t < 0 || t >= BG_THEME_COUNT) t = 0;
+                t = (t + 1) % BG_THEME_COUNT;
+                g_app_state.bg_theme = (BgThemeMode)t;
+                gfx_set_background_theme(t);
+                app_state_save_config();
+            } else if (s_sel == 1) {
+                /* Cycle common safe-area presets: 100% -> 95% -> 90% -> 85% -> 80% -> 100% */
                 int pct = (int)(g_app_state.overscan_scale * 100.0f + 0.5f);
                 if (pct >= 98) pct = 95;
                 else if (pct >= 93) pct = 90;
@@ -199,8 +243,8 @@ void ui_settings_handle_input(InputAction act) {
                 platform_set_screen_adjust(g_app_state.overscan_x, g_app_state.overscan_y, g_app_state.overscan_scale);
                 app_state_save_config();
                 platform_save_screen_config();
-            } else if (s_sel == 1) {
-                /* Ciclar presets: 5s -> 10s -> 15s -> 20s -> 30s -> 5s */
+            } else if (s_sel == 2) {
+                /* Cycle HTTP timeout presets: 5s -> 10s -> 15s -> 20s -> 30s -> 5s */
                 uint32_t t = g_app_state.http_timeout_ms;
                 if (t < 5000u) t = 5000u;
                 else if (t < 10000u) t = 10000u;
@@ -211,7 +255,7 @@ void ui_settings_handle_input(InputAction act) {
                 g_app_state.http_timeout_ms = t;
                 http_set_timeout_ms((int)t);
                 app_state_save_config();
-            } else if (s_sel == 2) {
+            } else if (s_sel == 3) {
                 g_app_state.overscan_scale = 1.0f;
                 g_app_state.overscan_x = 0;
                 g_app_state.overscan_y = 0;

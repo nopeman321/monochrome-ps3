@@ -23,6 +23,9 @@ bool ui_visualizer_is_fullscreen(void)
 void ui_visualizer_set_fullscreen(bool fullscreen)
 {
     g_app_state.visualizer_fullscreen = fullscreen;
+    if (!fullscreen) {
+        gfx_set_background_dim(1.0f);
+    }
 }
 
 bool ui_visualizer_handle_input(Action act)
@@ -35,9 +38,10 @@ bool ui_visualizer_handle_input(Action act)
         return false;
     }
 
-    /* ACT_SQUARE o ACT_CIRCLE cierran el visualizador */
+    /* ACT_SQUARE or ACT_CIRCLE close the visualizer */
     if (act == ACT_SQUARE || act == ACT_CIRCLE) {
         g_app_state.visualizer_fullscreen = false;
+        gfx_set_background_dim(1.0f);
         return true;
     }
 
@@ -81,8 +85,7 @@ void ui_visualizer_render(void)
         return;
     }
 
-    /* Pantalla completa monocromatica: fondo TH_BG */
-    gfx_draw_rect(0.0f, 0.0f, (float)VIRT_W, (float)VIRT_H, TH_BG);
+    gfx_set_background_dim(0.60f);
 
     /* Caratula grande */
     float cover_size = 380.0f;
