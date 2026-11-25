@@ -47,8 +47,9 @@ void ui_init(void)
     ui_queue_init();
     ui_visualizer_init();
 
-    /* Inicializar red */
+    /* Inicializar red y precargar buffer con catálogo inicial para Home */
     http_net_init();
+    ui_search_start_initial("daft");
 
     platform_log("[UI V3] Shell inicializado (Left Rail + Top Tabs + Bottom Dock)");
 }
@@ -98,9 +99,20 @@ AppState ui_handle_input(AppState current, InputAction act)
 {
     if (act == ACT_NONE) return current;
 
-    /* START: salida limpia */
+    /* En la pantalla de búsqueda con foco en contenido principal:
+       delegar prioritariamente a ui_search (START = buscar, CUADRADO = borrar,
+       TRIÁNGULO = espacio, SELECT = limpiar, etc.) antes de interceptores globales */
+    if (g_app_state.active_section == SEC_SEARCH && g_app_state.focus_zone == ZONE_MAIN_CONTENT) {
+        ui_search_handle_input(act);
+        return current;
+    }
+
+    /* START: en ningún contexto sale al XMB; si hay pista, conmuta reproducción/pausa */
     if (act == ACT_START) {
-        s_exit_requested = true;
+        if (g_app_state.has_current_track) {
+            if (audio_engine_is_playing()) audio_engine_pause();
+            else audio_engine_resume();
+        }
         return current;
     }
 
@@ -125,12 +137,6 @@ AppState ui_handle_input(AppState current, InputAction act)
     /* ACT_SQUARE: toggle visualizador fullscreen */
     if (act == ACT_SQUARE) {
         ui_visualizer_handle_input(act);
-        return current;
-    }
-
-    /* Si teclado de busqueda abierto, delegar todo a ui_search antes del shell */
-    if (g_app_state.active_section == SEC_SEARCH && g_app_state.focus_zone == ZONE_MAIN_CONTENT && ui_search_is_keyboard_open()) {
-        ui_search_handle_input(act);
         return current;
     }
 
@@ -205,6 +211,9 @@ void ui_render(AppState state, long frame)
         }
         return;
     }
+
+    /* Actualizar catálogo / búsqueda asíncrona en cada frame */
+    ui_search_update();
 
     /* Render shell (fondo + top bar + left rail + area central limpia) */
     shell_render(sw, sh, frame);

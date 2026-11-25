@@ -210,6 +210,8 @@ void ui_home_handle_input(InputAction act) {
                     audio_engine_play_track(t->id, t->title);
                     memcpy(&g_app_state.current_track, t, sizeof(AppTrack));
                     g_app_state.has_current_track = true;
+                    app_state_add_recent(t->id, t->title);
+                    app_state_queue_push(t);
                     if (t->cover_url[0]) cover_art_load(t->cover_url, g_app_state.cover_mode);
                 }
             }

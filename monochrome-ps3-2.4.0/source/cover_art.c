@@ -60,16 +60,49 @@ static void cover_log(const char *fmt, ...)
 }
 
 /* ── Estado global ─────────────────────────────────────────────── */
+#define MAX_PENDING_COVERS 8
+#define MAX_FAILED_COVERS  32
+#define COVER_HTTP_TIMEOUT_SEC 5
+
 static CoverCacheEntry s_cache[MAX_COVER_CACHE];
 static uint32_t s_access_clock = 0;
 static CoverArtMode s_cover_mode = COVER_MODE_ORIGINAL;
 
 static sys_ppu_thread_t s_cover_thread_id;
-static volatile bool s_cover_thread_running = false;
-static char s_pending_url[512] = "";
+static volatile bool s_worker_keep_running = false;
+static bool s_worker_thread_created = false;
+static char s_pending_queue[MAX_PENDING_COVERS][512];
+static int  s_pending_head = 0;
+static int  s_pending_tail = 0;
+static int  s_pending_count = 0;
+static char s_active_url[512] = "";
+static char s_failed_urls[MAX_FAILED_COVERS][512];
+static int  s_failed_next = 0;
 static sys_mutex_t s_cover_mutex;
 static bool s_mutex_initialized = false;
 static CoverArtMode cover_art_mode_global = COVER_MODE_ORIGINAL;
+
+static bool is_url_failed_locked(const char *url)
+{
+    for (int i = 0; i < MAX_FAILED_COVERS; i++) {
+        if (s_failed_urls[i][0] && strcmp(s_failed_urls[i], url) == 0)
+            return true;
+    }
+    return false;
+}
+
+static void mark_url_failed(const char *url)
+{
+    if (!url || !url[0]) return;
+    if (s_mutex_initialized) sysMutexLock(s_cover_mutex, 0);
+    if (!is_url_failed_locked(url)) {
+        strncpy(s_failed_urls[s_failed_next], url, 511);
+        s_failed_urls[s_failed_next][511] = '\0';
+        s_failed_next = (s_failed_next + 1) % MAX_FAILED_COVERS;
+    }
+    s_active_url[0] = '\0';
+    if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
+}
 
 /* ── libjpeg error manager ─────────────────────────────────────── */
 struct custom_jpeg_error_mgr {
@@ -227,23 +260,9 @@ static bool upload_texture(GfxTexture *tex, const uint8_t *rgba, int w, int h)
     return true;
 }
 
-/* ── Worker thread ─────────────────────────────────────────────── */
-static void cover_art_worker(void *arg)
+/* ── Worker thread persistente y no bloqueante ──────────────────── */
+static void download_one_cover(const char *url)
 {
-    (void)arg;
-    char url[512];
-
-    if (s_mutex_initialized) sysMutexLock(s_cover_mutex, 0);
-    strncpy(url, s_pending_url, sizeof(url) - 1);
-    url[sizeof(url) - 1] = '\0';
-    if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
-
-    if (url[0] == '\0') {
-        s_cover_thread_running = false;
-        sysThreadExit(0);
-        return;
-    }
-
     cover_log("[COVER THREAD] Descargando: %s", url);
 
     /* Parse URL */
@@ -254,8 +273,7 @@ static void cover_art_worker(void *arg)
     const char *slash = strchr(p, '/');
     if (!slash) {
         cover_log("[COVER ERROR] URL sin path: %s", url);
-        s_cover_thread_running = false;
-        sysThreadExit(0);
+        mark_url_failed(url);
         return;
     }
 
@@ -277,18 +295,23 @@ static void cover_art_worker(void *arg)
     struct hostent *he = gethostbyname(host);
     if (!he || !he->h_addr_list || !he->h_addr_list[0]) {
         cover_log("[COVER ERROR] DNS fallo para %s (errno: %d)", host, errno);
-        s_cover_thread_running = false;
-        sysThreadExit(0);
+        mark_url_failed(url);
         return;
     }
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
         cover_log("[COVER ERROR] socket() fallo: %d", errno);
-        s_cover_thread_running = false;
-        sysThreadExit(0);
+        mark_url_failed(url);
         return;
     }
+
+    /* Timeout estricto de 4s para no bloquear el worker si el proxy/CDN se cuelga */
+    struct timeval tv;
+    tv.tv_sec = COVER_HTTP_TIMEOUT_SEC;
+    tv.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
     struct sockaddr_in saddr;
     memset(&saddr, 0, sizeof(saddr));
@@ -299,8 +322,7 @@ static void cover_art_worker(void *arg)
     if (connect(sock, (struct sockaddr *)&saddr, sizeof(saddr)) < 0) {
         cover_log("[COVER ERROR] connect() fallo (errno: %d)", errno);
         close(sock);
-        s_cover_thread_running = false;
-        sysThreadExit(0);
+        mark_url_failed(url);
         return;
     }
 
@@ -316,8 +338,7 @@ static void cover_art_worker(void *arg)
     if (send(sock, req, strlen(req), 0) <= 0) {
         cover_log("[COVER ERROR] send HTTP fallo");
         close(sock);
-        s_cover_thread_running = false;
-        sysThreadExit(0);
+        mark_url_failed(url);
         return;
     }
 
@@ -325,7 +346,7 @@ static void cover_art_worker(void *arg)
     size_t head_len = 0;
     char *body_start = NULL;
 
-    while (head_len < sizeof(head_buf) - 1) {
+    while (s_worker_keep_running && head_len < sizeof(head_buf) - 1) {
         size_t to_read = sizeof(head_buf) - head_len - 1;
         if (to_read > 1024) to_read = 1024;
         ssize_t n = recv(sock, head_buf + head_len, to_read, 0);
@@ -336,11 +357,15 @@ static void cover_art_worker(void *arg)
         if (body_start) { body_start += 4; break; }
     }
 
-    if (!body_start) {
-        cover_log("[COVER ERROR] Headers HTTP incompletos");
+    if (!s_worker_keep_running) {
         close(sock);
-        s_cover_thread_running = false;
-        sysThreadExit(0);
+        return;
+    }
+
+    if (!body_start) {
+        cover_log("[COVER ERROR] Headers HTTP incompletos o timeout");
+        close(sock);
+        mark_url_failed(url);
         return;
     }
 
@@ -348,10 +373,9 @@ static void cover_art_worker(void *arg)
     char *sp = strchr(head_buf, ' ');
     if (sp) http_code = atoi(sp + 1);
     if (http_code != 200) {
-        cover_log("[COVER ERROR] HTTP %d", http_code);
+        cover_log("[COVER ERROR] HTTP %d (%s)", http_code, url);
         close(sock);
-        s_cover_thread_running = false;
-        sysThreadExit(0);
+        mark_url_failed(url);
         return;
     }
 
@@ -359,8 +383,7 @@ static void cover_art_worker(void *arg)
     if (!jpeg_buf) {
         cover_log("[COVER ERROR] malloc fallo para JPEG");
         close(sock);
-        s_cover_thread_running = false;
-        sysThreadExit(0);
+        mark_url_failed(url);
         return;
     }
 
@@ -371,7 +394,7 @@ static void cover_art_worker(void *arg)
         jpeg_size = initial_body;
     }
 
-    while (jpeg_size < MAX_COVER_SIZE) {
+    while (s_worker_keep_running && jpeg_size < MAX_COVER_SIZE) {
         size_t to_read = MAX_COVER_SIZE - jpeg_size;
         if (to_read > 8192) to_read = 8192;
         ssize_t n = recv(sock, jpeg_buf + jpeg_size, to_read, 0);
@@ -380,11 +403,15 @@ static void cover_art_worker(void *arg)
     }
     close(sock);
 
+    if (!s_worker_keep_running) {
+        free(jpeg_buf);
+        return;
+    }
+
     if (jpeg_size < 100) {
         cover_log("[COVER ERROR] Archivo muy corto: %lu bytes", (unsigned long)jpeg_size);
         free(jpeg_buf);
-        s_cover_thread_running = false;
-        sysThreadExit(0);
+        mark_url_failed(url);
         return;
     }
 
@@ -394,8 +421,7 @@ static void cover_art_worker(void *arg)
     if (!decode_jpeg_to_rgba(jpeg_buf, jpeg_size, &rgba, &w, &h)) {
         cover_log("[COVER ERROR] decode_jpeg_to_rgba fallo");
         free(jpeg_buf);
-        s_cover_thread_running = false;
-        sysThreadExit(0);
+        mark_url_failed(url);
         return;
     }
     free(jpeg_buf);
@@ -405,8 +431,7 @@ static void cover_art_worker(void *arg)
     free(rgba);
     if (!resized) {
         cover_log("[COVER ERROR] resize_rgba fallo");
-        s_cover_thread_running = false;
-        sysThreadExit(0);
+        mark_url_failed(url);
         return;
     }
 
@@ -416,10 +441,9 @@ static void cover_art_worker(void *arg)
     int slot = cache_find_slot(url);
     if (slot < 0) slot = cache_lru_victim();
     if (slot < 0) {
+        s_active_url[0] = '\0';
         if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
         free(resized);
-        s_cover_thread_running = false;
-        sysThreadExit(0);
         return;
     }
 
@@ -438,13 +462,43 @@ static void cover_art_worker(void *arg)
     }
     s_cache[slot].has_1bit = false;
     s_cache[slot].ready = s_cache[slot].has_og;
+    s_active_url[0] = '\0';
 
     if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
 
     free(resized);
 
     cover_log("[COVER READY] Caratula cacheada: %s (slot %d)", url, slot);
-    s_cover_thread_running = false;
+}
+
+static void cover_art_worker(void *arg)
+{
+    (void)arg;
+
+    while (s_worker_keep_running) {
+        char url[512];
+        url[0] = '\0';
+
+        if (s_mutex_initialized) sysMutexLock(s_cover_mutex, 0);
+        if (s_pending_count > 0) {
+            strncpy(url, s_pending_queue[s_pending_head], sizeof(url) - 1);
+            url[sizeof(url) - 1] = '\0';
+            s_pending_head = (s_pending_head + 1) % MAX_PENDING_COVERS;
+            s_pending_count--;
+
+            strncpy(s_active_url, url, sizeof(s_active_url) - 1);
+            s_active_url[sizeof(s_active_url) - 1] = '\0';
+        }
+        if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
+
+        if (url[0] == '\0') {
+            usleep(20000); /* 20ms idle poll */
+            continue;
+        }
+
+        download_one_cover(url);
+    }
+
     sysThreadExit(0);
 }
 
@@ -459,15 +513,39 @@ void cover_art_init(void)
             s_mutex_initialized = true;
     }
     memset(s_cache, 0, sizeof(s_cache));
+    memset(s_pending_queue, 0, sizeof(s_pending_queue));
+    memset(s_failed_urls, 0, sizeof(s_failed_urls));
+    s_pending_head = 0;
+    s_pending_tail = 0;
+    s_pending_count = 0;
+    s_active_url[0] = '\0';
+    s_failed_next = 0;
     s_access_clock = 0;
     s_cover_mode = COVER_MODE_ORIGINAL;
-    cover_log("[COVER] Caché LRU inicializado (%d slots, modo ORIGINAL)",
+
+    s_worker_keep_running = true;
+    int ret = sysThreadCreate(&s_cover_thread_id, cover_art_worker, NULL, 2000,
+                              0x20000, THREAD_JOINABLE, "mono_cover");
+    if (ret == 0) {
+        s_worker_thread_created = true;
+    } else {
+        s_worker_keep_running = false;
+        s_worker_thread_created = false;
+        cover_log("[COVER ERROR] sysThreadCreate(mono_cover) fallo: %d", ret);
+    }
+
+    cover_log("[COVER] Caché LRU inicializado (%d slots, modo ORIGINAL, worker async)",
               MAX_COVER_CACHE);
 }
 
 void cover_art_shutdown(void)
 {
-    s_cover_thread_running = false;
+    s_worker_keep_running = false;
+    if (s_worker_thread_created) {
+        uint64_t exit_val = 0;
+        sysThreadJoin(s_cover_thread_id, &exit_val);
+        s_worker_thread_created = false;
+    }
     cover_art_clear_all();
     cover_log("[COVER] Caché LRU detenido");
 }
@@ -485,12 +563,12 @@ void cover_art_set_mode(CoverArtMode mode)
 bool cover_art_load(const char *url, CoverArtMode mode)
 {
     if (!url || url[0] == '\0') {
-        cover_art_clear_all();
         return false;
     }
 
-    /* Si ya está cached, solo actualizar modo */
     if (s_mutex_initialized) sysMutexLock(s_cover_mutex, 0);
+
+    /* 1. Si ya está en caché, actualizar LRU y devolver inmediatamente */
     int slot = cache_find_slot(url);
     if (slot >= 0 && s_cache[slot].ready) {
         s_cache[slot].last_access = ++s_access_clock;
@@ -498,30 +576,40 @@ bool cover_art_load(const char *url, CoverArtMode mode)
         if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
         return true;
     }
-    if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
 
-    /* Si hay un hilo corriendo, esperarlo */
-    if (s_cover_thread_running) {
-        uint64_t exit_val = 0;
-        sysThreadJoin(s_cover_thread_id, &exit_val);
-        s_cover_thread_running = false;
-    }
-
-    cover_art_mode_global = mode; /* se usará en el worker */
-
-    if (s_mutex_initialized) sysMutexLock(s_cover_mutex, 0);
-    strncpy(s_pending_url, url, sizeof(s_pending_url) - 1);
-    s_pending_url[sizeof(s_pending_url) - 1] = '\0';
-    if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
-
-    s_cover_thread_running = true;
-    int ret = sysThreadCreate(&s_cover_thread_id, cover_art_worker, NULL, 2000,
-                              0x20000, THREAD_JOINABLE, "mono_cover");
-    if (ret != 0) {
-        cover_log("[COVER ERROR] sysThreadCreate fallo: %d", ret);
-        s_cover_thread_running = false;
+    /* 2. Si falló previamente, no reintentar cada frame */
+    if (is_url_failed_locked(url)) {
+        if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
         return false;
     }
+
+    /* 3. Si ya se está descargando actualmente, no duplicar */
+    if (s_active_url[0] && strcmp(s_active_url, url) == 0) {
+        if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
+        return false;
+    }
+
+    /* 4. Si ya está en cola pendiente, no duplicar */
+    for (int i = 0; i < s_pending_count; i++) {
+        int idx = (s_pending_head + i) % MAX_PENDING_COVERS;
+        if (strcmp(s_pending_queue[idx], url) == 0) {
+            if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
+            return false;
+        }
+    }
+
+    /* 5. Encolar de forma totalmente no bloqueante */
+    cover_art_mode_global = mode;
+    if (s_pending_count >= MAX_PENDING_COVERS) {
+        s_pending_head = (s_pending_head + 1) % MAX_PENDING_COVERS;
+        s_pending_count--;
+    }
+    strncpy(s_pending_queue[s_pending_tail], url, 511);
+    s_pending_queue[s_pending_tail][511] = '\0';
+    s_pending_tail = (s_pending_tail + 1) % MAX_PENDING_COVERS;
+    s_pending_count++;
+
+    if (s_mutex_initialized) sysMutexUnlock(s_cover_mutex);
     return true;
 }
 

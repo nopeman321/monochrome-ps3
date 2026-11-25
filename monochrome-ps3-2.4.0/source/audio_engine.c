@@ -55,8 +55,8 @@
 typedef struct {
     uint8_t *data;
     size_t   capacity;
-    volatile size_t received;
-    size_t   cursor;
+    volatile uint64_t received;
+    volatile uint64_t cursor;
     volatile bool download_complete;
     volatile bool abort;
     volatile uint32_t seq;
@@ -227,11 +227,30 @@ static char s_pending_track_title[128] = "";
 
 static volatile uint64_t s_total_pcm_frames = 0;
 static volatile uint64_t s_current_pcm_frame = 0;
+static volatile uint64_t s_played_pcm_frames = 0;
+static volatile uint32_t s_stream_sample_rate = 44100;
 
 /* Resampler boundary */
 static float s_resample_boundary[2] = { 0.0f, 0.0f };
 
-/* ── dr_flac Progressive In-Memory Stream Callbacks ── */
+/* ── Ring Buffer Write Helper for Progressive FLAC Streaming ── */
+static void stream_ring_write(const uint8_t *src, size_t len)
+{
+    if (!src || len == 0 || !s_stream_ctx.data || s_stream_ctx.capacity == 0) return;
+    size_t cap = s_stream_ctx.capacity;
+    size_t off = (size_t)(s_stream_ctx.received % cap);
+    size_t contig = cap - off;
+    if (len <= contig) {
+        memcpy(s_stream_ctx.data + off, src, len);
+    } else {
+        memcpy(s_stream_ctx.data + off, src, contig);
+        memcpy(s_stream_ctx.data, src + contig, len - contig);
+    }
+    __asm__ volatile("lwsync" ::: "memory");
+    s_stream_ctx.received += len;
+}
+
+/* ── dr_flac Progressive In-Memory Ring Stream Callbacks ── */
 static size_t flac_stream_read(void *pUserData, void *pBufferOut, size_t bytesToRead)
 {
     StreamContext *ctx = (StreamContext *)pUserData;
@@ -246,9 +265,20 @@ static size_t flac_stream_read(void *pUserData, void *pBufferOut, size_t bytesTo
         }
     }
 
-    size_t avail = ctx->received - ctx->cursor;
-    size_t to_copy = (avail < bytesToRead) ? avail : bytesToRead;
-    memcpy(pBufferOut, ctx->data + ctx->cursor, to_copy);
+    uint64_t avail = ctx->received - ctx->cursor;
+    size_t to_copy = (avail < (uint64_t)bytesToRead) ? (size_t)avail : bytesToRead;
+    size_t cap = ctx->capacity;
+    size_t off = (size_t)(ctx->cursor % cap);
+    size_t contig = cap - off;
+
+    if (to_copy <= contig) {
+        memcpy(pBufferOut, ctx->data + off, to_copy);
+    } else {
+        memcpy(pBufferOut, ctx->data + off, contig);
+        memcpy((uint8_t *)pBufferOut + contig, ctx->data, to_copy - contig);
+    }
+
+    __asm__ volatile("lwsync" ::: "memory");
     ctx->cursor += to_copy;
     return to_copy;
 }
@@ -256,14 +286,19 @@ static size_t flac_stream_read(void *pUserData, void *pBufferOut, size_t bytesTo
 static drflac_bool32 flac_stream_seek(void *pUserData, int offset, drflac_seek_origin origin)
 {
     StreamContext *ctx = (StreamContext *)pUserData;
-    size_t new_pos = 0;
+    uint64_t new_pos = 0;
     if (origin == DRFLAC_SEEK_SET) {
         if (offset < 0) return DRFLAC_FALSE;
-        new_pos = (size_t)offset;
+        new_pos = (uint64_t)offset;
     } else if (origin == DRFLAC_SEEK_CUR) {
-        if (offset < 0 && (size_t)(-offset) > ctx->cursor) return DRFLAC_FALSE;
-        new_pos = ctx->cursor + offset;
+        if (offset < 0 && (uint64_t)(-offset) > ctx->cursor) return DRFLAC_FALSE;
+        new_pos = (offset < 0) ? (ctx->cursor - (uint64_t)(-offset)) : (ctx->cursor + (uint64_t)offset);
     } else {
+        return DRFLAC_FALSE;
+    }
+
+    /* Si los datos solicitados ya fueron sobrescritos en el anillo (>48 MB atrás), rechazar seek */
+    if (ctx->received > ctx->capacity && new_pos < (ctx->received - ctx->capacity)) {
         return DRFLAC_FALSE;
     }
 
@@ -275,6 +310,7 @@ static drflac_bool32 flac_stream_seek(void *pUserData, int offset, drflac_seek_o
         if (wait_ms > 20000) return DRFLAC_FALSE;
     }
 
+    __asm__ volatile("lwsync" ::: "memory");
     ctx->cursor = new_pos;
     return DRFLAC_TRUE;
 }
@@ -335,6 +371,10 @@ static void audio_hw_thread_func(void *arg)
 
         ring_read_frames(temp_block, AUDIO_BLOCK_SAMPLES);
 
+        uint32_t sr = s_stream_sample_rate;
+        if (sr == 0) sr = 44100;
+        s_played_pcm_frames += ((uint64_t)AUDIO_BLOCK_SAMPLES * (uint64_t)sr) / 48000ULL;
+
         float band_energy[VIS_BANDS];
         memset(band_energy, 0, sizeof(band_energy));
 
@@ -365,7 +405,7 @@ static void audio_hw_thread_func(void *arg)
 }
 
 /* ── HTTP Connection Helper (Supports Initial GET & HTTP Range Resumption) ── */
-static int stream_connect_http(const char *track_id, uint32_t seq, size_t offset, size_t *out_content_length, char *out_content_type, size_t ct_size)
+static int stream_connect_http(const char *track_id, uint32_t seq, uint64_t offset, uint64_t *out_content_length, char *out_content_type, size_t ct_size)
 {
     if (out_content_length) *out_content_length = 0;
     if (out_content_type && ct_size > 0) out_content_type[0] = '\0';
@@ -422,13 +462,13 @@ static int stream_connect_http(const char *track_id, uint32_t seq, size_t offset
             snprintf(req, sizeof(req),
                      "GET /track/%s HTTP/1.1\r\n"
                      "Host: %s\r\n"
-                     "Range: bytes=%lu-\r\n"
+                     "Range: bytes=%llu-\r\n"
                      "User-Agent: Mozilla/5.0 (PlayStation 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
                      "Accept: application/octet-stream, audio/flac, */*\r\n"
                      "Referer: https://monochrome.st/\r\n"
                      "Origin: https://monochrome.st\r\n"
                      "Connection: keep-alive\r\n\r\n",
-                     track_id, API_HOST, (unsigned long)offset);
+                     track_id, API_HOST, (unsigned long long)offset);
         } else {
             snprintf(req, sizeof(req),
                      "GET /track/%s HTTP/1.1\r\n"
@@ -494,14 +534,21 @@ static int stream_connect_http(const char *track_id, uint32_t seq, size_t offset
             continue;
         }
 
+        if (offset > 0 && http_code == 200) {
+            stage6_log("[STREAM RESUME] Servidor ignoro Range (HTTP 200 en offset %llu), reintentando...",
+                       (unsigned long long)offset);
+            close(sock);
+            continue;
+        }
+
         /* Parse Content-Length */
-        size_t clen = 0;
+        uint64_t clen = 0;
         char *cl_ptr = strstr(head_buf, "Content-Length:");
         if (!cl_ptr) cl_ptr = strstr(head_buf, "content-length:");
         if (cl_ptr) {
-            unsigned long cl_tmp = 0;
-            sscanf(cl_ptr + 15, " %lu", &cl_tmp);
-            clen = (size_t)cl_tmp;
+            unsigned long long cl_tmp = 0;
+            sscanf(cl_ptr + 15, " %llu", &cl_tmp);
+            clen = (uint64_t)cl_tmp;
         }
 
         /* If Range (206), check Content-Range for total length */
@@ -511,9 +558,9 @@ static int stream_connect_http(const char *track_id, uint32_t seq, size_t offset
             if (cr_ptr) {
                 char *slash = strchr(cr_ptr, '/');
                 if (slash) {
-                    unsigned long total_tmp = 0;
-                    if (sscanf(slash + 1, "%lu", &total_tmp) == 1 && total_tmp > 0) {
-                        clen = (size_t)total_tmp;
+                    unsigned long long total_tmp = 0;
+                    if (sscanf(slash + 1, "%llu", &total_tmp) == 1 && total_tmp > 0) {
+                        clen = (uint64_t)total_tmp;
                     }
                 }
             }
@@ -530,14 +577,20 @@ static int stream_connect_http(const char *track_id, uint32_t seq, size_t offset
             }
         }
 
-        stage6_log("[STREAM HTTP] Conectado: Codigo %d | Content-Length: %lu bytes", http_code, (unsigned long)clen);
+        stage6_log("[STREAM HTTP] Conectado: Codigo %d | Content-Length: %llu bytes", http_code, (unsigned long long)clen);
 
-        /* Copy any excess body bytes into stream buffer */
-        size_t header_consumed = body_start - head_buf;
+        /* Copy any excess body bytes into sliding ring buffer */
+        size_t header_consumed = (size_t)(body_start - head_buf);
         size_t initial_body_bytes = head_len - header_consumed;
-        if (initial_body_bytes > 0 && s_stream_ctx.received + initial_body_bytes <= s_stream_ctx.capacity) {
-            memcpy(s_stream_ctx.data + s_stream_ctx.received, body_start, initial_body_bytes);
-            s_stream_ctx.received += initial_body_bytes;
+        if (initial_body_bytes > 0) {
+            while (s_engine_running && seq == s_track_sequence) {
+                uint64_t ahead = (s_stream_ctx.received >= s_stream_ctx.cursor) ? (s_stream_ctx.received - s_stream_ctx.cursor) : 0;
+                if (ahead + initial_body_bytes <= s_stream_ctx.capacity) {
+                    stream_ring_write((const uint8_t *)body_start, initial_body_bytes);
+                    break;
+                }
+                usleep(10000);
+            }
         }
 
         return sock;
@@ -589,12 +642,13 @@ static void stream_download_worker_func(void *arg)
         }
 
         if (f_cache) {
+            bool cache_loaded = false;
             fseek(f_cache, 0, SEEK_END);
             long fsize = ftell(f_cache);
             fseek(f_cache, 0, SEEK_SET);
 
             if (fsize > 1024 && (size_t)fsize <= STREAM_BUFFER_CAPACITY) {
-                size_t read_bytes = fread(s_stream_ctx.data, 1, fsize, f_cache);
+                size_t read_bytes = fread(s_stream_ctx.data, 1, (size_t)fsize, f_cache);
                 if (read_bytes == (size_t)fsize) {
                     s_stream_ctx.received = read_bytes;
                     s_stream_ctx.download_complete = true;
@@ -604,14 +658,15 @@ static void stream_download_worker_func(void *arg)
                     stage6_log("[CACHE HIT] Pista cargada desde disco: %s (%ld KB) - Reproduccion inmediata",
                                s_stream_ctx.cache_path, fsize / 1024);
                     snprintf(s_status_message, sizeof(s_status_message), "Caché local (%ld KB)", fsize / 1024);
+                    cache_loaded = true;
                 }
             }
             fclose(f_cache);
-            continue; /* Done downloading cached track */
+            if (cache_loaded) continue; /* Done loading cached track */
         }
 
         /* 2. Connect to HTTP API and download */
-        size_t content_length = 0;
+        uint64_t content_length = 0;
         char content_type[64] = "desconocido";
         s_stream_ctx.seq = current_seq;
         __asm__ volatile("lwsync" ::: "memory");
@@ -641,16 +696,30 @@ static void stream_download_worker_func(void *arg)
         s_stream_ctx.sock = sock;
         uint64_t t_down_start = get_time_usec();
         uint64_t last_log_time = t_down_start;
-        size_t last_logged_bytes = s_stream_ctx.received;
+        uint64_t last_logged_bytes = s_stream_ctx.received;
 
         snprintf(s_status_message, sizeof(s_status_message), "Descargando stream...");
 
         while (s_engine_running && current_seq == s_track_sequence && !s_stream_ctx.download_complete) {
+            /* Esperar si la ventana deslizante de 48 MB está llena por delante del decodificador */
+            while (s_engine_running && current_seq == s_track_sequence && !s_stream_ctx.download_complete) {
+                uint64_t cur = s_stream_ctx.cursor;
+                uint64_t rec = s_stream_ctx.received;
+                uint64_t ahead = (rec >= cur) ? (rec - cur) : 0;
+                if (ahead < (uint64_t)(s_stream_ctx.capacity - 131072u)) {
+                    break;
+                }
+                usleep(20000);
+            }
+            if (!s_engine_running || current_seq != s_track_sequence || s_stream_ctx.download_complete) {
+                break;
+            }
+
             if (sock < 0) {
                 /* Try Range resume if disconnected prematurely */
                 if (content_length > 0 && s_stream_ctx.received < content_length) {
-                    stage6_log("[STREAM RESUME] Reconectando via Range (recibidos: %lu / %lu bytes)...",
-                               (unsigned long)s_stream_ctx.received, (unsigned long)content_length);
+                    stage6_log("[STREAM RESUME] Reconectando via Range (recibidos: %llu / %llu bytes)...",
+                               (unsigned long long)s_stream_ctx.received, (unsigned long long)content_length);
                     sock = stream_connect_http(s_stream_ctx.track_id, current_seq, s_stream_ctx.received, NULL, NULL, 0);
                     if (sock < 0) {
                         usleep(1000000); /* 1s backoff */
@@ -662,23 +731,34 @@ static void stream_download_worker_func(void *arg)
                 }
             }
 
-            size_t to_read = s_stream_ctx.capacity - s_stream_ctx.received;
-            if (to_read > 65536) to_read = 65536;
-            if (to_read == 0) break;
+            uint64_t cur = s_stream_ctx.cursor;
+            uint64_t rec = s_stream_ctx.received;
+            uint64_t ahead = (rec >= cur) ? (rec - cur) : 0;
+            size_t cap = s_stream_ctx.capacity;
+            size_t space_free = (cap > 65536u && ahead < (uint64_t)(cap - 65536u)) ? (size_t)((uint64_t)(cap - 65536u) - ahead) : 0;
+            if (space_free == 0) {
+                usleep(10000);
+                continue;
+            }
 
-            ssize_t n = recv(sock, s_stream_ctx.data + s_stream_ctx.received, to_read, 0);
+            size_t off = (size_t)(rec % cap);
+            size_t contig_space = cap - off;
+            size_t to_read = (space_free < contig_space) ? space_free : contig_space;
+            if (to_read > 65536u) to_read = 65536u;
+
+            ssize_t n = recv(sock, s_stream_ctx.data + off, to_read, 0);
             if (n > 0) {
-                s_stream_ctx.received += (size_t)n;
                 __asm__ volatile("lwsync" ::: "memory");
+                s_stream_ctx.received += (size_t)n;
 
                 uint64_t now = get_time_usec();
                 double dt_s = (double)(now - last_log_time) / 1000000.0;
-                if (dt_s >= 1.0 || s_stream_ctx.received >= last_logged_bytes + 524288) {
+                if (dt_s >= 1.0 || s_stream_ctx.received >= last_logged_bytes + 524288ULL) {
                     double kb = (double)(s_stream_ctx.received - last_logged_bytes) / 1024.0;
                     double speed_kb_s = (dt_s > 0.0) ? (kb / dt_s) : 0.0;
-                    stage6_log("[STREAM RECV] Descarga: %lu / %lu bytes (%.1f%%) | %.1f KB/s",
-                               (unsigned long)s_stream_ctx.received,
-                               (unsigned long)(content_length ? content_length : s_stream_ctx.received),
+                    stage6_log("[STREAM RECV] Descarga: %llu / %llu bytes (%.1f%%) | %.1f KB/s",
+                               (unsigned long long)s_stream_ctx.received,
+                               (unsigned long long)(content_length ? content_length : s_stream_ctx.received),
                                content_length ? ((double)s_stream_ctx.received * 100.0 / (double)content_length) : 100.0,
                                speed_kb_s);
                     last_logged_bytes = s_stream_ctx.received;
@@ -697,13 +777,18 @@ static void stream_download_worker_func(void *arg)
                     stage6_log("[STREAM COMPLETO] Descargados %.2f MB en %.2f s (Velocidad: %.2f MB/s)",
                                mb, down_s, speed_mb_s);
 
-                    /* Save to disk cache */
-                    FILE *fc = fopen(s_stream_ctx.cache_path, "wb");
-                    if (fc) {
-                        fwrite(s_stream_ctx.data, 1, s_stream_ctx.received, fc);
-                        fclose(fc);
-                        stage6_log("[CACHE GUARDADO] %lu bytes en %s", 
-                                   (unsigned long)s_stream_ctx.received, s_stream_ctx.cache_path);
+                    /* Save to disk cache only if the full file fits unwrapped inside the 48 MB buffer */
+                    if (s_stream_ctx.received <= s_stream_ctx.capacity) {
+                        FILE *fc = fopen(s_stream_ctx.cache_path, "wb");
+                        if (fc) {
+                            fwrite(s_stream_ctx.data, 1, (size_t)s_stream_ctx.received, fc);
+                            fclose(fc);
+                            stage6_log("[CACHE GUARDADO] %llu bytes en %s",
+                                       (unsigned long long)s_stream_ctx.received, s_stream_ctx.cache_path);
+                        }
+                    } else {
+                        stage6_log("[STREAM HI-RES] Pista >48MB (%llu bytes) reproducida via buffer circular",
+                                   (unsigned long long)s_stream_ctx.received);
                     }
                     break;
                 }
@@ -712,12 +797,13 @@ static void stream_download_worker_func(void *arg)
                 sock = -1;
                 s_stream_ctx.sock = -1;
                 if (content_length > 0 && s_stream_ctx.received < content_length) {
-                    stage6_log("[STREAM DISCONNECT] Servidor cerro conexion a los %lu / %lu bytes. Reanudando...",
-                               (unsigned long)s_stream_ctx.received, (unsigned long)content_length);
+                    stage6_log("[STREAM DISCONNECT] Servidor cerro conexion a los %llu / %llu bytes. Reanudando...",
+                               (unsigned long long)s_stream_ctx.received, (unsigned long long)content_length);
                     continue;
                 } else {
                     s_stream_ctx.download_complete = true;
-                    stage6_log("[STREAM COMPLETO] Fin de stream recibido (EOF, %lu bytes)", (unsigned long)s_stream_ctx.received);
+                    stage6_log("[STREAM COMPLETO] Fin de stream recibido (EOF, %llu bytes)",
+                               (unsigned long long)s_stream_ctx.received);
                     break;
                 }
             } else {
@@ -770,6 +856,7 @@ static void stream_decode_worker_func(void *arg)
         s_resample_boundary[1] = 0.0f;
         s_total_pcm_frames = 0;
         s_current_pcm_frame = 0;
+        s_played_pcm_frames = 0;
 
         /* Sincronizar con el worker de red para asegurar que inicializo el nuevo track */
         while (s_engine_running && current_seq == s_track_sequence && s_stream_ctx.seq != current_seq) {
@@ -822,6 +909,8 @@ static void stream_decode_worker_func(void *arg)
 
         s_total_pcm_frames = pFlac->totalPCMFrameCount;
         uint32_t srate = pFlac->sampleRate;
+        s_stream_sample_rate = srate ? srate : 44100;
+        s_played_pcm_frames = 0;
         uint32_t chans = pFlac->channels;
         uint32_t bps   = pFlac->bitsPerSample;
 
@@ -1107,6 +1196,7 @@ void audio_engine_play_track(const char *track_id, const char *title)
     s_stream_ctx.seq = 0;
     s_stream_ctx.received = 0;
     s_stream_ctx.download_complete = false;
+    s_played_pcm_frames = 0;
     __asm__ volatile("lwsync" ::: "memory");
 
     s_is_playing = true;
@@ -1152,7 +1242,10 @@ float audio_engine_get_volume(void)
 float audio_engine_get_progress(void)
 {
     if (s_total_pcm_frames > 0) {
-        return (float)((double)s_current_pcm_frame / (double)s_total_pcm_frames);
+        float p = (float)((double)s_played_pcm_frames / (double)s_total_pcm_frames);
+        if (p < 0.0f) p = 0.0f;
+        if (p > 1.0f) p = 1.0f;
+        return p;
     }
     return 0.0f;
 }

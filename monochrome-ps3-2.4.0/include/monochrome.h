@@ -157,7 +157,7 @@ typedef enum {
     ACT_L2,        /* Repeat mode toggle */
     ACT_R2,        /* Screen adjust scale+ */
     ACT_SELECT,    /* Shuffle toggle */
-    ACT_START      /* Exit cleanly */
+    ACT_START      /* Search / Play-Pause toggle */
 } InputAction;
 
 #endif /* MONOCHROME_PS3_H */
