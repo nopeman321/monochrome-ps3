@@ -61,6 +61,7 @@ typedef struct {
 
     /* Persistent configuration */
     CoverArtMode     cover_mode;
+    BgThemeMode      bg_theme;
     int              overscan_x;
     int              overscan_y;
     float            overscan_scale;

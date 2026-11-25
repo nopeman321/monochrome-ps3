@@ -31,6 +31,15 @@ typedef enum {
     COVER_MODE_ORIGINAL    = 1,
 } CoverArtMode;
 
+/* ── Background theme modes ──────────────────────────────────────── */
+typedef enum {
+    BG_THEME_FRACTURE_HUD  = 0, /* Default */
+    BG_THEME_MATTE_SLABS   = 1,
+    BG_THEME_LIQUID_CHROME = 2,
+    BG_THEME_PURE_BLACK    = 3,
+    BG_THEME_COUNT         = 4
+} BgThemeMode;
+
 /* ── Focus zones (input navigation) ──────────────────────────────── */
 typedef enum {
     ZONE_LEFT_RAIL,

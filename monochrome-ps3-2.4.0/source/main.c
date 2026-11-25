@@ -21,6 +21,7 @@ SYS_PROCESS_PARAM(1001, 0x100000);
 #include "audio_engine.h"
 #include "cover_art.h"
 #include "net_hal.h"
+#include "gfx_engine.h"
 
 int main(int argc, const char *argv[])
 {
@@ -43,8 +44,9 @@ int main(int argc, const char *argv[])
     /* Initialize application state (Phase 1) */
     app_state_init();
     app_state_load_config();
-    platform_log("[APP STATE] Initializado (seccion=%d, cover_mode=%d)",
-                 g_app_state.active_section, (int)g_app_state.cover_mode);
+    platform_log("[APP STATE] Initializado (seccion=%d, cover_mode=%d, bg_theme=%d)",
+                 g_app_state.active_section, (int)g_app_state.cover_mode,
+                 (int)g_app_state.bg_theme);
 
     /* Load screen adjustment config if saved */
     if (platform_load_screen_config() == 0) {
@@ -58,6 +60,8 @@ int main(int argc, const char *argv[])
     } else {
         platform_set_screen_adjust(g_app_state.overscan_x, g_app_state.overscan_y, g_app_state.overscan_scale);
     }
+
+    gfx_set_background_theme((int)g_app_state.bg_theme);
 
     cover_art_init();
 

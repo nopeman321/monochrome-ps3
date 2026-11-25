@@ -73,6 +73,7 @@ void app_state_init(void)
 
     /* Configuración por defecto */
     g_app_state.cover_mode       = COVER_MODE_ORIGINAL;
+    g_app_state.bg_theme         = BG_THEME_FRACTURE_HUD;
     g_app_state.overscan_x       = 0;
     g_app_state.overscan_y       = 0;
     g_app_state.overscan_scale   = 1.0f;
@@ -101,6 +102,10 @@ bool app_state_load_config(void)
 
         if (strcmp(key, "cover_mode") == 0) {
             g_app_state.cover_mode = COVER_MODE_ORIGINAL;
+        } else if (strcmp(key, "bg_theme") == 0) {
+            int t = atoi(val);
+            g_app_state.bg_theme = (t < 0 || t >= BG_THEME_COUNT)
+                ? BG_THEME_FRACTURE_HUD : (BgThemeMode)t;
         } else if (strcmp(key, "overscan_x") == 0) {
             g_app_state.overscan_x = atoi(val);
         } else if (strcmp(key, "overscan_y") == 0) {
@@ -129,6 +134,7 @@ bool app_state_save_config(void)
 
     fprintf(f, "# Monochrome PS3 - Configuracion persistente\n");
     fprintf(f, "cover_mode=%d\n", (int)g_app_state.cover_mode);
+    fprintf(f, "bg_theme=%d\n", (int)g_app_state.bg_theme);
     fprintf(f, "overscan_x=%d\n", g_app_state.overscan_x);
     fprintf(f, "overscan_y=%d\n", g_app_state.overscan_y);
     fprintf(f, "overscan_scale=%.3f\n", g_app_state.overscan_scale);
