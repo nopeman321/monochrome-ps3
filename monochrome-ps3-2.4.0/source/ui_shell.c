@@ -94,8 +94,8 @@ static void render_top_bar(int sw, int sh)
     int virt_w = VIRT_W;
     int bar_h = TOP_BAR_H;
 
-    /* Fondo de la barra superior */
-    gfx_draw_rect(0, 0, virt_w, bar_h, TH_SURFACE);
+    /* Top bar background */
+    gfx_draw_rect(0, 0, virt_w, bar_h, TH_BAR_BG);
     gfx_draw_rect(0, bar_h, virt_w, 2, TH_BORDER);
 
     int x = 24;
@@ -151,8 +151,8 @@ static void render_left_rail(int sw, int sh)
     int rw = rail_width();
     int bar_h = TOP_BAR_H;
 
-    /* Fondo del rail */
-    gfx_draw_rect(0, bar_h, rw, VIRT_H - bar_h - BOTTOM_DOCK_H, TH_SURFACE);
+    /* Rail background */
+    gfx_draw_rect(0, bar_h, rw, VIRT_H - bar_h - BOTTOM_DOCK_H, TH_BAR_BG);
     gfx_draw_rect(rw, bar_h, 2, VIRT_H - bar_h - BOTTOM_DOCK_H, TH_BORDER);
 
     int item_y = bar_h + 20;
@@ -169,8 +169,8 @@ static void render_left_rail(int sw, int sh)
         /* Fondo del item */
         if (is_active) {
             gfx_draw_rect(4, item_y, rw - 8, item_h, TH_ACTIVE_BG);
-            /* Barra de acento izquierda */
-            gfx_draw_rect(4, item_y, 4, item_h, TH_ACCENT);
+            /* Left accent bar */
+            gfx_draw_rect(4, item_y, 4, item_h, TH_BORDER_LT);
 
             if (rw > LEFT_RAIL_COLLAPSED_W) {
                 gfx_draw_rect(rw - 8, item_y + 6, 4, item_h - 12, TH_ACTIVE_TEXT);
@@ -311,23 +311,12 @@ void shell_render(int sw, int sh, long frame)
 {
     (void)sw;
     (void)sh;
+    gfx_set_background_dim(1.0f);
     s_shell_frame = (int)frame;
-
-    /* Fondo general */
-    gfx_draw_rect(0, 0, VIRT_W, VIRT_H, TH_BG);
 
     /* Top Bar */
     render_top_bar(VIRT_W, VIRT_H);
 
     /* Left Nav Rail */
     render_left_rail(VIRT_W, VIRT_H);
-
-    /* Area central (surface limpia para la vista activa) */
-    int x0, y0, x1, y1;
-    shell_get_main_area(&x0, &y0, &x1, &y1);
-    int mw = x1 - x0;
-    int mh = y1 - y0;
-    if (mw > 0 && mh > 0) {
-        gfx_draw_rect(x0, y0, mw, mh, TH_SURFACE);
-    }
 }

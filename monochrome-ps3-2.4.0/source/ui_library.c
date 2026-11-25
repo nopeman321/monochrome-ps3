@@ -45,7 +45,7 @@ void ui_library_render(void) {
 
         char sec_title[64];
         snprintf(sec_title, sizeof(sec_title), "BIBLIOTECA // %s", heading ? heading : "");
-        gfx_draw_text(cx, cy, sec_title, 15.0f, TH_ACCENT);
+        gfx_draw_text(cx, cy, sec_title, 15.0f, TH_TEXT);
         cy += 28;
 
         if (count <= 0) {
@@ -83,7 +83,7 @@ void ui_library_render(void) {
 
         gfx_draw_text(cx, y1 - 32, "[D-PAD] NAVEGAR   [X] ABRIR / REPRODUCIR   [L1/R1] PESTAÑAS", 12.0f, TH_TEXT_DIM);
     } else if (g_app_state.active_section == SEC_PLAYLISTS) {
-        gfx_draw_text(cx, cy, "PLAYLISTS //", 15.0f, TH_ACCENT);
+        gfx_draw_text(cx, cy, "PLAYLISTS //", 15.0f, TH_TEXT);
         cy += 28;
 
         int count = (int)g_app_state.playlist_count;
@@ -118,12 +118,12 @@ void ui_library_render(void) {
 
         gfx_draw_text(cx, y1 - 32, "[D-PAD] NAVEGAR   [X] REPRODUCIR   [L1/R1] PESTAÑAS", 12.0f, TH_TEXT_DIM);
     } else if (g_app_state.active_section == SEC_INSTANCES) {
-        gfx_draw_text(cx, cy, "INSTANCIAS //", 15.0f, TH_ACCENT);
+        gfx_draw_text(cx, cy, "INSTANCIAS //", 15.0f, TH_TEXT);
         cy += 28;
         gfx_draw_rect(cx, cy, content_w, 110, TH_SURFACE);
         gfx_draw_rect_outline(cx, cy, content_w, 110, TH_BORDER, 1.0f);
         gfx_draw_text(cx + 24, cy + 34, "NODOS MONOCHROME ACTIVOS", 15.0f, TH_TEXT);
-        gfx_draw_text(cx + 24, cy + 62, "tracks.monochrome.st [ONLINE - FLAC LOSSLESS STREAMING]", 13.0f, TH_ACCENT_LT);
+        gfx_draw_text(cx + 24, cy + 62, "tracks.monochrome.st [ONLINE - FLAC LOSSLESS STREAMING]", 13.0f, TH_TEXT);
     }
 }
 

@@ -318,14 +318,14 @@ void ui_search_render(void) {
         s_drilldown_title[0] = '\0';
     }
 
-    gfx_draw_text(cx, cy, "BUSQUEDA //", 15.0f, TH_ACCENT);
+    gfx_draw_text(cx, cy, "BUSQUEDA //", 15.0f, TH_TEXT);
     if (s_fallback_exhausted) {
-        gfx_draw_text(cx + 180, cy + 2, "[!] Pista no disponible (404) - selecciona otra", 12.0f, TH_ACCENT_LT);
+        gfx_draw_text(cx + 180, cy + 2, "[!] Pista no disponible (404) - selecciona otra", 12.0f, TH_TEXT_DIM);
     }
     cy += 24;
 
     /* Barra de búsqueda estilo terminal */
-    uint32_t border = (!s_focus_in_results) ? TH_ACCENT_LT : TH_BORDER;
+    uint32_t border = (!s_focus_in_results) ? TH_BORDER_LT : TH_BORDER;
     int bar_h = 36;
     gfx_draw_rect(cx, cy, content_w, bar_h, TH_SURFACE_2);
     gfx_draw_rect_outline(cx, cy, content_w, bar_h, border, 1.0f);
@@ -360,7 +360,7 @@ void ui_search_render(void) {
             uint32_t bg = focused ? TH_ACTIVE_BG : TH_SURFACE_2;
             uint32_t fg = focused ? TH_ACTIVE_TEXT : TH_TEXT;
             gfx_draw_rect(kx, ky, key_w, key_h, bg);
-            gfx_draw_rect_outline(kx, ky, key_w, key_h, focused ? TH_ACCENT_LT : TH_BORDER, 1.0f);
+            gfx_draw_rect_outline(kx, ky, key_w, key_h, focused ? TH_BORDER_LT : TH_BORDER, 1.0f);
             gfx_draw_text(kx + (key_w - 14) / 2, ky + (key_h - 14) / 2, ch, 14.0f, fg);
         }
     }
@@ -375,9 +375,9 @@ void ui_search_render(void) {
         int bx = kb_x + i * (bw + btn_gap);
         bool focused = (!s_focus_in_results && kb_row == 4 && kb_col == i);
         uint32_t bg = focused ? TH_ACTIVE_BG : TH_SURFACE_2;
-        uint32_t fg = focused ? TH_ACTIVE_TEXT : (i == 3 ? TH_ACCENT_LT : TH_TEXT);
+        uint32_t fg = focused ? TH_ACTIVE_TEXT : TH_TEXT;
         gfx_draw_rect(bx, by, bw, bh, bg);
-        gfx_draw_rect_outline(bx, by, bw, bh, focused ? TH_ACCENT_LT : (i == 3 ? TH_ACCENT : TH_BORDER), 1.0f);
+        gfx_draw_rect_outline(bx, by, bw, bh, focused ? TH_BORDER_LT : TH_BORDER, 1.0f);
         int btn_text_w = (int)strlen(btns[i]) * 12;
         gfx_draw_text(bx + (bw - btn_text_w) / 2, by + (bh - 12) / 2, btns[i], 12.0f, fg);
     }
@@ -400,14 +400,14 @@ void ui_search_render(void) {
     if (s_busy) {
         gfx_draw_rect(cx, res_y, content_w, 70, TH_SURFACE);
         gfx_draw_rect_outline(cx, res_y, content_w, 70, TH_BORDER, 1.0f);
-        gfx_draw_text(cx + 24, res_y + 26, "CONSULTANDO CATALOGO FLAC EN TIEMPO REAL...", 14.0f, TH_ACCENT_LT);
+        gfx_draw_text(cx + 24, res_y + 26, "CONSULTANDO CATALOGO FLAC EN TIEMPO REAL...", 14.0f, TH_TEXT);
         return;
     }
 
     if (s_error) {
         gfx_draw_rect(cx, res_y, content_w, 80, TH_SURFACE);
         gfx_draw_rect_outline(cx, res_y, content_w, 80, TH_BORDER, 1.0f);
-        gfx_draw_text(cx + 24, res_y + 20, "[X] ERROR DE CONEXION CON EL SERVIDOR TRACKS", 14.0f, TH_ACCENT_LT);
+        gfx_draw_text(cx + 24, res_y + 20, "[X] ERROR DE CONEXION CON EL SERVIDOR TRACKS", 14.0f, TH_TEXT);
         gfx_draw_text(cx + 24, res_y + 46, "Verifica tu conexion o presiona [START] para reintentar.", 12.0f, TH_TEXT_DIM);
         return;
     }
@@ -415,7 +415,7 @@ void ui_search_render(void) {
     if (s_drilldown_tracks) {
         char sub[256];
         snprintf(sub, sizeof(sub), "ALBUM: %s  (CIRCULO: VOLVER A ALBUMES)", s_drilldown_title);
-        gfx_draw_text(cx, res_y, sub, 13.0f, TH_ACCENT_LT);
+        gfx_draw_text(cx, res_y, sub, 13.0f, TH_TEXT);
         res_y += 20;
         res_h -= 20;
 
@@ -477,7 +477,7 @@ void ui_search_render(void) {
                 gfx_draw_rect(cx, res_y + i*row_h, content_w, row_h - 2, bg);
                 if (is_foc) {
                     gfx_draw_rect_outline(cx, res_y + i*row_h, content_w, row_h - 2, TH_BORDER_LT, 1.0f);
-                    gfx_draw_rect(cx, res_y + i*row_h, 4, row_h - 2, TH_ACCENT_LT);
+                    gfx_draw_rect(cx, res_y + i*row_h, 4, row_h - 2, TH_TEXT);
                 } else {
                     gfx_draw_rect(cx, res_y + i*row_h + row_h - 2, content_w, 1, TH_BORDER);
                 }
@@ -508,7 +508,7 @@ void ui_search_render(void) {
                 gfx_draw_rect(cx, res_y + i*row_h, content_w, row_h - 2, bg);
                 if (is_foc) {
                     gfx_draw_rect_outline(cx, res_y + i*row_h, content_w, row_h - 2, TH_BORDER_LT, 1.0f);
-                    gfx_draw_rect(cx, res_y + i*row_h, 4, row_h - 2, TH_ACCENT_LT);
+                    gfx_draw_rect(cx, res_y + i*row_h, 4, row_h - 2, TH_TEXT);
                 } else {
                     gfx_draw_rect(cx, res_y + i*row_h + row_h - 2, content_w, 1, TH_BORDER);
                 }
@@ -537,7 +537,7 @@ void ui_search_render(void) {
                 gfx_draw_rect(cx, res_y + i*row_h, content_w, row_h - 2, bg);
                 if (is_foc) {
                     gfx_draw_rect_outline(cx, res_y + i*row_h, content_w, row_h - 2, TH_BORDER_LT, 1.0f);
-                    gfx_draw_rect(cx, res_y + i*row_h, 4, row_h - 2, TH_ACCENT_LT);
+                    gfx_draw_rect(cx, res_y + i*row_h, 4, row_h - 2, TH_TEXT);
                 } else {
                     gfx_draw_rect(cx, res_y + i*row_h + row_h - 2, content_w, 1, TH_BORDER);
                 }

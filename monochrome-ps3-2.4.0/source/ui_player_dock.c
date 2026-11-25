@@ -30,8 +30,8 @@ void player_dock_render(int sw, int sh, long frame)
     int dock_y = virt_h - BOTTOM_DOCK_H;   /* 984 */
     int dock_h = BOTTOM_DOCK_H;            /* 96 */
 
-    /* Fondo del dock */
-    gfx_draw_rect(0, dock_y, virt_w, dock_h, TH_SURFACE);
+    /* Dock background */
+    gfx_draw_rect(0, dock_y, virt_w, dock_h, TH_BAR_BG);
     gfx_draw_rect(0, dock_y, virt_w, 2, TH_BORDER);
 
     /* ── Izquierda: caratula 72x72 ─────────────────────────────── */
@@ -182,7 +182,7 @@ void player_dock_render(int sw, int sh, long frame)
                 int pip_x = bar_x + fill_w - 3;
                 if (pip_x < bar_x) pip_x = bar_x;
                 if (pip_x > bar_x + bar_w - 6) pip_x = bar_x + bar_w - 6;
-                gfx_draw_rect(pip_x, bar_y - 3, 6, bar_h + 6, TH_ACTIVE_TEXT);
+                gfx_draw_rect(pip_x, bar_y - 3, 6, bar_h + 6, TH_ACCENT);
                 gfx_draw_rect(pip_x + 1, bar_y - 2, 4, bar_h + 4, TH_ACCENT_LT);
             }
         }

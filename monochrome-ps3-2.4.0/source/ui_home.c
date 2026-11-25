@@ -26,7 +26,7 @@ void ui_home_init(void) {
 static void render_hero(int x, int y, int w, int h, const AppTrack *track) {
     gfx_draw_rect(x, y, w, h, TH_SURFACE);
     gfx_draw_rect_outline(x, y, w, h, TH_BORDER, 1.0f);
-    gfx_draw_text(x + 20, y + 14, "DESTACADO //", 13.0f, TH_ACCENT);
+    gfx_draw_text(x + 20, y + 14, "DESTACADO //", 13.0f, TH_TEXT_DIM);
 
     int cx = x + 24;
     int cy = y + 36;
@@ -72,7 +72,7 @@ static void render_hero(int x, int y, int w, int h, const AppTrack *track) {
     int b1_w = 256;
     gfx_draw_rect(bx, by, b1_w, 26, TH_SURFACE_2);
     gfx_draw_rect_outline(bx, by, b1_w, 26, TH_BORDER, 1.0f);
-    gfx_draw_text(bx + 14, by + 6, "FLAC 48kHz / 24-bit", 12.0f, TH_ACCENT_LT);
+    gfx_draw_text(bx + 14, by + 6, "FLAC 48kHz / 24-bit", 12.0f, TH_TEXT);
 
     int b2_x = bx + b1_w + 16;
     int b2_w = 160;

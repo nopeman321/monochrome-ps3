@@ -35,7 +35,7 @@ void album_card_render(float x, float y, float w, float h,
 
     /* Borde segun estado */
     if (is_focused) {
-        gfx_draw_rect_outline(x, y, w, h, TH_ACCENT_LT, 2.0f);
+        gfx_draw_rect_outline(x, y, w, h, TH_BORDER_LT, 2.0f);
     } else if (is_playing) {
         gfx_draw_rect_outline(x, y, w, h, TH_ACCENT, 1.0f);
     } else {
@@ -83,8 +83,8 @@ void track_row_render(float x, float y, float w, float h,
     if (is_focused) {
         gfx_draw_rect(x, y, w, h - 2.0f, TH_SURFACE_2);
         gfx_draw_rect_outline(x, y, w, h - 2.0f, TH_BORDER_LT, 1.0f);
-        /* Barra de acento izquierda de 4px */
-        gfx_draw_rect(x, y, 4.0f, h - 2.0f, TH_ACCENT_LT);
+        /* Left 4px accent bar */
+        gfx_draw_rect(x, y, 4.0f, h - 2.0f, TH_TEXT);
     } else if (is_playing) {
         gfx_draw_rect(x, y, w, h - 2.0f, TH_SURFACE);
         /* Barra de acento tenue izquierda */
@@ -96,10 +96,10 @@ void track_row_render(float x, float y, float w, float h,
     }
 
     /* Colores del texto con alto contraste garantizado */
-    uint32_t idx_color = is_focused ? TH_ACCENT_LT : (is_playing ? TH_ACCENT : TH_TEXT_DIM);
+    uint32_t idx_color = is_focused ? TH_TEXT : (is_playing ? TH_ACCENT : TH_TEXT_DIM);
     uint32_t title_color = is_focused ? TH_TEXT : (is_playing ? TH_ACCENT_LT : TH_TEXT);
     uint32_t sub_color = is_focused ? TH_TEXT_DIM : TH_TEXT_DIM;
-    uint32_t dur_color = is_focused ? TH_ACCENT_LT : TH_TEXT_DIM;
+    uint32_t dur_color = is_focused ? TH_TEXT : TH_TEXT_DIM;
 
     /* Indice numerico o glifo de reproduccion */
     char idxbuf[16];

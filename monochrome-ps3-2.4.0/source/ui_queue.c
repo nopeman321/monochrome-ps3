@@ -87,15 +87,15 @@ void ui_queue_render(void)
     float panel_h = (float)VIRT_H;
     float panel_x = (float)VIRT_W - panel_w;
 
-    /* Scrim semitransparente sobre el area principal */
-    gfx_draw_rect(0.0f, 0.0f, panel_x, panel_h, th_color(0, 0, 0, 160));
+    /* Semi-transparent scrim over main area */
+    gfx_draw_rect(0.0f, 0.0f, panel_x, panel_h, TH_SCRIM);
 
-    /* Panel lateral derecho */
-    gfx_draw_rect(panel_x, 0.0f, panel_w, panel_h, TH_SURFACE);
+    /* Right side drawer */
+    gfx_draw_rect(panel_x, 0.0f, panel_w, panel_h, TH_MODAL_BG);
     gfx_draw_rect(panel_x, 0.0f, 2.0f, panel_h, TH_BORDER);
 
-    /* Encabezado */
-    gfx_draw_text(panel_x + 24.0f, 36.0f, "COLA DE REPRODUCCION //", 16.0f, TH_ACCENT);
+    /* Header */
+    gfx_draw_text(panel_x + 24.0f, 36.0f, "COLA DE REPRODUCCION //", 16.0f, TH_TEXT);
 
     if (g_app_state.queue_count == 0) {
         gfx_draw_text(panel_x + 24.0f, 64.0f, "0 pistas en lista", 13.0f, TH_TEXT_DIM);
@@ -114,7 +114,7 @@ void ui_queue_render(void)
         float box_w = panel_w - 48.0f;
         gfx_draw_rect(box_x, box_y, box_w, 130.0f, TH_SURFACE_2);
         gfx_draw_rect_outline(box_x, box_y, box_w, 130.0f, TH_BORDER, 1.0f);
-        gfx_draw_text(box_x + 20.0f, box_y + 24.0f, "[ COLA DE REPRODUCCION VACIA ]", 15.0f, TH_ACCENT_LT);
+        gfx_draw_text(box_x + 20.0f, box_y + 24.0f, "[ COLA DE REPRODUCCION VACIA ]", 15.0f, TH_TEXT);
         gfx_draw_text(box_x + 20.0f, box_y + 54.0f, "No hay pistas en la cola de reproduccion.", 13.0f, TH_TEXT_DIM);
         gfx_draw_text(box_x + 20.0f, box_y + 78.0f, "Agrega pistas pulsando X desde Inicio o Busqueda.", 13.0f, TH_TEXT_DIM);
     } else {
@@ -152,7 +152,7 @@ void ui_queue_render(void)
             if (is_selected) {
                 gfx_draw_rect(rx, ry, rw, row_h - 4.0f, TH_SURFACE_2);
                 gfx_draw_rect_outline(rx, ry, rw, row_h - 4.0f, TH_BORDER_LT, 1.0f);
-                gfx_draw_rect(rx, ry, 4.0f, row_h - 4.0f, TH_ACCENT_LT);
+                gfx_draw_rect(rx, ry, 4.0f, row_h - 4.0f, TH_TEXT);
             } else if (is_current) {
                 gfx_draw_rect(rx, ry, rw, row_h - 4.0f, TH_SURFACE);
                 gfx_draw_rect(rx, ry, 4.0f, row_h - 4.0f, TH_ACCENT);
@@ -164,7 +164,7 @@ void ui_queue_render(void)
 
             uint32_t title_color = is_selected ? TH_TEXT : (is_current ? TH_ACCENT_LT : TH_TEXT);
             uint32_t dim_color = TH_TEXT_DIM;
-            uint32_t num_color = is_selected ? TH_ACCENT_LT : (is_current ? TH_ACCENT : TH_TEXT_DIM);
+            uint32_t num_color = is_selected ? TH_TEXT : (is_current ? TH_ACCENT : TH_TEXT_DIM);
 
             char num_str[16];
             if (is_current) {
