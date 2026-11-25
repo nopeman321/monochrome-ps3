@@ -48,5 +48,9 @@ void gfx_draw_wireframe_mesh(float cx, float cy, float scale,
 int  gfx_get_width(void);
 int  gfx_get_height(void);
 void gfx_set_overscan(int offset_x, int offset_y, float scale);
+int  gfx_set_background_theme(int theme_id);
+void gfx_set_background_dim(float brightness);
+int  gfx_decode_png_memory(const uint8_t *buf, size_t len,
+                           uint8_t **out_rgba, int *out_w, int *out_h);
 
 #endif /* GFX_ENGINE_H */

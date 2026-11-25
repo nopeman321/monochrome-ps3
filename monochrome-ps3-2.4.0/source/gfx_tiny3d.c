@@ -13,6 +13,7 @@
 #include <string.h>
 #include <math.h>
 #include <malloc.h>
+#include <png.h>
 
 #include <rsx/gcm_sys.h>
 #include <rsx/rsx.h>
@@ -22,6 +23,9 @@
 #include "gfx_engine.h"
 #include "platform.h"
 #include "monochrome.h"
+#include "bg_fracture_hud_png.h"
+#include "bg_matte_slabs_png.h"
+#include "bg_liquid_chrome_png.h"
 
 /* ── RSX screen buffers (modo CPU framebuffer, compatible con rsxutil) ── */
 static gcmContextData *s_context = NULL;
@@ -39,6 +43,15 @@ static float s_scale_x = 1.0f;
 static float s_scale_y = 1.0f;
 static float s_offset_x = 0.0f;
 static float s_offset_y = 0.0f;
+
+/* XDR shadow framebuffer and pre-baked background state */
+static uint32_t *s_shadow_fb     = NULL;
+static uint32_t *s_baked_bg_xdr  = NULL;
+static int       s_bg_theme      = BG_THEME_FRACTURE_HUD;
+static float     s_bg_brightness = 1.0f;
+static bool      s_bg_dirty      = true;
+
+static void bake_background(void);
 
 /* ── 8x8 Bitmap Font (misma que la usada antes en platform_psl1ght.c) ── */
 static const uint8_t FONT8[95][8] = {
@@ -187,8 +200,22 @@ int gfx_init(void)
         }
     }
 
-    /* Escala virtual 1920x1080 -> salida real centrada con overscan */
+    /* Allocate XDR shadow framebuffer for zero-VRAM-read CPU compositing */
+    size_t fb_bytes = (size_t)s_screen_w * (size_t)s_screen_h * 4u;
+    s_shadow_fb = (uint32_t *)memalign(64, fb_bytes);
+    if (!s_shadow_fb) {
+        platform_log("[GFX] Error: memalign failed for s_shadow_fb (%lu B)",
+                     (unsigned long)fb_bytes);
+        return -1;
+    }
+    size_t fb_pixels = (size_t)s_screen_w * (size_t)s_screen_h;
+    for (size_t i = 0; i < fb_pixels; i++) {
+        s_shadow_fb[i] = 0xFF000000u;
+    }
+
+    /* Virtual 1920x1080 -> native centered output with overscan + pre-baked bg */
     gfx_set_overscan(s_overscan_x, s_overscan_y, s_overscan_scale);
+    bake_background();
 
     flip(s_context, 1);
     waitFlip();
@@ -207,67 +234,169 @@ void gfx_shutdown(void)
         s_tmp_tex.data = NULL;
         s_tmp_tex_allocated = false;
     }
+    free(s_shadow_fb);
+    s_shadow_fb = NULL;
+    free(s_baked_bg_xdr);
+    s_baked_bg_xdr = NULL;
+    s_bg_dirty = true;
     platform_log("[GFX] Backend RSX cerrado");
 }
 
 void gfx_begin_frame(uint32_t clear_rgba)
 {
-    rsxBuffer *b = &s_buffers[s_cur_buffer];
-    int count = b->width * b->height;
-    uint32_t color = clear_rgba;
-    uint64_t color64 = ((uint64_t)color << 32) | (uint64_t)color;
-    uint64_t *ptr64 = (uint64_t *)b->ptr;
+    if (!s_shadow_fb) return;
+
+    int count = (int)s_screen_w * (int)s_screen_h;
     int count64 = count / 2;
-    for (int i = 0; i < count64; i += 4) {
-        ptr64[i]     = color64;
-        ptr64[i + 1] = color64;
-        ptr64[i + 2] = color64;
-        ptr64[i + 3] = color64;
-    }
-    if (count & 1) {
-        b->ptr[count - 1] = color;
+
+    if (s_bg_theme == BG_THEME_PURE_BLACK || s_baked_bg_xdr == NULL ||
+        s_bg_brightness <= 0.001f) {
+        uint32_t color = 0xFF000000u | (clear_rgba & 0x00FFFFFFu);
+        uint64_t color64 = ((uint64_t)color << 32) | (uint64_t)color;
+        uint64_t *dst64 = (uint64_t *)s_shadow_fb;
+        int i = 0;
+        for (; i + 3 < count64; i += 4) {
+            dst64[i]     = color64;
+            dst64[i + 1] = color64;
+            dst64[i + 2] = color64;
+            dst64[i + 3] = color64;
+        }
+        for (; i < count64; i++) {
+            dst64[i] = color64;
+        }
+        if (count & 1) {
+            s_shadow_fb[count - 1] = color;
+        }
+    } else if (s_bg_brightness >= 0.999f) {
+        const uint64_t *src64 = (const uint64_t *)s_baked_bg_xdr;
+        uint64_t *dst64 = (uint64_t *)s_shadow_fb;
+        int i = 0;
+        for (; i + 3 < count64; i += 4) {
+            dst64[i]     = src64[i];
+            dst64[i + 1] = src64[i + 1];
+            dst64[i + 2] = src64[i + 2];
+            dst64[i + 3] = src64[i + 3];
+        }
+        for (; i < count64; i++) {
+            dst64[i] = src64[i];
+        }
+        if (count & 1) {
+            s_shadow_fb[count - 1] = s_baked_bg_xdr[count - 1];
+        }
+    } else {
+        int s_int = (int)(s_bg_brightness * 256.0f + 0.5f);
+        if (s_int < 0) s_int = 0;
+        if (s_int > 256) s_int = 256;
+        uint32_t scale = (uint32_t)s_int;
+        for (int i = 0; i < count; i++) {
+            uint32_t px = s_baked_bg_xdr[i];
+            uint32_t r = (((px >> 16) & 0xFFu) * scale) >> 8;
+            uint32_t g = (((px >> 8)  & 0xFFu) * scale) >> 8;
+            uint32_t b = ((px         & 0xFFu) * scale) >> 8;
+            s_shadow_fb[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
+        }
     }
 }
 
 void gfx_end_frame(void)
 {
-    flip(s_context, s_buffers[s_cur_buffer].id);
+    rsxBuffer *b = &s_buffers[s_cur_buffer];
+    if (s_shadow_fb && b->ptr) {
+        int count = b->width * b->height;
+        int max_count = (int)s_screen_w * (int)s_screen_h;
+        if (count > max_count) count = max_count;
+        const uint64_t *src64 = (const uint64_t *)s_shadow_fb;
+        uint64_t *dst64 = (uint64_t *)b->ptr;
+        int count64 = count / 2;
+        int i = 0;
+        for (; i + 3 < count64; i += 4) {
+            dst64[i]     = src64[i];
+            dst64[i + 1] = src64[i + 1];
+            dst64[i + 2] = src64[i + 2];
+            dst64[i + 3] = src64[i + 3];
+        }
+        for (; i < count64; i++) {
+            dst64[i] = src64[i];
+        }
+        if (count & 1) {
+            b->ptr[count - 1] = s_shadow_fb[count - 1];
+        }
+    }
+    flip(s_context, b->id);
     s_cur_buffer = (s_cur_buffer + 1) % 2;
     waitFlip();
 }
 
 /* ── Primitive 2D ──────────────────────────────────────────────── */
 
+static inline void blend_pixel_xrgb(uint32_t *dst, uint32_t rgba)
+{
+    uint32_t a = (rgba >> 24) & 0xFFu;
+    if (a == 0u) return;
+    if (a == 255u) {
+        *dst = 0xFF000000u | (rgba & 0x00FFFFFFu);
+        return;
+    }
+    uint32_t inv = 255u - a;
+    uint32_t d = *dst;
+    uint32_t sr = (rgba >> 16) & 0xFFu;
+    uint32_t sg = (rgba >> 8)  & 0xFFu;
+    uint32_t sb =  rgba        & 0xFFu;
+    uint32_t dr = (d >> 16) & 0xFFu;
+    uint32_t dg = (d >> 8)  & 0xFFu;
+    uint32_t db =  d        & 0xFFu;
+    uint32_t r = (sr * a + dr * inv + 127u) / 255u;
+    uint32_t g = (sg * a + dg * inv + 127u) / 255u;
+    uint32_t b = (sb * a + db * inv + 127u) / 255u;
+    *dst = 0xFF000000u | (r << 16) | (g << 8) | b;
+}
+
 void gfx_draw_rect(float x, float y, float w, float h, uint32_t rgba)
 {
+    if (!s_shadow_fb) return;
+
+    uint32_t a = (rgba >> 24) & 0xFFu;
+    if (a == 0u) return;
+
     int ix = (int)vx(x);
     int iy = (int)vy(y);
     int iw = (int)vw(w);
     int ih = (int)vh(h);
+    int bw = (int)s_screen_w;
+    int bh = (int)s_screen_h;
 
-    rsxBuffer *b = &s_buffers[s_cur_buffer];
     if (ix < 0) { iw += ix; ix = 0; }
     if (iy < 0) { ih += iy; iy = 0; }
-    if (ix + iw > b->width)  iw = b->width - ix;
-    if (iy + ih > b->height) ih = b->height - iy;
+    if (ix + iw > bw) iw = bw - ix;
+    if (iy + ih > bh) ih = bh - iy;
     if (iw <= 0 || ih <= 0) return;
 
-    uint64_t color64 = ((uint64_t)rgba << 32) | (uint64_t)rgba;
+    if (a == 255u) {
+        uint32_t opaque = 0xFF000000u | (rgba & 0x00FFFFFFu);
+        uint64_t color64 = ((uint64_t)opaque << 32) | (uint64_t)opaque;
 
-    for (int r = iy; r < iy + ih; r++) {
-        uint32_t *row = &b->ptr[r * b->width + ix];
-        int rem = iw;
-        if (((uintptr_t)row & 7) && rem > 0) {
-            *row++ = rgba;
-            rem--;
+        for (int r = iy; r < iy + ih; r++) {
+            uint32_t *row = &s_shadow_fb[(size_t)r * (size_t)bw + (size_t)ix];
+            int rem = iw;
+            if (((uintptr_t)row & 7u) && rem > 0) {
+                *row++ = opaque;
+                rem--;
+            }
+            int w64 = rem / 2;
+            uint64_t *row64 = (uint64_t *)row;
+            for (int i = 0; i < w64; i++) {
+                row64[i] = color64;
+            }
+            if (rem & 1) {
+                row[w64 * 2] = opaque;
+            }
         }
-        int w64 = rem / 2;
-        uint64_t *row64 = (uint64_t *)row;
-        for (int i = 0; i < w64; i++) {
-            row64[i] = color64;
-        }
-        if (rem & 1) {
-            row[w64 * 2] = rgba;
+    } else {
+        for (int r = iy; r < iy + ih; r++) {
+            uint32_t *row = &s_shadow_fb[(size_t)r * (size_t)bw + (size_t)ix];
+            for (int c = 0; c < iw; c++) {
+                blend_pixel_xrgb(&row[c], rgba);
+            }
         }
     }
 }
@@ -275,46 +404,193 @@ void gfx_draw_rect(float x, float y, float w, float h, uint32_t rgba)
 void gfx_draw_rect_outline(float x, float y, float w, float h,
                            uint32_t rgba, float thickness)
 {
+    if (!s_shadow_fb) return;
+
+    uint32_t a = (rgba >> 24) & 0xFFu;
+    if (a == 0u) return;
+
     int ix = (int)vx(x);
     int iy = (int)vy(y);
     int iw = (int)vw(w);
     int ih = (int)vh(h);
     int t = (int)(thickness * s_scale_x);
     if (t < 1) t = 1;
+    if (iw <= 0 || ih <= 0) return;
 
-    rsxBuffer *b = &s_buffers[s_cur_buffer];
+    int bw = (int)s_screen_w;
+    int bh = (int)s_screen_h;
+
+    int x_start = (ix > 0) ? ix : 0;
+    int x_end   = (ix + iw < bw) ? (ix + iw) : bw;
+    if (x_start >= x_end) return;
+
+    int top_end   = (iy + t < iy + ih) ? (iy + t) : (iy + ih);
+    int bot_start = (iy + ih - t > top_end) ? (iy + ih - t) : top_end;
 
     /* Top */
-    for (int r = iy; r < iy + t; r++) {
-        if (r < 0 || r >= b->height) continue;
-        if (ix < 0 || ix >= b->width) continue;
-        uint32_t *row = &b->ptr[(size_t)r * b->width + ix];
-        for (int c = 0; c < iw && ix + c < b->width; c++) row[c] = rgba;
+    for (int r = (iy > 0 ? iy : 0); r < top_end && r < bh; r++) {
+        uint32_t *row = &s_shadow_fb[(size_t)r * (size_t)bw];
+        for (int c = x_start; c < x_end; c++) {
+            blend_pixel_xrgb(&row[c], rgba);
+        }
     }
     /* Bottom */
-    for (int r = iy + ih - t; r < iy + ih; r++) {
-        if (r < 0 || r >= b->height) continue;
-        if (ix < 0 || ix >= b->width) continue;
-        uint32_t *row = &b->ptr[(size_t)r * b->width + ix];
-        for (int c = 0; c < iw && ix + c < b->width; c++) row[c] = rgba;
+    for (int r = (bot_start > 0 ? bot_start : 0); r < iy + ih && r < bh; r++) {
+        uint32_t *row = &s_shadow_fb[(size_t)r * (size_t)bw];
+        for (int c = x_start; c < x_end; c++) {
+            blend_pixel_xrgb(&row[c], rgba);
+        }
     }
-    /* Left */
-    for (int r = iy + t; r < iy + ih - t; r++) {
-        if (r < 0 || r >= b->height) continue;
-        if (ix < 0 || ix >= b->width) continue;
-        uint32_t *row = &b->ptr[(size_t)r * b->width + ix];
-        for (int c = 0; c < t && ix + c < b->width; c++) row[c] = rgba;
-    }
-    /* Right */
-    for (int r = iy + t; r < iy + ih - t; r++) {
-        if (r < 0 || r >= b->height) continue;
-        if (ix + iw - t < 0 || ix + iw - t >= b->width) continue;
-        uint32_t *row = &b->ptr[(size_t)r * b->width + ix + iw - t];
-        for (int c = 0; c < t && ix + iw - t + c < b->width; c++) row[c] = rgba;
+
+    int mid_y0 = (top_end > 0) ? top_end : 0;
+    int mid_y1 = (bot_start < bh) ? bot_start : bh;
+    if (mid_y0 >= mid_y1) return;
+
+    int left_end    = (ix + t < ix + iw) ? (ix + t) : (ix + iw);
+    int right_start = (ix + iw - t > left_end) ? (ix + iw - t) : left_end;
+    int lx0 = (ix > 0) ? ix : 0;
+    int lx1 = (left_end < bw) ? left_end : bw;
+    int rx0 = (right_start > 0) ? right_start : 0;
+    int rx1 = (ix + iw < bw) ? (ix + iw) : bw;
+
+    /* Left and Right */
+    for (int r = mid_y0; r < mid_y1; r++) {
+        uint32_t *row = &s_shadow_fb[(size_t)r * (size_t)bw];
+        for (int c = lx0; c < lx1; c++) {
+            blend_pixel_xrgb(&row[c], rgba);
+        }
+        for (int c = rx0; c < rx1; c++) {
+            blend_pixel_xrgb(&row[c], rgba);
+        }
     }
 }
 
 /* ── Texturas ──────────────────────────────────────────────────── */
+
+typedef struct {
+    const uint8_t *data;
+    size_t         pos;
+    size_t         len;
+} PngMemCursor;
+
+static void png_mem_read_cb(png_structp png_ptr, png_bytep out, png_size_t count)
+{
+    PngMemCursor *cursor = (PngMemCursor *)png_get_io_ptr(png_ptr);
+    if (!cursor || cursor->pos > cursor->len ||
+        (size_t)count > cursor->len - cursor->pos) {
+        png_error(png_ptr, "PNG unexpected EOF in memory buffer");
+        return;
+    }
+    memcpy(out, cursor->data + cursor->pos, (size_t)count);
+    cursor->pos += (size_t)count;
+}
+
+int gfx_decode_png_memory(const uint8_t *buf, size_t len,
+                          uint8_t **out_rgba, int *out_w, int *out_h)
+{
+    if (out_rgba) *out_rgba = NULL;
+    if (out_w) *out_w = 0;
+    if (out_h) *out_h = 0;
+    if (!buf || len < 8u || !out_rgba || !out_w || !out_h) return -1;
+
+    png_byte sig[8];
+    memcpy(sig, buf, 8u);
+    if (png_sig_cmp(sig, 0, 8) != 0) return -1;
+
+    png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (!png_ptr) return -1;
+
+    png_infop info_ptr = png_create_info_struct(png_ptr);
+    if (!info_ptr) {
+        png_destroy_read_struct(&png_ptr, NULL, NULL);
+        return -1;
+    }
+
+    uint8_t * volatile rgba_buf = NULL;
+    png_bytep * volatile row_ptrs = NULL;
+    PngMemCursor cursor = { buf, 8u, len };
+
+    if (setjmp(png_jmpbuf(png_ptr))) {
+        free(row_ptrs);
+        free(rgba_buf);
+        *out_rgba = NULL;
+        *out_w = 0;
+        *out_h = 0;
+        png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+        return -1;
+    }
+
+    png_set_read_fn(png_ptr, &cursor, png_mem_read_cb);
+    png_set_sig_bytes(png_ptr, 8);
+    png_read_info(png_ptr, info_ptr);
+
+    png_uint_32 w = 0;
+    png_uint_32 h = 0;
+    int bit_depth = 0;
+    int color_type = 0;
+    png_get_IHDR(png_ptr, info_ptr, &w, &h, &bit_depth, &color_type,
+                 NULL, NULL, NULL);
+
+    if (w == 0 || h == 0 || w > 4096 || h > 4096) {
+        png_error(png_ptr, "PNG dimensions out of range");
+    }
+
+    if (bit_depth == 16) {
+        png_set_strip_16(png_ptr);
+    }
+    if (color_type == PNG_COLOR_TYPE_PALETTE) {
+        png_set_palette_to_rgb(png_ptr);
+    }
+    if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8) {
+        png_set_expand_gray_1_2_4_to_8(png_ptr);
+    }
+    if (png_get_valid(png_ptr, info_ptr, PNG_INFO_tRNS)) {
+        png_set_tRNS_to_alpha(png_ptr);
+    }
+    if (color_type == PNG_COLOR_TYPE_GRAY ||
+        color_type == PNG_COLOR_TYPE_GRAY_ALPHA) {
+        png_set_gray_to_rgb(png_ptr);
+    }
+    if (!(color_type & PNG_COLOR_MASK_ALPHA) &&
+        !png_get_valid(png_ptr, info_ptr, PNG_INFO_tRNS)) {
+        png_set_filler(png_ptr, 0xFF, PNG_FILLER_AFTER);
+    }
+
+    png_read_update_info(png_ptr, info_ptr);
+    png_size_t rowbytes = png_get_rowbytes(png_ptr, info_ptr);
+    if (rowbytes != (png_size_t)w * 4u) {
+        png_error(png_ptr, "PNG unexpected RGBA rowbytes");
+    }
+
+    size_t rgba_size = (size_t)w * (size_t)h * 4u;
+    uint8_t *rgba = (uint8_t *)memalign(16, rgba_size);
+    if (!rgba) {
+        png_error(png_ptr, "PNG out of memory");
+    }
+    rgba_buf = rgba;
+
+    png_bytep *rows = (png_bytep *)malloc((size_t)h * sizeof(png_bytep));
+    if (!rows) {
+        png_error(png_ptr, "PNG out of memory for row pointers");
+    }
+    row_ptrs = rows;
+
+    for (png_uint_32 y = 0; y < h; y++) {
+        rows[y] = rgba + (size_t)y * (size_t)rowbytes;
+    }
+
+    png_read_image(png_ptr, rows);
+    png_read_end(png_ptr, NULL);
+
+    free(rows);
+    row_ptrs = NULL;
+    png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+
+    *out_rgba = rgba;
+    *out_w = (int)w;
+    *out_h = (int)h;
+    return 0;
+}
 
 int gfx_load_texture_png(const char *path, GfxTexture *out)
 {
@@ -322,58 +598,52 @@ int gfx_load_texture_png(const char *path, GfxTexture *out)
 
     FILE *f = fopen(path, "rb");
     if (!f) {
-        platform_log("[GFX] No se pudo abrir PNG: %s", path);
+        platform_log("[GFX] Failed to open PNG: %s", path);
         return -1;
     }
 
-    uint8_t sig[8];
-    if (fread(sig, 1, 8, f) != 8 || memcmp(sig, "\x89PNG\r\n\x1a\n", 8) != 0) {
+    if (fseek(f, 0, SEEK_END) != 0) {
         fclose(f);
-        platform_log("[GFX] PNG invalido: %s", path);
+        return -1;
+    }
+    long fsize = ftell(f);
+    if (fsize < 8 || fsize > 32 * 1024 * 1024 || fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        platform_log("[GFX] Invalid PNG size (%ld): %s", fsize, path);
         return -1;
     }
 
-    int w = 0, h = 0;
-    while (!feof(f)) {
-        uint8_t len_buf[4];
-        if (fread(len_buf, 1, 4, f) != 4) break;
-        uint32_t chunk_len = (len_buf[0] << 24) | (len_buf[1] << 16) |
-                             (len_buf[2] << 8) | len_buf[3];
-
-        uint8_t type[4];
-        if (fread(type, 1, 4, f) != 4) break;
-
-        if (memcmp(type, "IHDR", 4) == 0) {
-            uint8_t ihdr[13];
-            if (fread(ihdr, 1, 13, f) != 13) break;
-            w = (ihdr[0] << 24) | (ihdr[1] << 16) | (ihdr[2] << 8) | ihdr[3];
-            h = (ihdr[4] << 24) | (ihdr[5] << 16) | (ihdr[6] << 8) | ihdr[7];
-            break;
-        }
-        if (fseek(f, (long)chunk_len + 4, SEEK_CUR) != 0) break;
+    uint8_t *file_buf = (uint8_t *)malloc((size_t)fsize);
+    if (!file_buf) {
+        fclose(f);
+        platform_log("[GFX] malloc failed for PNG file (%ld B)", fsize);
+        return -1;
     }
+
+    size_t nread = fread(file_buf, 1u, (size_t)fsize, f);
     fclose(f);
-
-    if (w <= 0 || h <= 0) {
-        platform_log("[GFX] No se pudieron leer dimensiones de: %s", path);
+    if (nread != (size_t)fsize) {
+        free(file_buf);
+        platform_log("[GFX] Short read for PNG: %s", path);
         return -1;
     }
 
-    /* Leer datos RGBA (decodificación mínima: placeholders son 1-bit blanco) */
-    size_t rgba_size = (size_t)w * (size_t)h * 4u;
-    uint8_t *rgba = (uint8_t *)memalign(16, rgba_size);
-    if (!rgba) {
-        platform_log("[GFX] malloc fallo para RGBA (%lu B)", (unsigned long)rgba_size);
+    uint8_t *rgba = NULL;
+    int w = 0;
+    int h = 0;
+    int dec_rc = gfx_decode_png_memory(file_buf, (size_t)fsize, &rgba, &w, &h);
+    free(file_buf);
+
+    if (dec_rc != 0 || !rgba) {
+        platform_log("[GFX] Failed to decode PNG: %s", path);
         return -1;
     }
-    memset(rgba, 255, rgba_size); /* Blanco puro con alpha */
 
-    /* Subir a VRAM usando la misma ruta que upload_rgba_texture */
-    bool ok = gfx_upload_rgba_texture(rgba, w, h, out);
+    int up_rc = gfx_upload_rgba_texture(rgba, w, h, out);
     free(rgba);
 
-    if (ok) {
-        platform_log("[GFX] Textura cargada: %s (%dx%d)", path, w, h);
+    if (up_rc == 0) {
+        platform_log("[GFX] Texture loaded: %s (%dx%d)", path, w, h);
         return 0;
     }
     return -1;
@@ -402,38 +672,53 @@ int gfx_upload_rgba_texture(const uint8_t *rgba, int w, int h, GfxTexture *out)
 
 /* ── Sprites y 9-slice (software blit al framebuffer) ─────────── */
 
-static void blit_rgba(rsxBuffer *dst, int dx, int dy, int dw, int dh,
-                      const uint8_t *src, int sw, int sh,
+static void blit_rgba(uint32_t *dst_buf, int dst_w, int dst_h,
+                      int dx, int dy, int dw, int dh,
+                      const uint8_t *src, int sw, int sh, int src_stride_px,
                       uint32_t tint_rgba)
 {
-    if (dx < 0) { dw += dx; dx = 0; }
-    if (dy < 0) { dh += dy; dy = 0; }
-    if (dx + dw > dst->width)  dw = dst->width - dx;
-    if (dy + dh > dst->height) dh = dst->height - dy;
-    if (dw <= 0 || dh <= 0) return;
+    if (!dst_buf || !src || dst_w <= 0 || dst_h <= 0 ||
+        dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0 || src_stride_px <= 0) {
+        return;
+    }
 
-    uint8_t t_r = (tint_rgba >> 16) & 0xFF;
-    uint8_t t_g = (tint_rgba >> 8)  & 0xFF;
-    uint8_t t_b = (tint_rgba)       & 0xFF;
+    uint32_t t_a = (tint_rgba >> 24) & 0xFFu;
+    if (t_a == 0u) return;
 
-    int bw = dst->width;
-    for (int y = 0; y < dh; y++) {
-        int sy = (y * sh) / dh;
+    uint32_t t_r = (tint_rgba >> 16) & 0xFFu;
+    uint32_t t_g = (tint_rgba >> 8)  & 0xFFu;
+    uint32_t t_b =  tint_rgba        & 0xFFu;
+
+    int x0 = (dx > 0) ? dx : 0;
+    int y0 = (dy > 0) ? dy : 0;
+    int x1 = (dx + dw < dst_w) ? (dx + dw) : dst_w;
+    int y1 = (dy + dh < dst_h) ? (dy + dh) : dst_h;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    for (int y = y0; y < y1; y++) {
+        int sy = ((y - dy) * sh) / dh;
         if (sy >= sh) sy = sh - 1;
-        const uint8_t *src_scanline = &src[(size_t)sy * sw * 4];
-        uint32_t *dst_row = &dst->ptr[(size_t)(dy + y) * bw + dx];
+        const uint8_t *src_scanline = &src[(size_t)sy * (size_t)src_stride_px * 4u];
+        uint32_t *dst_row = &dst_buf[(size_t)y * (size_t)dst_w];
 
-        for (int x = 0; x < dw; x++) {
-            int sx = (x * sw) / dw;
+        for (int x = x0; x < x1; x++) {
+            int sx = ((x - dx) * sw) / dw;
             if (sx >= sw) sx = sw - 1;
-            const uint8_t *p = &src_scanline[(size_t)sx * 4];
-            uint8_t s_a = p[3];
-            if (s_a == 0) continue;
-            /* Aplicar tint y alpha blend simple */
-            uint8_t r = (uint8_t)((p[0] * t_r / 255) * s_a / 255);
-            uint8_t g = (uint8_t)((p[1] * t_g / 255) * s_a / 255);
-            uint8_t b = (uint8_t)((p[2] * t_b / 255) * s_a / 255);
-            dst_row[x] = ((uint32_t)s_a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+            const uint8_t *p = &src_scanline[(size_t)sx * 4u];
+
+            uint32_t eff_a = ((uint32_t)p[3] * t_a + 127u) / 255u;
+            if (eff_a == 0u) continue;
+
+            uint32_t r = ((uint32_t)p[0] * t_r + 127u) / 255u;
+            uint32_t g = ((uint32_t)p[1] * t_g + 127u) / 255u;
+            uint32_t b = ((uint32_t)p[2] * t_b + 127u) / 255u;
+            uint32_t pixel = (eff_a << 24) | (r << 16) | (g << 8) | b;
+
+            if (eff_a == 255u) {
+                dst_row[x] = pixel;
+            } else {
+                blend_pixel_xrgb(&dst_row[x], pixel);
+            }
         }
     }
 }
@@ -441,7 +726,8 @@ static void blit_rgba(rsxBuffer *dst, int dx, int dy, int dw, int dh,
 void gfx_draw_sprite(const GfxTexture *tex, float x, float y, float w, float h,
                      float u0, float v0, float u1, float v1, uint32_t tint_rgba)
 {
-    if (!tex || !tex->data || !tex->uploaded) return;
+    if (!s_shadow_fb || !tex || !tex->data || !tex->uploaded) return;
+    if (tex->width <= 0 || tex->height <= 0) return;
 
     int dx = (int)vx(x);
     int dy = (int)vy(y);
@@ -452,26 +738,35 @@ void gfx_draw_sprite(const GfxTexture *tex, float x, float y, float w, float h,
     int src_y0 = (int)(v0 * (float)tex->height);
     int src_x1 = (int)(u1 * (float)tex->width);
     int src_y1 = (int)(v1 * (float)tex->height);
+    if (src_x0 < 0) src_x0 = 0;
+    if (src_y0 < 0) src_y0 = 0;
+    if (src_x1 > tex->width) src_x1 = tex->width;
+    if (src_y1 > tex->height) src_y1 = tex->height;
     int sw = src_x1 - src_x0;
     int sh = src_y1 - src_y0;
-    if (sw <= 0) sw = tex->width;
-    if (sh <= 0) sh = tex->height;
+    if (sw <= 0) { src_x0 = 0; sw = tex->width; }
+    if (sh <= 0) { src_y0 = 0; sh = tex->height; }
 
-    const uint8_t *src = (const uint8_t *)tex->data + (size_t)src_y0 * tex->pitch + (size_t)src_x0 * 4u;
+    const uint8_t *src = (const uint8_t *)tex->data +
+                         (size_t)src_y0 * tex->pitch + (size_t)src_x0 * 4u;
 
-    rsxBuffer *b = &s_buffers[s_cur_buffer];
-    blit_rgba(b, dx, dy, dw, dh, src, sw, sh, tint_rgba);
+    blit_rgba(s_shadow_fb, (int)s_screen_w, (int)s_screen_h,
+              dx, dy, dw, dh, src, sw, sh, tex->width, tint_rgba);
 }
 
 void gfx_draw_9slice(const GfxTexture *tex, float x, float y, float w, float h,
                      float border_px, uint32_t tint_rgba)
 {
-    if (!tex || !tex->data || !tex->uploaded) return;
+    if (!s_shadow_fb || !tex || !tex->data || !tex->uploaded) return;
 
     int dx = (int)vx(x);
     int dy = (int)vy(y);
     int dw = (int)vw(w);
     int dh = (int)vh(h);
+    int tw = tex->width;
+    int th = tex->height;
+    if (dw <= 0 || dh <= 0 || tw <= 0 || th <= 0) return;
+
     int b = (int)(border_px * s_scale_x);
     if (b < 1) b = 1;
 
@@ -480,9 +775,10 @@ void gfx_draw_9slice(const GfxTexture *tex, float x, float y, float w, float h,
     int cy0 = dy, cy1 = dy + b, cy2 = dy + dh - b, cy3 = dy + dh;
 
     const uint8_t *src = (const uint8_t *)tex->data;
-    int tw = tex->width;
-    int th = tex->height;
     int sb = (int)((float)b / (float)dw * (float)tw); /* border en src */
+    if (sb < 1) sb = 1;
+    if (sb * 2 >= tw) sb = tw / 2;
+    if (sb * 2 >= th) sb = th / 2;
     if (sb < 1) sb = 1;
 
     /* UV regions en la textura fuente */
@@ -507,19 +803,20 @@ void gfx_draw_9slice(const GfxTexture *tex, float x, float y, float w, float h,
         { tw - sb,    th - sb,    tw,         th,         cx2, cy2, cx3, cy3 },
     };
 
-    rsxBuffer *b_ = &s_buffers[s_cur_buffer];
     for (int i = 0; i < 9; i++) {
         int rw = regions[i].dx1 - regions[i].dx0;
         int rh = regions[i].dy1 - regions[i].dy0;
         if (rw <= 0 || rh <= 0) continue;
 
-        const uint8_t *rsrc = src + (size_t)regions[i].sy0 * tw * 4u +
+        const uint8_t *rsrc = src + (size_t)regions[i].sy0 * (size_t)tw * 4u +
                               (size_t)regions[i].sx0 * 4u;
         int rsw = regions[i].sx1 - regions[i].sx0;
         int rsh = regions[i].sy1 - regions[i].sy0;
+        if (rsw <= 0 || rsh <= 0) continue;
 
-        blit_rgba(b_, regions[i].dx0, regions[i].dy0, rw, rh,
-                  rsrc, rsw, rsh, tint_rgba);
+        blit_rgba(s_shadow_fb, (int)s_screen_w, (int)s_screen_h,
+                  regions[i].dx0, regions[i].dy0, rw, rh,
+                  rsrc, rsw, rsh, tw, tint_rgba);
     }
 }
 
@@ -592,9 +889,13 @@ static unsigned char normalize_utf8_char(const char **p_utf8)
     return '?';
 }
 
-static void draw_glyph_box(rsxBuffer *b, int x0, int y0, int x1, int y1,
+static void draw_glyph_box(uint32_t *dst_buf, int dst_w, int dst_h,
+                           int x0, int y0, int x1, int y1,
                            unsigned char ch, uint32_t rgba)
 {
+    if (!dst_buf || dst_w <= 0 || dst_h <= 0) return;
+    if (((rgba >> 24) & 0xFFu) == 0u) return;
+
     if (ch < 0x20 || ch > 0x7E) ch = '?';
     const uint8_t *g = FONT8[ch - 0x20];
 
@@ -607,23 +908,23 @@ static void draw_glyph_box(rsxBuffer *b, int x0, int y0, int x1, int y1,
         if (!bits) continue;
         int py_start = y0 + (r * gh) / 8;
         int py_end   = y0 + ((r + 1) * gh) / 8;
-        if (py_end <= 0 || py_start >= b->height) continue;
+        if (py_end <= 0 || py_start >= dst_h) continue;
         if (py_start < 0) py_start = 0;
-        if (py_end > b->height) py_end = b->height;
+        if (py_end > dst_h) py_end = dst_h;
 
         for (int c = 0; c < 8; c++) {
             if (!(bits & (1u << c))) continue;
             int px_start = x0 + (c * gw) / 8;
             int px_end   = x0 + ((c + 1) * gw) / 8;
-            if (px_end <= 0 || px_start >= b->width) continue;
+            if (px_end <= 0 || px_start >= dst_w) continue;
             if (px_start < 0) px_start = 0;
-            if (px_end > b->width) px_end = b->width;
+            if (px_end > dst_w) px_end = dst_w;
 
             for (int py = py_start; py < py_end; py++) {
-                uint32_t *row = &b->ptr[(size_t)py * b->width + px_start];
+                uint32_t *row = &dst_buf[(size_t)py * (size_t)dst_w + (size_t)px_start];
                 int span = px_end - px_start;
                 for (int s = 0; s < span; s++) {
-                    row[s] = rgba;
+                    blend_pixel_xrgb(&row[s], rgba);
                 }
             }
         }
@@ -640,9 +941,7 @@ int gfx_draw_text(float x, float y, const char *utf8, float size_px, uint32_t rg
         s_font_loaded = 1;
     }
 
-    rsxBuffer *b = &s_buffers[s_cur_buffer];
     float cur_vx = x;
-
     const char *p = utf8;
     while (*p) {
         unsigned char ch = normalize_utf8_char(&p);
@@ -650,7 +949,8 @@ int gfx_draw_text(float x, float y, const char *utf8, float size_px, uint32_t rg
         int gy0 = (int)vy(y);
         int gx1 = (int)vx(cur_vx + size_px);
         int gy1 = (int)vy(y + size_px);
-        draw_glyph_box(b, gx0, gy0, gx1, gy1, ch, rgba);
+        draw_glyph_box(s_shadow_fb, (int)s_screen_w, (int)s_screen_h,
+                       gx0, gy0, gx1, gy1, ch, rgba);
         cur_vx += size_px;
     }
     return (int)(cur_vx - x);
@@ -699,16 +999,20 @@ int gfx_draw_text_clipped(float x, float y, float max_w, const char *utf8,
 
 /* ── Visualizador 3D wireframe (líneas por software) ───────────── */
 
-static void draw_line_sw(rsxBuffer *b, int x0, int y0, int x1, int y1, uint32_t color)
+static void draw_line_sw(uint32_t *dst_buf, int dst_w, int dst_h,
+                         int x0, int y0, int x1, int y1, uint32_t color)
 {
+    if (!dst_buf || dst_w <= 0 || dst_h <= 0) return;
+    if (((color >> 24) & 0xFFu) == 0u) return;
+
     int dx = abs(x1 - x0), dy = abs(y1 - y0);
     int sx = x0 < x1 ? 1 : -1;
     int sy = y0 < y1 ? 1 : -1;
     int err = dx - dy;
 
     while (true) {
-        if (x0 >= 0 && x0 < b->width && y0 >= 0 && y0 < b->height) {
-            b->ptr[(size_t)y0 * b->width + x0] = color;
+        if (x0 >= 0 && x0 < dst_w && y0 >= 0 && y0 < dst_h) {
+            blend_pixel_xrgb(&dst_buf[(size_t)y0 * (size_t)dst_w + (size_t)x0], color);
         }
         if (x0 == x1 && y0 == y1) break;
         int e2 = 2 * err;
@@ -721,14 +1025,12 @@ void gfx_draw_wireframe_mesh(float cx, float cy, float scale,
                              const float *vis_bands, int num_bands,
                              float phase, uint32_t rgba)
 {
-    if (!vis_bands || num_bands <= 0) return;
+    if (!s_shadow_fb || !vis_bands || num_bands <= 0) return;
 
     int fx = (int)vx(cx);
     int fy = (int)vy(cy);
     int grid = 20;
     float cell = 16.0f * scale;
-
-    rsxBuffer *b = &s_buffers[s_cur_buffer];
 
     for (int i = 0; i < grid; i++) {
         for (int j = 0; j < grid; j++) {
@@ -750,10 +1052,150 @@ void gfx_draw_wireframe_mesh(float cx, float cy, float scale,
             int px2 = fx + (int)(x0 * cell);
             int py2 = fy + (int)(y1 * cell) - (int)z0;
 
-            draw_line_sw(b, px0, py0, px1, py1, rgba);
-            draw_line_sw(b, px0, py0, px2, py2, rgba);
+            draw_line_sw(s_shadow_fb, (int)s_screen_w, (int)s_screen_h,
+                         px0, py0, px1, py1, rgba);
+            draw_line_sw(s_shadow_fb, (int)s_screen_w, (int)s_screen_h,
+                         px0, py0, px2, py2, rgba);
         }
     }
+}
+
+/* ── Background pre-baking & theme control ─────────────────────── */
+
+static void bake_background(void)
+{
+    if (s_shadow_fb == NULL) {
+        s_bg_dirty = true;
+        return;
+    }
+
+    if (s_bg_theme == BG_THEME_PURE_BLACK) {
+        free(s_baked_bg_xdr);
+        s_baked_bg_xdr = NULL;
+        s_bg_dirty = false;
+        return;
+    }
+
+    const uint8_t *png_data = bg_fracture_hud_png;
+    size_t png_size = (size_t)bg_fracture_hud_png_size;
+    switch (s_bg_theme) {
+        case BG_THEME_MATTE_SLABS:
+            png_data = bg_matte_slabs_png;
+            png_size = (size_t)bg_matte_slabs_png_size;
+            break;
+        case BG_THEME_LIQUID_CHROME:
+            png_data = bg_liquid_chrome_png;
+            png_size = (size_t)bg_liquid_chrome_png_size;
+            break;
+        case BG_THEME_FRACTURE_HUD:
+        default:
+            png_data = bg_fracture_hud_png;
+            png_size = (size_t)bg_fracture_hud_png_size;
+            break;
+    }
+
+    uint8_t *decoded_rgba = NULL;
+    int sw = 0;
+    int sh = 0;
+    if (gfx_decode_png_memory(png_data, png_size, &decoded_rgba, &sw, &sh) != 0 ||
+        !decoded_rgba || sw <= 0 || sh <= 0) {
+        free(decoded_rgba);
+        free(s_baked_bg_xdr);
+        s_baked_bg_xdr = NULL;
+        platform_log("[GFX] Warning: failed to decode background theme %d", s_bg_theme);
+        return;
+    }
+
+    if (s_baked_bg_xdr == NULL) {
+        s_baked_bg_xdr = (uint32_t *)memalign(64, (size_t)s_screen_w * (size_t)s_screen_h * 4u);
+        if (s_baked_bg_xdr == NULL) {
+            free(decoded_rgba);
+            platform_log("[GFX] Error: memalign failed for s_baked_bg_xdr");
+            return;
+        }
+    }
+
+    if (s_scale_x <= 0.0f || s_scale_y <= 0.0f) {
+        free(decoded_rgba);
+        return;
+    }
+
+    int dw = (int)s_screen_w;
+    int dh = (int)s_screen_h;
+    float inv_sx = 1.0f / s_scale_x;
+    float inv_sy = 1.0f / s_scale_y;
+    float fsw = (float)sw;
+    float fsh = (float)sh;
+
+    for (int py = 0; py < dh; py++) {
+        uint32_t *dst_row = &s_baked_bg_xdr[(size_t)py * (size_t)dw];
+        float vy_inv = ((float)py - s_offset_y) * inv_sy;
+        if (vy_inv < 0.0f || vy_inv >= fsh) {
+            for (int px = 0; px < dw; px++) {
+                dst_row[px] = 0xFF000000u;
+            }
+            continue;
+        }
+
+        int y0 = (int)vy_inv;
+        if (y0 >= sh) y0 = sh - 1;
+        int y1 = (y0 + 1 < sh) ? (y0 + 1) : (sh - 1);
+        float fy = vy_inv - (float)y0;
+        const uint8_t *src_row0 = &decoded_rgba[(size_t)y0 * (size_t)sw * 4u];
+        const uint8_t *src_row1 = &decoded_rgba[(size_t)y1 * (size_t)sw * 4u];
+
+        for (int px = 0; px < dw; px++) {
+            float vx_inv = ((float)px - s_offset_x) * inv_sx;
+            if (vx_inv < 0.0f || vx_inv >= fsw) {
+                dst_row[px] = 0xFF000000u;
+                continue;
+            }
+
+            int x0 = (int)vx_inv;
+            if (x0 >= sw) x0 = sw - 1;
+            int x1 = (x0 + 1 < sw) ? (x0 + 1) : (sw - 1);
+            float fx = vx_inv - (float)x0;
+
+            uint8_t c00 = src_row0[(size_t)x0 * 4u];
+            uint8_t c10 = src_row0[(size_t)x1 * 4u];
+            uint8_t c01 = src_row1[(size_t)x0 * 4u];
+            uint8_t c11 = src_row1[(size_t)x1 * 4u];
+
+            float top = (float)c00 + fx * ((float)c10 - (float)c00);
+            float bot = (float)c01 + fx * ((float)c11 - (float)c01);
+            int val = (int)(top + fy * (bot - top) + 0.5f);
+            if (val < 0) val = 0;
+            if (val > 255) val = 255;
+            uint32_t gray = (uint32_t)val;
+            dst_row[px] = 0xFF000000u | (gray << 16) | (gray << 8) | gray;
+        }
+    }
+
+    free(decoded_rgba);
+    s_bg_dirty = false;
+}
+
+int gfx_set_background_theme(int theme_id)
+{
+    if (theme_id < 0 || theme_id >= BG_THEME_COUNT) {
+        theme_id = BG_THEME_FRACTURE_HUD;
+    }
+    if (theme_id != s_bg_theme || s_bg_dirty) {
+        s_bg_theme = theme_id;
+        s_bg_dirty = true;
+        bake_background();
+    }
+    return s_bg_theme;
+}
+
+void gfx_set_background_dim(float brightness)
+{
+    if (!(brightness > 0.0f)) {
+        brightness = 0.0f;
+    } else if (brightness > 1.0f) {
+        brightness = 1.0f;
+    }
+    s_bg_brightness = brightness;
 }
 
 /* ── Utilidades ────────────────────────────────────────────────── */
@@ -765,6 +1207,9 @@ void gfx_set_overscan(int offset_x, int offset_y, float scale)
 {
     if (scale < 0.70f) scale = 0.70f;
     if (scale > 1.00f) scale = 1.00f;
+    bool changed = (offset_x != s_overscan_x ||
+                    offset_y != s_overscan_y ||
+                    fabsf(scale - s_overscan_scale) > 0.0001f);
     s_overscan_x = offset_x;
     s_overscan_y = offset_y;
     s_overscan_scale = scale;
@@ -772,4 +1217,7 @@ void gfx_set_overscan(int offset_x, int offset_y, float scale)
     s_scale_y = scale * ((float)s_screen_h / 1080.0f);
     s_offset_x = (float)offset_x + ((float)s_screen_w * (1.0f - scale) * 0.5f);
     s_offset_y = (float)offset_y + ((float)s_screen_h * (1.0f - scale) * 0.5f);
+    if ((changed || s_bg_dirty) && s_shadow_fb != NULL) {
+        bake_background();
+    }
 }
