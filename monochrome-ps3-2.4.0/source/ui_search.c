@@ -45,6 +45,7 @@ static int kb_col = 0;
 
 static int  s_last_played_idx = -1;
 static bool s_result_failed[MAX_SEARCH_RESULTS];
+static bool s_fallback_exhausted = false;
 
 /* El teclado permanece siempre visible en la pantalla Search (no se puede ocultar) */
 bool ui_search_is_keyboard_open(void) {
@@ -55,6 +56,7 @@ void ui_search_init(void) {
     memset(s_results, 0, sizeof(s_results));
     memset(s_result_failed, 0, sizeof(s_result_failed));
     s_last_played_idx = -1;
+    s_fallback_exhausted = false;
     s_count = 0; s_cursor = 0; s_busy = false; s_error = false;
     s_query[0] = '\0';
     s_focus_in_results = false;
@@ -69,6 +71,7 @@ void ui_search_start_initial(const char *query) {
     if (!query || query[0] == '\0') query = "daft";
     s_busy = true;
     s_error = false;
+    s_fallback_exhausted = false;
     s_drilldown_tracks = false;
     s_drilldown_title[0] = '\0';
     http_search_async_start(query);
@@ -80,6 +83,7 @@ static void do_search(void) {
     s_count = 0;
     s_cursor = 0;
     s_error = false;
+    s_fallback_exhausted = false;
     s_focus_in_results = true;
     s_drilldown_tracks = false;
     s_drilldown_title[0] = '\0';
@@ -116,6 +120,7 @@ static void play_track(TrackMetadata *t) {
 
 static void play_track_at_index(int idx) {
     if (idx < 0 || idx >= s_count) return;
+    s_fallback_exhausted = false;
     s_last_played_idx = idx;
     TrackMetadata *t = &s_results[idx];
     play_track(t);
@@ -215,13 +220,14 @@ void ui_search_update(void) {
         } else {
             platform_log("[AUTO-FALLBACK] No se encontraron versiones alternativas para '%s'", failed_title);
             s_last_played_idx = -1;
+            audio_engine_clear_error();
+            g_app_state.search_error = false;
+            s_fallback_exhausted = true;
         }
     }
 }
 
 void ui_search_render(void) {
-    ui_search_update();
-
     int x0, y0, x1, y1;
     shell_get_main_area(&x0, &y0, &x1, &y1);
     int mw = x1 - x0;
@@ -238,6 +244,9 @@ void ui_search_render(void) {
     }
 
     gfx_draw_text(cx, cy, "BUSQUEDA //", 15.0f, TH_ACCENT);
+    if (s_fallback_exhausted) {
+        gfx_draw_text(cx + 180, cy + 2, "[!] Pista no disponible (404) - selecciona otra", 12.0f, TH_ACCENT_LT);
+    }
     cy += 24;
 
     /* Barra de búsqueda estilo terminal */

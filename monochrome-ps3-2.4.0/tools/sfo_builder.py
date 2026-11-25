@@ -97,7 +97,7 @@ def build_monochrome_sfo(output_path):
         'RESOLUTION':     (FMT_UINT32, 63),   # 480p + 576p + 720p + 1080i + 1080p
         'SOUND_FORMAT':   (FMT_UINT32, 1),    # LPCM 2ch
         'TITLE':          (FMT_STRING, 'Monochrome Music'),
-        'TITLE_ID':       (FMT_STRING, 'MCRM00001'),
+        'TITLE_ID':       (FMT_STRING, 'MONO00024'),
         'VERSION':        (FMT_STRING, '01.00'),
     }
 

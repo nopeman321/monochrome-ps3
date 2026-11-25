@@ -16,7 +16,7 @@ PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 RPCS3_EXE = os.path.join(PROJECT_DIR, "emulator", "rpcs3", "rpcs3.exe")
 TTY_LOG = os.path.join(PROJECT_DIR, "emulator", "rpcs3", "log", "TTY.log")
 RPCS3_LOG = os.path.join(PROJECT_DIR, "emulator", "rpcs3", "log", "RPCS3.log")
-EBOOT_BIN = os.path.join(PROJECT_DIR, "emulator", "rpcs3", "dev_hdd0", "game", "MCRM00001", "USRDIR", "EBOOT.BIN")
+EBOOT_BIN = os.path.join(PROJECT_DIR, "emulator", "rpcs3", "dev_hdd0", "game", "MONO00024", "USRDIR", "EBOOT.BIN")
 
 # ANSI color escape sequences
 RESET   = "\033[0m"
@@ -84,7 +84,7 @@ def main():
     print(f"{YELLOW}[RPCS3]{RESET} Launching PlayStation 3 Cell B.E. emulation for {args.duration:.1f}s...")
     print(f"{YELLOW}[RPCS3]{RESET} Target: {EBOOT_BIN}\n" + "-" * 70)
 
-    rel_eboot = "dev_hdd0/game/MCRM00001/USRDIR/EBOOT.BIN"
+    rel_eboot = "dev_hdd0/game/MONO00024/USRDIR/EBOOT.BIN"
     proc = subprocess.Popen([RPCS3_EXE, rel_eboot], cwd=os.path.join(PROJECT_DIR, "emulator", "rpcs3"))
 
     start_time = time.time()

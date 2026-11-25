@@ -20,6 +20,7 @@ SYS_PROCESS_PARAM(1001, 0x100000);
 #include "http_client.h"
 #include "audio_engine.h"
 #include "cover_art.h"
+#include "net_hal.h"
 
 int main(int argc, const char *argv[])
 {
@@ -33,6 +34,11 @@ int main(int argc, const char *argv[])
 
     platform_log("[BUILD] Monochrome PS3 %s | SHA: %s | Built: %s",
                  APP_DISPLAY_VERSION, APP_BUILD_SHA, APP_BUILD_TIME);
+
+    if (net_hal_init() != 0) {
+        platform_log("[WARN] net_hal_init fallo; continuando en modo offline");
+    }
+    http_net_init();
 
     /* Initialize application state (Phase 1) */
     app_state_init();
@@ -66,13 +72,12 @@ int main(int argc, const char *argv[])
     platform_log("[SPLASH] Splash screen displayed");
 
     platform_log("[MEM] Presupuesto de memoria reservado:");
-    platform_log("  - Host IO Ring: 32 MB XDR (memalign 1MB)");
+    platform_log("  - Host IO Ring: 8 MB XDR (memalign 1MB)");
     platform_log("  - Display buffers: 2x ~8.29 MB (1080p XRGB) en RSX VRAM");
     platform_log("  - Application heap: ~4 MB estatico");
 
     AppState state = STATE_HOME;
     FILE *f_init = fopen("/dev_hdd0/game/MONO00024/USRDIR/initial_state.txt", "r");
-    if (!f_init) f_init = fopen("/dev_hdd0/game/MCRM00001/USRDIR/initial_state.txt", "r");
     if (f_init) {
         char init_name[32] = {0};
         if (fscanf(f_init, "%31s", init_name) == 1) {
@@ -87,7 +92,6 @@ int main(int argc, const char *argv[])
         }
         fclose(f_init);
         unlink("/dev_hdd0/game/MONO00024/USRDIR/initial_state.txt");
-        unlink("/dev_hdd0/game/MCRM00001/USRDIR/initial_state.txt");
     }
     platform_log("[NAV] Pantalla inicial: %s", ui_get_state_name(state));
 
@@ -155,10 +159,11 @@ int main(int argc, const char *argv[])
                  frame, overall_avg_ms);
 
     audio_engine_shutdown();
-    http_net_shutdown();
     cover_art_shutdown();
-    platform_shutdown();
+    http_net_shutdown();
     platform_log("[EXIT] Saliendo limpiamente al XMB via sysProcessExit(0)...");
+    platform_shutdown();
+    net_hal_shutdown();
     sysProcessExit(0);
     return 0;
 }

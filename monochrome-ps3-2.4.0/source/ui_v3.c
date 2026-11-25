@@ -10,6 +10,7 @@
 #include <string.h>
 #include <math.h>
 #include <unistd.h>
+#include <sysutil/sysutil.h>
 
 #include "monochrome.h"
 #include "ui_theme.h"
@@ -21,6 +22,7 @@
 #include "http_client.h"
 #include "audio_engine.h"
 #include "cover_art.h"
+#include "net_hal.h"
 #include "ui_shell.h"
 #include "ui_player_dock.h"
 #include "ui_home.h"
@@ -33,12 +35,14 @@
 /* ── Estado de UI v3 ─────────────────────────────────────────────── */
 static bool s_exit_requested = false;
 static long s_frame = 0;
+static bool s_initial_search_started = false;
 
 /* ── ui_init ─────────────────────────────────────────────────────── */
 void ui_init(void)
 {
     s_exit_requested = false;
     s_frame = 0;
+    s_initial_search_started = false;
 
     ui_home_init();
     ui_search_init();
@@ -47,11 +51,7 @@ void ui_init(void)
     ui_queue_init();
     ui_visualizer_init();
 
-    /* Inicializar red y precargar buffer con catálogo inicial para Home */
-    http_net_init();
-    ui_search_start_initial("daft");
-
-    platform_log("[UI V3] Shell inicializado (Left Rail + Top Tabs + Bottom Dock)");
+    platform_log("[UI V3] Shell inicializado (esperando enlace NetCtl para catalogo inicial)");
 }
 
 /* ── ui_render_splash ────────────────────────────────────────────── */
@@ -62,6 +62,12 @@ void ui_render_splash(void)
     uint64_t t_start = platform_get_time_usec();
 
     while ((platform_get_time_usec() - t_start) < 2000000ULL) {
+        sysUtilCheckCallback();
+        if (platform_should_exit()) {
+            s_exit_requested = true;
+            break;
+        }
+
         gfx_draw_rect(0, 0, sw, sh, TH_BG);
 
         /* Marco 9-slice centrado */
@@ -198,6 +204,12 @@ void ui_render(AppState state, long frame)
     s_frame = frame;
     int sw = VIRT_W;
     int sh = VIRT_H;
+
+    /* Disparar busqueda inicial de catalogo de forma no bloqueante cuando NetCtl obtenga IP */
+    if (!s_initial_search_started && net_hal_is_connected()) {
+        s_initial_search_started = true;
+        ui_search_start_initial("daft");
+    }
 
     /* Si visualizador fullscreen activo, renderizar exclusivamente visualizador */
     if (g_app_state.visualizer_fullscreen) {

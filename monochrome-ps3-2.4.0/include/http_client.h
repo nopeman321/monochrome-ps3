@@ -21,6 +21,7 @@ int  http_fetch_artist_tracks_sync(const char *artist_id, const char *artist_nam
 void http_search_async_start(const char *query);
 void http_fetch_album_async_start(const char *release_id, const char *album_title);
 void http_fetch_artist_async_start(const char *artist_id, const char *artist_name);
+void http_search_async_cancel(void);
 SearchStatus http_search_async_poll(TrackMetadata *out_tracks, int *out_count, int max_tracks, int *out_http_code, int *out_errno);
 const char  *http_search_get_active_query(void);
 

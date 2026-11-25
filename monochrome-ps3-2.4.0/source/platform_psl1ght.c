@@ -21,8 +21,7 @@
 
 #include "platform.h"
 #include "gfx_engine.h"
-
-#define STAGE_LOG_PATH "/dev_hdd0/tmp/mono_stage6.log"
+#include "net_hal.h"
 
 #define SCREEN_CONFIG_PATH "/dev_hdd0/tmp/monochrome/screen_config.txt"
 
@@ -42,10 +41,12 @@ static void sysutil_event_callback(u64 status, u64 param, void *usrdata)
         case SYSUTIL_MENU_OPEN:
             platform_log("[SYSUTIL] SYSUTIL_MENU_OPEN recibido -> Overlay XMB abierto");
             s_platform_overlay_open = true;
+            net_hal_set_menu_paused(true);
             break;
         case SYSUTIL_MENU_CLOSE:
             platform_log("[SYSUTIL] SYSUTIL_MENU_CLOSE recibido -> Overlay XMB cerrado");
             s_platform_overlay_open = false;
+            net_hal_set_menu_paused(false);
             break;
         case SYSUTIL_DRAW_BEGIN:
         case SYSUTIL_DRAW_END:
@@ -76,18 +77,13 @@ bool platform_is_overlay_open(void)
 
 void platform_log(const char *fmt, ...)
 {
-    FILE *f = fopen(STAGE_LOG_PATH, "a");
-    if (f) {
-        time_t t = time(NULL);
-        fprintf(f, "[%ld] ", (long)t);
-        va_list ap;
-        va_start(ap, fmt);
-        vfprintf(f, fmt, ap);
-        va_end(ap);
-        fprintf(f, "\n");
-        fflush(f);
-        fclose(f);
-    }
+    if (!fmt) return;
+    char buf[896];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    net_hal_log("PLAT", "%s", buf);
 }
 
 uint64_t platform_get_time_usec(void)

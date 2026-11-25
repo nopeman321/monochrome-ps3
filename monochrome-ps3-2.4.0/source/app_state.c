@@ -10,6 +10,7 @@
 
 #include "app_state.h"
 #include "monochrome.h"
+#include "http_client.h"
 
 #define CONFIG_PATH "/dev_hdd0/game/MONO00024/USRDIR/config.cfg"
 
@@ -76,6 +77,7 @@ void app_state_init(void)
     g_app_state.overscan_y       = 0;
     g_app_state.overscan_scale   = 1.0f;
     g_app_state.http_timeout_ms  = 10000;
+    http_set_timeout_ms((int)g_app_state.http_timeout_ms);
 }
 
 /* ── Persistencia de configuración ───────────────────────────────── */
@@ -107,12 +109,15 @@ bool app_state_load_config(void)
             g_app_state.overscan_scale = (float)atof(val);
             if (g_app_state.overscan_scale <= 0.0f) g_app_state.overscan_scale = 1.0f;
         } else if (strcmp(key, "http_timeout_ms") == 0) {
-            g_app_state.http_timeout_ms = (uint32_t)atoi(val);
-            if (g_app_state.http_timeout_ms == 0) g_app_state.http_timeout_ms = 10000;
+            int t = atoi(val);
+            if (t < 2000) t = 10000;
+            if (t > 60000) t = 60000;
+            g_app_state.http_timeout_ms = (uint32_t)t;
         }
     }
 
     fclose(f);
+    http_set_timeout_ms((int)g_app_state.http_timeout_ms);
     return true;
 }
 

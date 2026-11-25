@@ -33,7 +33,7 @@ PKGFILES	:=	$(CURDIR)/pkgfiles
 BUILD_GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo nogit)
 BUILD_TIME := $(shell date -u +"%Y-%m-%d_%H:%M:%SZ")
 
-CFLAGS		=	-Wall -mcpu=cell $(MACHDEP) $(INCLUDE) -I$(PORTLIBS)/include \
+CFLAGS		=	-O2 -Wall -mcpu=cell $(MACHDEP) $(INCLUDE) -I$(PORTLIBS)/include \
 				-DAPP_BUILD_SHA=\"$(BUILD_GIT_SHA)\" -DAPP_BUILD_TIME=\"$(BUILD_TIME)\"
 CXXFLAGS	=	$(CFLAGS)
 
@@ -42,7 +42,7 @@ LDFLAGS		=	$(MACHDEP) -Wl,-Map,$(notdir $@).map
 #---------------------------------------------------------------------------------
 # any extra libraries we wish to link with the project
 #---------------------------------------------------------------------------------
-LIBS	:=	-lfreetype -lpng -lz -lrsx -lgcm_sys -laudio -lnet -lsysmodule -lio -lsysutil -lrt -llv2 -lm -ljpeg
+LIBS	:=	-lfreetype -lpng -lz -lrsx -lgcm_sys -laudio -lnet -lnetctl -lsysmodule -lio -lsysutil -lrt -llv2 -lm -ljpeg
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing

@@ -8,8 +8,20 @@
 #include "ui_theme.h"
 #include "ui_shell.h"
 #include "platform.h"
+#include "http_client.h"
+#include "net_hal.h"
 
 static int s_sel = 0;
+
+static const char *net_state_label(NetHalState st) {
+    switch (st) {
+        case NET_HAL_DISCONNECTED: return "DISCONNECTED";
+        case NET_HAL_CONNECTING:   return "CONNECTING";
+        case NET_HAL_IP_OBTAINED:  return "IP OBTAINED";
+        case NET_HAL_ERROR:        return "ERROR";
+        default:                   return "UNKNOWN";
+    }
+}
 
 void ui_settings_init(void) {
     s_sel = 0;
@@ -61,7 +73,7 @@ void ui_settings_render(void) {
     }
     cy += row_h + 10;
 
-    /* Fila 1: Restablecer valores por defecto */
+    /* Fila 1: Timeout HTTP de Red */
     bool foc1 = (s_sel == 1);
     gfx_draw_rect(cx, cy, content_w, row_h, foc1 ? TH_SURFACE_2 : TH_SURFACE);
     if (foc1) {
@@ -70,25 +82,61 @@ void ui_settings_render(void) {
     } else {
         gfx_draw_rect(cx, cy + row_h - 1, content_w, 1, TH_BORDER);
     }
-    gfx_draw_text(cx + 16, cy + 14, "Restablecer Zona Segura al 100% (Pantalla Completa)", 14.0f, foc1 ? TH_TEXT : TH_TEXT_DIM);
-    cy += row_h + 24;
+    snprintf(line, sizeof(line), "Timeout de Red (HTTP): < %u ms (%u s) >",
+             g_app_state.http_timeout_ms, g_app_state.http_timeout_ms / 1000u);
+    gfx_draw_text(cx + 16, cy + 14, line, 14.0f, foc1 ? TH_TEXT : TH_TEXT_DIM);
+    cy += row_h + 10;
 
-    /* Info de sistema (box estructurado) */
-    int box_h = 160;
+    /* Fila 2: Restablecer valores por defecto */
+    bool foc2 = (s_sel == 2);
+    gfx_draw_rect(cx, cy, content_w, row_h, foc2 ? TH_SURFACE_2 : TH_SURFACE);
+    if (foc2) {
+        gfx_draw_rect_outline(cx, cy, content_w, row_h, TH_BORDER_LT, 1.0f);
+        gfx_draw_rect(cx, cy, 4, row_h, TH_ACCENT_LT);
+    } else {
+        gfx_draw_rect(cx, cy + row_h - 1, content_w, 1, TH_BORDER);
+    }
+    gfx_draw_text(cx + 16, cy + 14, "Restablecer Zona Segura al 100% (Pantalla Completa)", 14.0f, foc2 ? TH_TEXT : TH_TEXT_DIM);
+    cy += row_h + 20;
+
+    /* Info de sistema + telemetria en vivo (box estructurado) */
+    NetHalTelemetry tel;
+    net_hal_get_telemetry(&tel);
+
+    int box_h = 248;
     gfx_draw_rect(cx, cy, content_w, box_h, TH_SURFACE);
     gfx_draw_rect_outline(cx, cy, content_w, box_h, TH_BORDER, 1.0f);
 
-    gfx_draw_text(cx + 20, cy + 14, "DIAGNOSTICO DEL SISTEMA // MONOCHROME PS3", 13.0f, TH_ACCENT);
+    gfx_draw_text(cx + 20, cy + 14, "DIAGNOSTICO DEL SISTEMA & TELEMETRIA // MONOCHROME PS3", 13.0f, TH_ACCENT);
 
-    int sy = cy + 42;
-    snprintf(line, sizeof(line), "BUILD SHA:      %s", APP_BUILD_SHA);
-    gfx_draw_text(cx + 20, sy, line, 12.0f, TH_TEXT_DIM); sy += 22;
-
-    snprintf(line, sizeof(line), "COMPILACION:    %s", APP_BUILD_TIME);
+    int sy = cy + 40;
+    snprintf(line, sizeof(line), "BUILD SHA:      %s  |  COMPILACION: %s", APP_BUILD_SHA, APP_BUILD_TIME);
     gfx_draw_text(cx + 20, sy, line, 12.0f, TH_TEXT_DIM); sy += 22;
 
     snprintf(line, sizeof(line), "TITLE ID:       MONO00024 (CONTENT ID: UP0001-MONO00024_00)");
     gfx_draw_text(cx + 20, sy, line, 12.0f, TH_TEXT_DIM); sy += 22;
+
+    snprintf(line, sizeof(line), "NETCTL:         %s  |  IP: %s%s",
+             net_state_label(tel.state),
+             tel.ip_str[0] ? tel.ip_str : "0.0.0.0",
+             net_hal_is_menu_paused() ? "  [PAUSA XMB]" : "");
+    gfx_draw_text_clipped(cx + 20, sy, (float)(content_w - 40), line, 12.0f,
+                          (tel.state == NET_HAL_IP_OBTAINED) ? TH_ACCENT_LT : TH_TEXT_DIM);
+    sy += 22;
+
+    snprintf(line, sizeof(line), "DNS:            %s -> %s  |  h_errno: %d",
+             tel.last_dns_host[0] ? tel.last_dns_host : "-",
+             tel.last_dns_ip[0] ? tel.last_dns_ip : "-",
+             tel.last_h_errno);
+    gfx_draw_text_clipped(cx + 20, sy, (float)(content_w - 40), line, 12.0f, TH_TEXT_DIM); sy += 22;
+
+    snprintf(line, sizeof(line), "API:            HTTP %d  |  errno: %d  |  Latencia: %u ms",
+             tel.last_http_code, tel.last_net_errno, tel.last_api_latency_ms);
+    gfx_draw_text_clipped(cx + 20, sy, (float)(content_w - 40), line, 12.0f, TH_TEXT_DIM); sy += 22;
+
+    snprintf(line, sizeof(line), "STREAM:         %u kbps  |  Reconexiones: %u  |  Underruns: %u",
+             tel.stream_kbps, tel.reconnect_count, tel.ring_underruns);
+    gfx_draw_text_clipped(cx + 20, sy, (float)(content_w - 40), line, 12.0f, TH_TEXT_DIM); sy += 22;
 
     snprintf(line, sizeof(line), "HTTP TIMEOUT:   %u ms  |  SERVIDOR: tracks.monochrome.st:80", g_app_state.http_timeout_ms);
     gfx_draw_text(cx + 20, sy, line, 12.0f, TH_TEXT_DIM);
@@ -102,7 +150,7 @@ void ui_settings_handle_input(InputAction act) {
             if (s_sel > 0) s_sel--;
             break;
         case ACT_DOWN:
-            if (s_sel < 1) s_sel++;
+            if (s_sel < 2) s_sel++;
             break;
         case ACT_LEFT: {
             if (s_sel == 0) {
@@ -112,6 +160,12 @@ void ui_settings_handle_input(InputAction act) {
                 platform_set_screen_adjust(g_app_state.overscan_x, g_app_state.overscan_y, g_app_state.overscan_scale);
                 app_state_save_config();
                 platform_save_screen_config();
+            } else if (s_sel == 1) {
+                uint32_t t = (g_app_state.http_timeout_ms > 1000u) ? (g_app_state.http_timeout_ms - 1000u) : 5000u;
+                if (t < 5000u) t = 5000u;
+                g_app_state.http_timeout_ms = t;
+                http_set_timeout_ms((int)t);
+                app_state_save_config();
             }
             break;
         }
@@ -123,6 +177,12 @@ void ui_settings_handle_input(InputAction act) {
                 platform_set_screen_adjust(g_app_state.overscan_x, g_app_state.overscan_y, g_app_state.overscan_scale);
                 app_state_save_config();
                 platform_save_screen_config();
+            } else if (s_sel == 1) {
+                uint32_t t = g_app_state.http_timeout_ms + 1000u;
+                if (t > 30000u) t = 30000u;
+                g_app_state.http_timeout_ms = t;
+                http_set_timeout_ms((int)t);
+                app_state_save_config();
             }
             break;
         }
@@ -140,6 +200,18 @@ void ui_settings_handle_input(InputAction act) {
                 app_state_save_config();
                 platform_save_screen_config();
             } else if (s_sel == 1) {
+                /* Ciclar presets: 5s -> 10s -> 15s -> 20s -> 30s -> 5s */
+                uint32_t t = g_app_state.http_timeout_ms;
+                if (t < 5000u) t = 5000u;
+                else if (t < 10000u) t = 10000u;
+                else if (t < 15000u) t = 15000u;
+                else if (t < 20000u) t = 20000u;
+                else if (t < 30000u) t = 30000u;
+                else t = 5000u;
+                g_app_state.http_timeout_ms = t;
+                http_set_timeout_ms((int)t);
+                app_state_save_config();
+            } else if (s_sel == 2) {
                 g_app_state.overscan_scale = 1.0f;
                 g_app_state.overscan_x = 0;
                 g_app_state.overscan_y = 0;

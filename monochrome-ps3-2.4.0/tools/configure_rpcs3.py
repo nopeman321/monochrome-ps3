@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 MONOCHROME PS3 — RPCS3 Automated Configuration Tool
-Configures RPCS3 settings optimally for Monochrome Music (MCRM00001):
+Configures RPCS3 settings optimally for Monochrome Music (MONO00024):
 - Low-latency uncompressed LPCM audio buffer (100ms, no sample-skipping, no time-stretching)
 - Internet connection enabled for streaming API (sys_net HTTP / TLS)
 - RSX Vulkan 720x480 60Hz double-buffered VSync, Bilinear scaling (sin FSR) y
@@ -77,14 +77,14 @@ Video:
 """
 
 def configure():
-    print("[RPCS3 CONFIG] Applying optimal profile for Monochrome PS3 (MCRM00001)...")
+    print("[RPCS3 CONFIG] Applying optimal profile for Monochrome PS3 (MONO00024)...")
     
     if not os.path.exists(RPCS3_DIR):
         print(f"[ERROR] RPCS3 directory not found at: {RPCS3_DIR}")
         return False
 
     os.makedirs(CUSTOM_CONFIG_DIR, exist_ok=True)
-    custom_cfg_path = os.path.join(CUSTOM_CONFIG_DIR, "config_MCRM00001.yml")
+    custom_cfg_path = os.path.join(CUSTOM_CONFIG_DIR, "config_MONO00024.yml")
     with open(custom_cfg_path, "w", encoding="utf-8") as f:
         f.write(CUSTOM_CONFIG_YAML)
     print(f"[OK] Custom game configuration written to: {custom_cfg_path}")

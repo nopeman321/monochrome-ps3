@@ -18,6 +18,12 @@ extern "C"
 {
 #endif
 
+#include <stddef.h>
+
+#ifndef CJSON_MAX_DEPTH
+#define CJSON_MAX_DEPTH 64
+#endif
+
 #define cJSON_Invalid (0)
 #define cJSON_False  (1 << 0)
 #define cJSON_True   (1 << 1)
@@ -51,6 +57,7 @@ typedef struct cJSON_Hooks
 
 void cJSON_InitHooks(cJSON_Hooks* hooks);
 cJSON *cJSON_Parse(const char *value);
+cJSON *cJSON_ParseWithError(const char *value, const char **err_out);
 void   cJSON_Delete(cJSON *item);
 
 int cJSON_GetArraySize(const cJSON *array);

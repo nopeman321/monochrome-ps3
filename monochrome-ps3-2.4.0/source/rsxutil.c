@@ -22,9 +22,7 @@
 
 static void waitRSXIdle(gcmContextData *context);
 
-static u32 depth_pitch;
-static u32 depth_offset;
-static u32 *depth_buffer;
+static u32 color_pitch;
 
 void
 waitFlip ()
@@ -141,9 +139,7 @@ initScreen (void *host_addr, u32 size)
 
   gcmSetFlipMode (GCM_FLIP_VSYNC); // Wait for VSYNC to flip
 
-  depth_pitch = res.width * sizeof(u32);
-  depth_buffer = (u32 *) rsxMemalign (64, (res.height * depth_pitch)* 2);
-  rsxAddressToOffset (depth_buffer, &depth_offset);
+  color_pitch = res.width * sizeof(u32);
 
   gcmResetFlipStatus();
 
@@ -195,7 +191,7 @@ setRenderTarget(gcmContextData *context, rsxBuffer *buffer)
   sf.colorTarget = GCM_SURFACE_TARGET_0;
   sf.colorLocation[0] = GCM_LOCATION_RSX;
   sf.colorOffset[0] = buffer->offset;
-  sf.colorPitch[0] = depth_pitch;
+  sf.colorPitch[0] = color_pitch;
 
   sf.colorLocation[1] = GCM_LOCATION_RSX;
   sf.colorLocation[2] = GCM_LOCATION_RSX;
@@ -209,8 +205,8 @@ setRenderTarget(gcmContextData *context, rsxBuffer *buffer)
 
   sf.depthFormat = GCM_SURFACE_ZETA_Z16;
   sf.depthLocation = GCM_LOCATION_RSX;
-  sf.depthOffset = depth_offset;
-  sf.depthPitch = depth_pitch;
+  sf.depthOffset = 0;
+  sf.depthPitch = 64;
 
   sf.type = GCM_TEXTURE_LINEAR;
   sf.antiAlias 	= GCM_SURFACE_CENTER_1;
