@@ -58,39 +58,34 @@ void ui_init(void)
 void ui_render_splash(void)
 {
     int sw = VIRT_W;
-    int sh = VIRT_H;
     uint64_t t_start = platform_get_time_usec();
+    const char *footer = APP_DISPLAY_VERSION "  //  Pulsa cualquier boton para iniciar...";
+    float footer_x = (float)((sw - (int)strlen(footer) * 12) / 2);
 
-    while ((platform_get_time_usec() - t_start) < 2000000ULL) {
+    while ((platform_get_time_usec() - t_start) < 2200000ULL) {
         sysUtilCheckCallback();
         if (platform_should_exit()) {
             s_exit_requested = true;
             break;
         }
 
-        gfx_draw_rect(0, 0, sw, sh, TH_BG);
+        float fade = fminf(1.0f, (float)(platform_get_time_usec() - t_start) / 1200000.0f);
+        uint8_t a = (uint8_t)(fade * 255.0f);
 
-        /* Marco 9-slice centrado */
-        int frame_w = 700;
-        int frame_h = 400;
-        int frame_x = (sw - frame_w) / 2;
-        int frame_y = (sh - frame_h) / 2;
+        gfx_set_background_dim(fade);
+        platform_prepare_frame();
 
-        /* Usar textura 9-slice si está cargada, sino rect plano */
-        gfx_draw_rect(frame_x, frame_y, frame_w, frame_h, TH_SURFACE);
-        gfx_draw_rect_outline(frame_x, frame_y, frame_w, frame_h, TH_ACCENT, 3);
-
-        gfx_draw_text(frame_x + 48, frame_y + 54,
-                      "MONOCHROME PS3", 24.0f, TH_TEXT);
-        gfx_draw_text(frame_x + 48, frame_y + 96,
-                      "High-Resolution Lossless Audio // PSL1GHT RSX",
-                      15.0f, TH_ACCENT_LT);
-        gfx_draw_text(frame_x + 48, frame_y + 130,
-                      APP_DISPLAY_VERSION, 14.0f, TH_TEXT);
-        gfx_draw_text(frame_x + 48, frame_y + 160,
-                      "BUILD SHA: " APP_BUILD_SHA, 12.0f, TH_TEXT_DIM);
-        gfx_draw_text(frame_x + 48, frame_y + 220,
-                      "Pulsa cualquier boton para iniciar...", 13.0f, TH_TEXT_DIM);
+        /* Boxless centered splash over the active persisted background */
+        gfx_draw_text((float)((sw - 10 * 40) / 2), 430.0f,
+                      "MONOCHROME", 40.0f, th_color(0xFF, 0xFF, 0xFF, a));
+        gfx_draw_rect((float)((sw - 420) / 2), 492.0f, 420.0f, 1.0f,
+                      th_color(0x88, 0x88, 0x88, a));
+        gfx_draw_rect((float)((sw - 64) / 2), 492.0f, 64.0f, 2.0f,
+                      th_color(0x9D, 0x4E, 0xDD, a));
+        gfx_draw_text((float)((sw - 20 * 14) / 2), 514.0f,
+                      "PS3 // LOSSLESS FLAC", 14.0f, th_color(0x9A, 0x9A, 0x9A, a));
+        gfx_draw_text(footer_x, 940.0f,
+                      footer, 12.0f, th_color(0x88, 0x88, 0x88, a));
 
         platform_flip();
 
@@ -98,6 +93,9 @@ void ui_render_splash(void)
         if (act != ACT_NONE) break;
         usleep(16000);
     }
+
+    /* Always restore full background brightness before entering main UI */
+    gfx_set_background_dim(1.0f);
 }
 
 /* ── ui_handle_input ─────────────────────────────────────────────── */
@@ -220,7 +218,7 @@ void ui_render(AppState state, long frame)
         /* Overlay de salida */
         if (s_exit_requested) {
             gfx_draw_rect(0, sh / 2 - 60, sw, 120, TH_ACTIVE_BG);
-            gfx_draw_rect_outline(0, sh / 2 - 60, sw, 120, TH_ACCENT, 3);
+            gfx_draw_rect_outline(0, sh / 2 - 60, sw, 120, TH_BORDER_LT, 3);
             gfx_draw_text(sw / 2 - 120, sh / 2 - 20, "SALIENDO AL XMB...", 16.0f, TH_ACTIVE_TEXT);
         }
         return;
@@ -246,7 +244,7 @@ void ui_render(AppState state, long frame)
     /* Overlay de salida */
     if (s_exit_requested) {
         gfx_draw_rect(0, sh / 2 - 60, sw, 120, TH_ACTIVE_BG);
-        gfx_draw_rect_outline(0, sh / 2 - 60, sw, 120, TH_ACCENT, 3);
+        gfx_draw_rect_outline(0, sh / 2 - 60, sw, 120, TH_BORDER_LT, 3);
         gfx_draw_text(sw / 2 - 120, sh / 2 - 20, "SALIENDO AL XMB...", 16.0f, TH_ACTIVE_TEXT);
     }
 }
