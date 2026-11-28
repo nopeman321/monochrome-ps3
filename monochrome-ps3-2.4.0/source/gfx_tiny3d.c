@@ -347,9 +347,12 @@ static inline void blend_pixel_xrgb(uint32_t *dst, uint32_t rgba)
     uint32_t dr = (d >> 16) & 0xFFu;
     uint32_t dg = (d >> 8)  & 0xFFu;
     uint32_t db =  d        & 0xFFu;
-    uint32_t r = (sr * a + dr * inv + 127u) / 255u;
-    uint32_t g = (sg * a + dg * inv + 127u) / 255u;
-    uint32_t b = (sb * a + db * inv + 127u) / 255u;
+    uint32_t vr = sr * a + dr * inv;
+    uint32_t vg = sg * a + dg * inv;
+    uint32_t vb = sb * a + db * inv;
+    uint32_t r = (vr + 1u + (vr >> 8)) >> 8;
+    uint32_t g = (vg + 1u + (vg >> 8)) >> 8;
+    uint32_t b = (vb + 1u + (vb >> 8)) >> 8;
     *dst = 0xFF000000u | (r << 16) | (g << 8) | b;
 }
 
@@ -937,11 +940,31 @@ static void draw_glyph_box(uint32_t *dst_buf, int dst_w, int dst_h,
     }
 }
 
-int gfx_draw_text(float x, float y, const char *utf8, float size_px, uint32_t rgba)
+static float s_font_scale = 1.0f;
+
+void gfx_set_font_scale(float scale)
+{
+    if (scale < 0.50f) scale = 0.50f;
+    if (scale > 2.00f) scale = 2.00f;
+    s_font_scale = scale;
+}
+
+float gfx_get_font_scale(void)
+{
+    return s_font_scale;
+}
+
+static float clamp_scaled_font_px(float size_px)
+{
+    float scaled = size_px * s_font_scale;
+    if (scaled < 10.0f) scaled = 10.0f;
+    if (scaled > 96.0f) scaled = 96.0f;
+    return scaled;
+}
+
+static int draw_text_raw(float x, float y, const char *utf8, float scaled_px, uint32_t rgba)
 {
     if (!utf8 || !*utf8) return 0;
-    if (size_px < 12.0f) size_px = 12.0f;
-    if (size_px > 96.0f) size_px = 96.0f;
     if (!s_font_loaded) {
         platform_log("[GFX] Fuente bitmap 8x8 optimizada cargada (render continuo)");
         s_font_loaded = 1;
@@ -953,21 +976,26 @@ int gfx_draw_text(float x, float y, const char *utf8, float size_px, uint32_t rg
         unsigned char ch = normalize_utf8_char(&p);
         int gx0 = (int)vx(cur_vx);
         int gy0 = (int)vy(y);
-        int gx1 = (int)vx(cur_vx + size_px);
-        int gy1 = (int)vy(y + size_px);
+        int gx1 = (int)vx(cur_vx + scaled_px);
+        int gy1 = (int)vy(y + scaled_px);
         draw_glyph_box(s_shadow_fb, (int)s_screen_w, (int)s_screen_h,
                        gx0, gy0, gx1, gy1, ch, rgba);
-        cur_vx += size_px;
+        cur_vx += scaled_px;
     }
     return (int)(cur_vx - x);
+}
+
+int gfx_draw_text(float x, float y, const char *utf8, float size_px, uint32_t rgba)
+{
+    return draw_text_raw(x, y, utf8, clamp_scaled_font_px(size_px), rgba);
 }
 
 int gfx_draw_text_clipped(float x, float y, float max_w, const char *utf8,
                           float size_px, uint32_t rgba)
 {
     if (!utf8 || !*utf8) return 0;
-    if (size_px < 12.0f) size_px = 12.0f;
-    int max_chars = (int)(max_w / size_px);
+    float scaled_px = clamp_scaled_font_px(size_px);
+    int max_chars = (int)(max_w / scaled_px);
     if (max_chars <= 0) return 0;
 
     /* Measure visual characters considering UTF-8 normalization */
@@ -979,7 +1007,7 @@ int gfx_draw_text_clipped(float x, float y, float max_w, const char *utf8,
     }
 
     if (char_count <= max_chars) {
-        return gfx_draw_text(x, y, utf8, size_px, rgba);
+        return draw_text_raw(x, y, utf8, scaled_px, rgba);
     }
 
     char buf[512];
@@ -1000,7 +1028,7 @@ int gfx_draw_text_clipped(float x, float y, float max_w, const char *utf8,
         buf[out_idx++] = '.';
     }
     buf[out_idx] = '\0';
-    return gfx_draw_text(x, y, buf, size_px, rgba);
+    return draw_text_raw(x, y, buf, scaled_px, rgba);
 }
 
 /* ── Visualizador 3D wireframe (líneas por software) ───────────── */

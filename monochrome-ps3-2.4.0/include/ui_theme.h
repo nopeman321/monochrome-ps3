@@ -2,8 +2,11 @@
 #define UI_THEME_H
 
 #include <stdint.h>
+#include <math.h>
+#include "monochrome.h"
+#include "platform.h"
 
-/* ── Neutral Monochrome Palette + Playback-Only Violet Accent ────── */
+/* ── Neutral Monochrome Palette + Selectable 16-Color Accent ─────── */
 #define COLOR_BG          0x00000000   /* #000000 pure black */
 #define COLOR_BAR_BG      0x00000000   /* #000000 translucent bar backdrop */
 #define COLOR_SURFACE     0x00080808   /* #080808 dark neutral surface */
@@ -16,8 +19,6 @@
 #define COLOR_TEXT_DIM    0x009A9A9A   /* #9A9A9A secondary dim text */
 #define COLOR_ACTIVE_BG   0x00FFFFFF   /* #FFFFFF solid white active block */
 #define COLOR_ACTIVE_TEXT 0x00000000   /* #000000 black text on white active block */
-#define COLOR_ACCENT      0x007B2CBF   /* #7B2CBF violet (playback-only) */
-#define COLOR_ACCENT_LT   0x009D4EDD   /* #9D4EDD light violet (playback-only) */
 
 /* ── Medidas virtuales 1920x1080 ─────────────────────────────────── */
 #define VIRT_W 1920
@@ -69,7 +70,40 @@ static inline uint32_t th_color(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 #define TH_TEXT_DIM    th_color(0x9A, 0x9A, 0x9A, 0xFF)
 #define TH_ACTIVE_BG   th_color(0xFF, 0xFF, 0xFF, 0xFF)
 #define TH_ACTIVE_TEXT th_color(0x00, 0x00, 0x00, 0xFF)
-#define TH_ACCENT      th_color(0x7B, 0x2C, 0xBF, 0xFF) /* playback-only */
-#define TH_ACCENT_LT   th_color(0x9D, 0x4E, 0xDD, 0xFF) /* playback-only */
+
+uint32_t    ui_theme_accent(void);
+uint32_t    ui_theme_accent_lt(void);
+const char *ui_theme_accent_name(int idx);
+uint32_t    ui_theme_accent_color(int idx);
+float       ui_theme_font_scale(int idx);
+const char *ui_theme_font_label(int idx);
+
+#define TH_ACCENT      ui_theme_accent()
+#define TH_ACCENT_LT   ui_theme_accent_lt()
+
+/* ── Smooth frame-rate-independent animation helpers ─────────────── */
+static inline float ui_anim_dt(uint64_t *last_usec)
+{
+    uint64_t now = platform_get_time_usec();
+    if (*last_usec == 0ULL) {
+        *last_usec = now;
+        return 1.0f / 60.0f;
+    }
+    uint64_t diff = (now >= *last_usec) ? (now - *last_usec) : 0ULL;
+    *last_usec = now;
+    float dt = (float)diff / 1000000.0f;
+    if (dt < 0.001f) dt = 0.001f;
+    if (dt > 0.05f)  dt = 0.05f;
+    return dt;
+}
+
+static inline float ui_anim_exp_lerp(float current, float target, float speed, float dt, float eps)
+{
+    float diff = target - current;
+    if (fabsf(diff) <= eps) {
+        return target;
+    }
+    return current + diff * (1.0f - expf(-speed * dt));
+}
 
 #endif /* UI_THEME_H */

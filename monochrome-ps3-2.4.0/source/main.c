@@ -22,6 +22,7 @@ SYS_PROCESS_PARAM(1001, 0x100000);
 #include "cover_art.h"
 #include "net_hal.h"
 #include "gfx_engine.h"
+#include "ui_theme.h"
 
 int main(int argc, const char *argv[])
 {
@@ -62,6 +63,7 @@ int main(int argc, const char *argv[])
     }
 
     gfx_set_background_theme((int)g_app_state.bg_theme);
+    gfx_set_font_scale(ui_theme_font_scale(g_app_state.font_size_idx));
 
     cover_art_init();
 

@@ -40,6 +40,9 @@ typedef enum {
     BG_THEME_COUNT         = 4
 } BgThemeMode;
 
+#define ACCENT_PALETTE_COUNT   16
+#define FONT_SIZE_PRESET_COUNT 4
+
 /* ── Focus zones (input navigation) ──────────────────────────────── */
 typedef enum {
     ZONE_LEFT_RAIL,

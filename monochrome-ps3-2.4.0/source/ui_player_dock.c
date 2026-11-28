@@ -156,7 +156,7 @@ void player_dock_render(int sw, int sh, long frame)
             int time_cur_w = gfx_draw_text(info_x, row2_y, cur_time_str, 12.0f, TH_ACCENT_LT);
 
             /* Tiempo total (derecha de la barra, dentro del area de contenido) */
-            int time_tot_box_w = 60;
+            int time_tot_box_w = (int)(60.0f * gfx_get_font_scale());
             int time_tot_x = content_max_x - time_tot_box_w;
             gfx_draw_text(time_tot_x, row2_y, tot_time_str, 12.0f, TH_TEXT_DIM);
 

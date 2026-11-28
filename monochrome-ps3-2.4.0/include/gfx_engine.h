@@ -35,6 +35,8 @@ void gfx_draw_9slice(const GfxTexture *tex, float x, float y, float w, float h,
                      float border_px, uint32_t tint_rgba);
 
 /* ── Texto (FreeType atlas) ────────────────────────────────────── */
+void gfx_set_font_scale(float scale);
+float gfx_get_font_scale(void);
 int  gfx_draw_text(float x, float y, const char *utf8, float size_px, uint32_t rgba);
 int  gfx_draw_text_clipped(float x, float y, float max_w, const char *utf8,
                            float size_px, uint32_t rgba);

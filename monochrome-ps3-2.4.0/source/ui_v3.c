@@ -34,14 +34,12 @@
 
 /* ── Estado de UI v3 ─────────────────────────────────────────────── */
 static bool s_exit_requested = false;
-static long s_frame = 0;
 static bool s_initial_search_started = false;
 
 /* ── ui_init ─────────────────────────────────────────────────────── */
 void ui_init(void)
 {
     s_exit_requested = false;
-    s_frame = 0;
     s_initial_search_started = false;
 
     ui_home_init();
@@ -60,7 +58,8 @@ void ui_render_splash(void)
     int sw = VIRT_W;
     uint64_t t_start = platform_get_time_usec();
     const char *footer = APP_DISPLAY_VERSION "  //  Pulsa cualquier boton para iniciar...";
-    float footer_x = (float)((sw - (int)strlen(footer) * 12) / 2);
+    float fscale = gfx_get_font_scale();
+    float footer_x = ((float)sw - (float)strlen(footer) * 12.0f * fscale) * 0.5f;
 
     while ((platform_get_time_usec() - t_start) < 2200000ULL) {
         sysUtilCheckCallback();
@@ -69,20 +68,23 @@ void ui_render_splash(void)
             break;
         }
 
-        float fade = fminf(1.0f, (float)(platform_get_time_usec() - t_start) / 1200000.0f);
+        float t_norm = fminf(1.0f, (float)(platform_get_time_usec() - t_start) / 1200000.0f);
+        float inv_t = 1.0f - t_norm;
+        float fade = 1.0f - inv_t * inv_t * inv_t;
         uint8_t a = (uint8_t)(fade * 255.0f);
 
         gfx_set_background_dim(fade);
         platform_prepare_frame();
 
         /* Boxless centered splash over the active persisted background */
-        gfx_draw_text((float)((sw - 10 * 40) / 2), 430.0f,
+        gfx_draw_text(((float)sw - 10.0f * 40.0f * fscale) * 0.5f, 430.0f,
                       "MONOCHROME", 40.0f, th_color(0xFF, 0xFF, 0xFF, a));
         gfx_draw_rect((float)((sw - 420) / 2), 492.0f, 420.0f, 1.0f,
                       th_color(0x88, 0x88, 0x88, a));
-        gfx_draw_rect((float)((sw - 64) / 2), 492.0f, 64.0f, 2.0f,
-                      th_color(0x9D, 0x4E, 0xDD, a));
-        gfx_draw_text((float)((sw - 20 * 14) / 2), 514.0f,
+        float bar_w = 64.0f * fade;
+        gfx_draw_rect(((float)sw - bar_w) * 0.5f, 492.0f, bar_w, 2.0f,
+                      (TH_ACCENT_LT & 0x00FFFFFFu) | ((uint32_t)a << 24));
+        gfx_draw_text(((float)sw - 20.0f * 14.0f * fscale) * 0.5f, 514.0f,
                       "PS3 // LOSSLESS FLAC", 14.0f, th_color(0x9A, 0x9A, 0x9A, a));
         gfx_draw_text(footer_x, 940.0f,
                       footer, 12.0f, th_color(0x88, 0x88, 0x88, a));
@@ -91,7 +93,6 @@ void ui_render_splash(void)
 
         InputAction act = platform_poll_input();
         if (act != ACT_NONE) break;
-        usleep(16000);
     }
 
     /* Always restore full background brightness before entering main UI */
@@ -192,7 +193,7 @@ static void render_main_content(int sw, int sh, long frame)
             ui_settings_render();
             break;
         default:
-            gfx_draw_text(cx, cy, "Pantalla no disponible", 8.0f, TH_TEXT_DIM);
+            gfx_draw_text(cx, cy, "Pantalla no disponible", 12.0f, TH_TEXT_DIM);
             break;
     }
 }
@@ -201,7 +202,7 @@ static void render_main_content(int sw, int sh, long frame)
 void ui_render(AppState state, long frame)
 {
     (void)state;
-    s_frame = frame;
+    (void)frame;
     int sw = VIRT_W;
     int sh = VIRT_H;
 
@@ -236,10 +237,8 @@ void ui_render(AppState state, long frame)
     /* Render Bottom Player Dock */
     player_dock_render(sw, sh, frame);
 
-    /* Render cola de reproduccion overlay si esta abierta */
-    if (g_app_state.right_drawer_open) {
-        ui_queue_render();
-    }
+    /* Render cola de reproduccion overlay (incluye animacion de cierre) */
+    ui_queue_render();
 
     /* Overlay de salida */
     if (s_exit_requested) {

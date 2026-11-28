@@ -79,16 +79,26 @@ bool ui_queue_handle_input(Action act)
 
 void ui_queue_render(void)
 {
-    if (!g_app_state.right_drawer_open) {
+    static float s_drawer_t = 0.0f;
+    static uint64_t s_last_usec = 0ULL;
+
+    float dt = ui_anim_dt(&s_last_usec);
+    float target_t = g_app_state.right_drawer_open ? 1.0f : 0.0f;
+    s_drawer_t = ui_anim_exp_lerp(s_drawer_t, target_t, 16.0f, dt, 0.002f);
+
+    if (!g_app_state.right_drawer_open && s_drawer_t <= 0.002f) {
         return;
     }
 
     float panel_w = 560.0f;
     float panel_h = (float)VIRT_H;
-    float panel_x = (float)VIRT_W - panel_w;
+    float panel_x = (float)VIRT_W - panel_w * s_drawer_t;
 
-    /* Semi-transparent scrim over main area */
-    gfx_draw_rect(0.0f, 0.0f, panel_x, panel_h, TH_SCRIM);
+    /* Semi-transparent scrim over main area with eased alpha */
+    uint8_t scrim_a = (uint8_t)(160.0f * s_drawer_t);
+    if (panel_x > 0.0f && scrim_a > 0u) {
+        gfx_draw_rect(0.0f, 0.0f, panel_x, panel_h, th_color(0x00, 0x00, 0x00, scrim_a));
+    }
 
     /* Right side drawer */
     gfx_draw_rect(panel_x, 0.0f, panel_w, panel_h, TH_MODAL_BG);
@@ -114,9 +124,9 @@ void ui_queue_render(void)
         float box_w = panel_w - 48.0f;
         gfx_draw_rect(box_x, box_y, box_w, 130.0f, TH_SURFACE_2);
         gfx_draw_rect_outline(box_x, box_y, box_w, 130.0f, TH_BORDER, 1.0f);
-        gfx_draw_text(box_x + 20.0f, box_y + 24.0f, "[ COLA DE REPRODUCCION VACIA ]", 15.0f, TH_TEXT);
-        gfx_draw_text(box_x + 20.0f, box_y + 54.0f, "No hay pistas en la cola de reproduccion.", 13.0f, TH_TEXT_DIM);
-        gfx_draw_text(box_x + 20.0f, box_y + 78.0f, "Agrega pistas pulsando X desde Inicio o Busqueda.", 13.0f, TH_TEXT_DIM);
+        gfx_draw_text_clipped(box_x + 20.0f, box_y + 24.0f, box_w - 40.0f, "[ COLA DE REPRODUCCION VACIA ]", 15.0f, TH_TEXT);
+        gfx_draw_text_clipped(box_x + 20.0f, box_y + 54.0f, box_w - 40.0f, "No hay pistas en la cola de reproduccion.", 13.0f, TH_TEXT_DIM);
+        gfx_draw_text_clipped(box_x + 20.0f, box_y + 78.0f, box_w - 40.0f, "Agrega pistas pulsando X desde Inicio o Busqueda.", 13.0f, TH_TEXT_DIM);
     } else {
         if (s_queue_cursor >= (int)g_app_state.queue_count) {
             s_queue_cursor = (int)g_app_state.queue_count - 1;
@@ -178,15 +188,21 @@ void ui_queue_render(void)
             const char *title_str = trk->title[0] ? trk->title : "Sin titulo";
             const char *artist_str = trk->artist[0] ? trk->artist : "Desconocido";
 
-            gfx_draw_text_clipped(rx + 46.0f, ry + 8.0f, rw - 120.0f, title_str, 15.0f, title_color);
-            gfx_draw_text_clipped(rx + 46.0f, ry + 28.0f, rw - 120.0f, artist_str, 12.0f, dim_color);
+            float fscale = gfx_get_font_scale();
+            float text_x = rx + 10.0f + (44.0f * fscale);
+            float text_max_w = rw - (text_x - rx) - (92.0f * fscale);
+            if (text_max_w < 120.0f) text_max_w = 120.0f;
+
+            gfx_draw_text_clipped(text_x, ry + 8.0f, text_max_w, title_str, 15.0f, title_color);
+            gfx_draw_text_clipped(text_x, ry + 28.0f, text_max_w, artist_str, 12.0f, dim_color);
 
             if (trk->duration_sec > 0) {
                 char dur_str[16];
                 snprintf(dur_str, sizeof(dur_str), "%u:%02u",
                          (unsigned int)(trk->duration_sec / 60),
                          (unsigned int)(trk->duration_sec % 60));
-                gfx_draw_text(rx + rw - 55.0f, ry + 18.0f, dur_str, 13.0f, dim_color);
+                float dur_w = (float)strlen(dur_str) * 13.0f * fscale;
+                gfx_draw_text(rx + rw - dur_w - 14.0f, ry + 18.0f, dur_str, 13.0f, dim_color);
             }
         }
     }
@@ -196,5 +212,5 @@ void ui_queue_render(void)
     float hint_y = (float)VIRT_H - hint_h - 16.0f;
     gfx_draw_rect(panel_x, hint_y, panel_w, hint_h, TH_SURFACE_2);
     gfx_draw_rect(panel_x, hint_y, panel_w, 1.0f, TH_BORDER);
-    gfx_draw_text(panel_x + 24.0f, hint_y + 20.0f, "[X] REPRODUCIR   [/\\ / O] CERRAR COLA", 12.0f, TH_TEXT_DIM);
+    gfx_draw_text_clipped(panel_x + 24.0f, hint_y + 20.0f, panel_w - 48.0f, "[X] REPRODUCIR   [/\\ / O] CERRAR COLA", 12.0f, TH_TEXT_DIM);
 }

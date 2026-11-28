@@ -1,7 +1,82 @@
 #include "ui_components.h"
+#include "app_state.h"
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+
+/* ── 16-Color Selectable Highlight Palette (index 0 = Pure White) ── */
+typedef struct {
+    const char *name;
+    uint32_t    color;
+    uint32_t    color_lt;
+} AccentPaletteEntry;
+
+static const AccentPaletteEntry k_accent_palette[ACCENT_PALETTE_COUNT] = {
+    { "Blanco Puro",     0xFFFFFFFFu, 0xFFD0D0D0u },
+    { "Plata Cromada",   0xFFCBD5E1u, 0xFFE2E8F0u },
+    { "Cian Electrico",  0xFF00E5FFu, 0xFF80F2FFu },
+    { "Azul Hielo",      0xFF38BDF8u, 0xFF7DD3FCu },
+    { "Azul Cobalto",    0xFF60A5FAu, 0xFF93C5FDu },
+    { "Indigo Suave",    0xFF818CF8u, 0xFFA5B4FCu },
+    { "Lavanda",         0xFFC084FCu, 0xFFD8B4FEu },
+    { "Magenta Neon",    0xFFF472B6u, 0xFFF9A8D4u },
+    { "Rojo Carmesi",    0xFFF87171u, 0xFFFCA5A5u },
+    { "Coral",           0xFFFB7185u, 0xFFFDA4AFu },
+    { "Naranja Ambar",   0xFFFB923Cu, 0xFFFDBA74u },
+    { "Oro Viejo",       0xFFFBBF24u, 0xFFFDE68Au },
+    { "Amarillo Lima",   0xFFD9F99Du, 0xFFECFCCBu },
+    { "Verde Esmeralda", 0xFF34D399u, 0xFF6EE7B7u },
+    { "Turquesa",        0xFF2DD4BFu, 0xFF5EEAD4u },
+    { "Menta",           0xFF4ADE80u, 0xFF86EFACu }
+};
+
+static const float k_font_scales[FONT_SIZE_PRESET_COUNT] = {
+    0.85f, 1.00f, 1.15f, 1.30f
+};
+
+static const char *const k_font_labels[FONT_SIZE_PRESET_COUNT] = {
+    "Pequena (0.85x)",
+    "Normal (1.00x)",
+    "Grande (1.15x)",
+    "Extra Grande (1.30x)"
+};
+
+static int clamp_accent_idx(int idx)
+{
+    return (idx < 0 || idx >= ACCENT_PALETTE_COUNT) ? 0 : idx;
+}
+
+uint32_t ui_theme_accent(void)
+{
+    return k_accent_palette[clamp_accent_idx(g_app_state.accent_color_idx)].color;
+}
+
+uint32_t ui_theme_accent_lt(void)
+{
+    return k_accent_palette[clamp_accent_idx(g_app_state.accent_color_idx)].color_lt;
+}
+
+const char *ui_theme_accent_name(int idx)
+{
+    return k_accent_palette[clamp_accent_idx(idx)].name;
+}
+
+uint32_t ui_theme_accent_color(int idx)
+{
+    return k_accent_palette[clamp_accent_idx(idx)].color;
+}
+
+float ui_theme_font_scale(int idx)
+{
+    if (idx < 0 || idx >= FONT_SIZE_PRESET_COUNT) idx = 1;
+    return k_font_scales[idx];
+}
+
+const char *ui_theme_font_label(int idx)
+{
+    if (idx < 0 || idx >= FONT_SIZE_PRESET_COUNT) idx = 1;
+    return k_font_labels[idx];
+}
 
 static void draw_cover_placeholder(float x, float y, float size, const AppTrack *track) {
     /* Recuadro monocromatico de alta precision con grid Y2K */
@@ -110,9 +185,10 @@ void track_row_render(float x, float y, float w, float h,
     }
     gfx_draw_text(x + 12.0f, y + (h - 16.0f) * 0.5f, idxbuf, 14.0f, idx_color);
 
-    float col_x = x + 54.0f;
-    float max_title_w = (w - 180.0f) * 0.52f;
-    float max_sub_w = (w - 180.0f) * 0.44f;
+    float fscale = gfx_get_font_scale();
+    float col_x = x + 12.0f + (46.0f * fscale);
+    float max_title_w = (w - (col_x - x) - 120.0f) * 0.52f;
+    float max_sub_w = (w - (col_x - x) - 120.0f) * 0.44f;
     if (max_title_w < 120.0f) max_title_w = 120.0f;
     if (max_sub_w < 100.0f) max_sub_w = 100.0f;
 
@@ -143,5 +219,6 @@ void track_row_render(float x, float y, float w, float h,
     } else {
         snprintf(dur, sizeof(dur), "--:--");
     }
-    gfx_draw_text(x + w - 80.0f, y + (h - 16.0f) * 0.5f, dur, 14.0f, dur_color);
+    float dur_w = (float)strlen(dur) * 14.0f * gfx_get_font_scale();
+    gfx_draw_text(x + w - dur_w - 16.0f, y + (h - 16.0f) * 0.5f, dur, 14.0f, dur_color);
 }

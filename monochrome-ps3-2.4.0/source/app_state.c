@@ -74,6 +74,8 @@ void app_state_init(void)
     /* Configuración por defecto */
     g_app_state.cover_mode       = COVER_MODE_ORIGINAL;
     g_app_state.bg_theme         = BG_THEME_FRACTURE_HUD;
+    g_app_state.accent_color_idx = 0; /* Blanco Puro */
+    g_app_state.font_size_idx    = 1; /* Normal (1.00x) */
     g_app_state.overscan_x       = 0;
     g_app_state.overscan_y       = 0;
     g_app_state.overscan_scale   = 1.0f;
@@ -106,6 +108,12 @@ bool app_state_load_config(void)
             int t = atoi(val);
             g_app_state.bg_theme = (t < 0 || t >= BG_THEME_COUNT)
                 ? BG_THEME_FRACTURE_HUD : (BgThemeMode)t;
+        } else if (strcmp(key, "accent_color_idx") == 0) {
+            int c = atoi(val);
+            g_app_state.accent_color_idx = (c < 0 || c >= ACCENT_PALETTE_COUNT) ? 0 : c;
+        } else if (strcmp(key, "font_size_idx") == 0) {
+            int fz = atoi(val);
+            g_app_state.font_size_idx = (fz < 0 || fz >= FONT_SIZE_PRESET_COUNT) ? 1 : fz;
         } else if (strcmp(key, "overscan_x") == 0) {
             g_app_state.overscan_x = atoi(val);
         } else if (strcmp(key, "overscan_y") == 0) {
@@ -135,6 +143,8 @@ bool app_state_save_config(void)
     fprintf(f, "# Monochrome PS3 - Configuracion persistente\n");
     fprintf(f, "cover_mode=%d\n", (int)g_app_state.cover_mode);
     fprintf(f, "bg_theme=%d\n", (int)g_app_state.bg_theme);
+    fprintf(f, "accent_color_idx=%d\n", g_app_state.accent_color_idx);
+    fprintf(f, "font_size_idx=%d\n", g_app_state.font_size_idx);
     fprintf(f, "overscan_x=%d\n", g_app_state.overscan_x);
     fprintf(f, "overscan_y=%d\n", g_app_state.overscan_y);
     fprintf(f, "overscan_scale=%.3f\n", g_app_state.overscan_scale);
